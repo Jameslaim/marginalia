@@ -25,10 +25,10 @@ from .ids import extract_video_id
 from .ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
-    STATUS_FAILED,
     STATUS_STORED,
     Ledger,
     VideoRow,
+    skip_reason,
 )
 from .library import Library
 from .providers import PermanentError, TransientError, get_provider
@@ -80,11 +80,14 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
     with Ledger(library.ledger_path) as ledger:
         existing = ledger.get(video_id)
+        reason = skip_reason(
+            existing, transcript_present=library.has_transcript(video_id)
+        )
+        if reason is not None:
+            _report("skipped", video_id, reason)
+            return EXIT_OK
         if existing is not None:
-            reason = _skip_reason(existing, library, video_id)
-            if reason is not None:
-                _report("skipped", video_id, reason)
-                return EXIT_OK
+            log.info("re-attempting %s (ledger status %s)", video_id, existing.status)
 
         # Ledger row before the network call, always. A crash after this point
         # leaves `pending`, which is exactly what the next run needs to know.
@@ -106,7 +109,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
         assert provider is not None
         count = _store(library, video_id, result, provider, args.url)
-        ledger.mark_stored(video_id, source=result.source, provider=provider.name)
+        ledger.mark_stored(
+            video_id,
+            source=result.source,
+            caption_kind=result.caption_kind,
+            provider=provider.name,
+        )
         _report(
             "stored",
             video_id,
@@ -145,11 +153,14 @@ def _cmd_list(args: argparse.Namespace) -> int:
     with Ledger(library.ledger_path) as ledger:
         rows = ledger.list_by_status(args.status)
 
+    # One line per video and nothing else: a skill parses this, so an empty
+    # library must produce zero lines rather than a sentence it has to
+    # distinguish from a result. Exit 0 already says the command succeeded.
     for row in rows:
         meta = library.read_meta(row.video_id) or {}
         _report(row.status.replace("_", "-"), row.video_id, _quoted(meta.get("title")))
     if not rows:
-        print(f"no videos with status {args.status}")
+        log.info("no videos with status %s", args.status)
     return EXIT_OK
 
 
@@ -220,18 +231,6 @@ def _store(
     return count
 
 
-def _skip_reason(row: VideoRow, library: Library, video_id: str) -> str | None:
-    """Why this video needs no work, or None to (re-)attempt it."""
-    if row.status == STATUS_STORED:
-        if library.has_transcript(video_id):
-            return "already stored"
-        log.warning("%s is stored in the ledger but has no transcript file; re-fetching", video_id)
-        return None
-    if row.status == STATUS_FAILED and row.fail_kind == FAIL_PERMANENT:
-        return "previously failed (permanent)"
-    return None
-
-
 def _metadata(provider: TranscriptProvider | None, video_id: str) -> dict[str, Any] | None:
     fetch_metadata = getattr(provider, "fetch_metadata", None)
     if fetch_metadata is None:
@@ -255,7 +254,9 @@ def _describe(library: Library, row: VideoRow) -> list[str]:
     if meta.get("line_count"):
         fields.append(f"{meta['line_count']} lines")
     if row.source:
-        fields.append(f"{row.source}/{meta.get('language', '?')}")
+        # Both source and caption_kind come from the ledger now, not meta.json.
+        kind = f"/{row.caption_kind}" if row.caption_kind else ""
+        fields.append(f"{row.source}{kind}/{meta.get('language', '?')}")
     if row.fail_kind:
         fields.append(row.fail_kind)
     fields.append(f"attempts={row.attempts}")

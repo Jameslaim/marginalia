@@ -13,7 +13,7 @@ import html
 import json
 import logging
 import re
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, NamedTuple, Sequence
 from xml.etree import ElementTree
 
 from .base import (
@@ -32,51 +32,69 @@ _DEFAULT_LANGUAGES: tuple[str, ...] = ("en", "en-US", "en-GB")
 # and marks rollup duplicates; the rest are fallbacks.
 _PREFERRED_EXTS: tuple[str, ...] = ("json3", "srv3", "srv1", "vtt", "ttml")
 
-# Substrings that mean "this video will never work". Checked before the
-# transient patterns; anything unmatched defaults to transient, because
-# retrying a permanent failure is cheaper than never retrying a temporary one.
-_PERMANENT_PATTERNS: tuple[str, ...] = (
-    "video unavailable",
-    "private video",
-    "this video is private",
-    "sign in if you've been granted access",
-    "has been removed by the uploader",
-    "removed for violating",
-    "account associated with this video has been terminated",
-    "no longer available",
-    "not available in your country",
-    "blocked it in your country",
-    "blocked it on copyright grounds",
-    "who has blocked it",
-    "members-only",
-    "join this channel",
-    "available to this channel's members",
-    "is not a valid url",
-    "incomplete youtube id",
-    "does not exist",
-    "sign in to confirm your age",
-    "age-restricted",
-    "inappropriate for some users",
-    "this live event has ended",
-    "premieres in",
-)
+# Error classification. yt-dlp messages are long, wrap their cause, and change
+# wording between releases; a truncated one is a severed sentence, not a
+# summary. Each known shape maps to a short stable label, because the report
+# line is parsed by a skill. The full text goes to the DEBUG log.
+#
+# Order matters: first match wins, so specific patterns precede general ones.
+# `permanent` means "do not retry" — deleted, private, blocked.
 
-_TRANSIENT_PATTERNS: tuple[str, ...] = (
-    "http error 429",
-    "too many requests",
-    "http error 5",
-    "timed out",
-    "timeout",
-    "temporary failure",
-    "connection",
-    "network",
-    "getaddrinfo",
-    "ssl",
-    "not a bot",
-    "unable to download webpage",
-    "unable to download api page",
-    "failed to extract",
-    "read operation",
+
+class _Shape(NamedTuple):
+    pattern: str
+    label: str
+    permanent: bool
+
+
+_ERROR_SHAPES: tuple[_Shape, ...] = (
+    # -- permanent -----------------------------------------------------------
+    _Shape("this video is private", "private", True),
+    _Shape("private video", "private", True),
+    _Shape("sign in if you've been granted access", "private", True),
+    # Matches both "is not available in your country" and the wording YouTube
+    # actually uses: "has not made this video available in your country".
+    _Shape("available in your country", "region blocked", True),
+    _Shape("blocked it in your country", "region blocked", True),
+    _Shape("blocked it on copyright grounds", "region blocked", True),
+    _Shape("who has blocked it", "region blocked", True),
+    _Shape("members-only", "members only", True),
+    _Shape("available to this channel's members", "members only", True),
+    _Shape("join this channel", "members only", True),
+    _Shape("has been removed by the uploader", "removed", True),
+    _Shape("removed for violating", "removed", True),
+    _Shape("account associated with this video has been terminated", "account terminated", True),
+    _Shape("sign in to confirm your age", "age restricted", True),
+    _Shape("age-restricted", "age restricted", True),
+    _Shape("inappropriate for some users", "age restricted", True),
+    _Shape("this live event has ended", "unavailable", True),
+    _Shape("no longer available", "unavailable", True),
+    _Shape("video unavailable", "unavailable", True),
+    _Shape("incomplete youtube id", "not found", True),
+    _Shape("is not a valid url", "not found", True),
+    _Shape("does not exist", "not found", True),
+    # -- transient -----------------------------------------------------------
+    _Shape("http error 429", "rate limited", False),
+    _Shape("too many requests", "rate limited", False),
+    _Shape("not a bot", "bot check", False),
+    _Shape("actively refused", "connection refused", False),
+    _Shape("connection refused", "connection refused", False),
+    _Shape("winerror 10061", "connection refused", False),
+    _Shape("timed out", "timeout", False),
+    _Shape("timeout", "timeout", False),
+    _Shape("temporary failure in name resolution", "dns failure", False),
+    _Shape("name or service not known", "dns failure", False),
+    _Shape("getaddrinfo", "dns failure", False),
+    _Shape("certificate verify failed", "tls error", False),
+    _Shape("ssl", "tls error", False),
+    _Shape("http error 5", "server error", False),
+    _Shape("unable to download webpage", "download failed", False),
+    _Shape("unable to download api page", "download failed", False),
+    _Shape("read operation", "download failed", False),
+    _Shape("failed to extract", "extraction failed", False),
+    _Shape("unable to extract", "extraction failed", False),
+    _Shape("connection", "connection failed", False),
+    _Shape("network", "connection failed", False),
 )
 
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -150,6 +168,9 @@ class YtDlpProvider:
 
     def fetch_metadata(self, video_id: str) -> dict[str, Any] | None:
         """Metadata only. Reuses the info dict from the last ``fetch`` if any."""
+        # This cache assumes one provider instance serves one video at a time:
+        # true while the CLI is single-shot and single-threaded. Revisit in M3,
+        # when provider fallbacks change the call pattern. (deferred, M1 review)
         if self._cached_id == video_id and self._cached_info is not None:
             return self._cached_info
 
@@ -445,24 +466,31 @@ def _chapters(info: dict[str, Any]) -> list[dict]:
 
 
 def _classify(exc: Exception) -> PermanentError | TransientError:
-    message = " ".join(str(arg) for arg in exc.args) or str(exc)
+    """Map a provider exception to a short, stable label.
+
+    The label — not the original message — becomes the CLI's report line, so
+    it must stay short and must not change wording when yt-dlp does. The full
+    text is logged at DEBUG for whoever is actually debugging.
+    """
+    message = _flatten(exc)
+    log.debug("provider error (%s): %s", type(exc).__name__, message)
+
     lowered = message.lower()
-    for pattern in _PERMANENT_PATTERNS:
-        if pattern in lowered:
-            return PermanentError(_summarise(message))
-    for pattern in _TRANSIENT_PATTERNS:
-        if pattern in lowered:
-            return TransientError(_summarise(message))
-    return TransientError(_summarise(message))
+    for shape in _ERROR_SHAPES:
+        if shape.pattern in lowered:
+            error = PermanentError if shape.permanent else TransientError
+            return error(shape.label)
+
+    # Unrecognised. Default to transient: never retrying something temporary
+    # is a silent permanent loss, while retrying something permanent costs one
+    # wasted request. Name the exception class so the shape can be added here.
+    return TransientError(f"unclassified ({type(exc).__name__})")
 
 
-def _summarise(message: str) -> str:
-    """One short line — this ends up in terse CLI output."""
-    cleaned = _WS_RE.sub(" ", message).strip()
-    cleaned = re.sub(r"^ERROR:\s*", "", cleaned)
-    cleaned = re.sub(r"^\[[^\]]+\]\s*[\w-]{11}:\s*", "", cleaned)
-    # yt-dlp appends the wrapped cause and a "confirm you're a bot" nudge;
-    # neither adds anything a one-line report can use.
-    cleaned = re.sub(r"\s*\(caused by .*", "", cleaned)
-    cleaned = re.sub(r"\s*;\s*(please report|confirm).*", "", cleaned, flags=re.IGNORECASE)
-    return cleaned[:100].strip()
+def _flatten(exc: Exception) -> str:
+    """The exception's full text, including any wrapped cause."""
+    parts = [" ".join(str(arg) for arg in exc.args) or str(exc)]
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        parts.append(str(cause))
+    return _WS_RE.sub(" ", " ".join(parts)).strip()

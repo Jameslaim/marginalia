@@ -29,7 +29,9 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "Ledger",
+    "LedgerError",
     "VideoRow",
+    "skip_reason",
     "STATUS_PENDING",
     "STATUS_NEEDS_ASR",
     "STATUS_STORED",
@@ -57,6 +59,7 @@ CREATE TABLE IF NOT EXISTS videos (
   video_id       TEXT PRIMARY KEY,
   status         TEXT NOT NULL,   -- pending|needs_asr|stored|rejected|failed|duplicate
   source         TEXT,            -- captions|whisper
+  caption_kind   TEXT,            -- manual|auto
   transcribed_at TEXT,
   content_hash   TEXT,
   duplicate_of   TEXT,
@@ -88,6 +91,7 @@ class VideoRow:
     video_id: str
     status: str
     source: str | None
+    caption_kind: str | None
     transcribed_at: str | None
     content_hash: str | None
     duplicate_of: str | None
@@ -107,6 +111,49 @@ class LedgerError(RuntimeError):
     """Raised when the ledger is used out of order."""
 
 
+def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None:
+    """Decide whether an ingest request needs work, and say why if it does not.
+
+    Returns ``None`` to (re-)attempt, or a short phrase to report as the skip
+    reason. This is policy, so it lives here rather than in the CLI:
+
+    ==================  ===========  =====================================
+    status              re-attempt?  why
+    ==================  ===========  =====================================
+    (not in ledger)     yes          never seen
+    ``pending``         yes          was in flight; a crash left it here
+    ``stored``          no           unless the transcript file is missing
+    ``needs_asr``       yes          captions can appear later
+    ``failed`` perm.    no           deleted, private, blocked
+    ``failed`` trans.   yes          network or rate limit
+    ``duplicate``       no           the canonical copy is already stored
+    ``rejected``        yes          see below
+    ==================  ===========  =====================================
+
+    ``rejected`` re-attempts on purpose. A rejection is topic-relative — it
+    means "irrelevant to some brief", which says nothing about a video the
+    user has now named directly. A direct request outranks a past judgement
+    made for a different purpose.
+
+    ``transcript_present`` is passed in rather than looked up so this stays a
+    pure function of ledger state; the library owns the filesystem.
+    """
+    if row is None:
+        return None
+
+    if row.status == STATUS_STORED:
+        return "already stored" if transcript_present else None
+    if row.status == STATUS_DUPLICATE:
+        return f"duplicate of {row.duplicate_of}" if row.duplicate_of else "duplicate"
+    if row.status == STATUS_FAILED and row.fail_kind == FAIL_PERMANENT:
+        return "previously failed (permanent)"
+
+    # pending, needs_asr, failed/transient, rejected, and anything a later
+    # milestone adds: re-attempt. Doing surplus work is recoverable; silently
+    # never retrying is not.
+    return None
+
+
 class Ledger:
     """SQLite-backed ledger. One instance owns one connection."""
 
@@ -117,6 +164,7 @@ class Ledger:
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._check_schema()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -185,14 +233,23 @@ class Ledger:
         *,
         source: str,
         provider: str,
+        caption_kind: str | None = None,
         content_hash: str | None = None,
     ) -> VideoRow:
+        """Record a stored transcript.
+
+        ``caption_kind`` sits beside ``source`` because they answer the same
+        question at the same granularity — how good is this transcript, and is
+        it a candidate for replacement later? Both are also written to
+        ``meta.json``; the ledger copy is the queryable one.
+        """
         self._update(
             video_id,
             """
             UPDATE videos SET
                 status         = ?,
                 source         = ?,
+                caption_kind   = ?,
                 provider       = ?,
                 transcribed_at = ?,
                 last_updated   = ?,
@@ -200,7 +257,16 @@ class Ledger:
                 content_hash   = COALESCE(?, content_hash)
             WHERE video_id = ?
             """,
-            (STATUS_STORED, source, provider, _utcnow(), _utcnow(), content_hash, video_id),
+            (
+                STATUS_STORED,
+                source,
+                caption_kind,
+                provider,
+                _utcnow(),
+                _utcnow(),
+                content_hash,
+                video_id,
+            ),
         )
         log.info("ledger: %s -> stored", video_id)
         return self._require(video_id)
@@ -261,6 +327,24 @@ class Ledger:
         if cursor.rowcount == 0:
             raise LedgerError(
                 f"no ledger row for {video_id!r}: mark_pending() must be called first"
+            )
+
+    def _check_schema(self) -> None:
+        """Fail loudly on a ledger written by an older version.
+
+        ``CREATE TABLE IF NOT EXISTS`` silently leaves an existing table alone,
+        so a ledger predating a new column would otherwise fail later with an
+        opaque ``IndexError`` from row unpacking. There is no migration path
+        yet — M1 recreates the library instead — but the error should say so.
+        """
+        present = {r["name"] for r in self._conn.execute("PRAGMA table_info(videos)")}
+        expected = {field.name for field in fields(VideoRow)}
+        missing = sorted(expected - present)
+        if missing:
+            raise LedgerError(
+                f"{self.db_path} was written by an older version of marginalia and is "
+                f"missing column(s): {', '.join(missing)}. There is no migration yet — "
+                f"delete the library and re-ingest."
             )
 
     def _require(self, video_id: str) -> VideoRow:
