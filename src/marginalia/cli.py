@@ -3,6 +3,7 @@
     marg ingest <url>       ingest one video
     marg search "<query>"   find candidate videos and say which are new
     marg discover "<topic>" turn a topic into a library
+    marg note               write understanding notes for stored videos
     marg llm-check          one request to the configured model provider
     marg status <url|id>    show ledger state for one video
     marg list               list stored videos
@@ -12,7 +13,8 @@ Output is terse and single-line, because a skill reads it rather than a human.
 
 Transcript contents are never printed. Not on success, not on error, not under
 --verbose. That rule is the whole reason this is a CLI and not a tool the model
-calls directly.
+calls directly. Notes are held to the same rule: smaller than a transcript,
+still large enough that thirty-six of them fill a context window.
 """
 
 from __future__ import annotations
@@ -40,7 +42,8 @@ from .ledger import (
     VideoRow,
     skip_reason,
 )
-from .library import Library
+from .library import Library, format_duration
+from .note import FAILED, NOTED, SKIPPED, note_version, write_notes
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider, TranscriptResult
 from .search import KNOWN, NEW, REJECTED, Candidate, SearchRun, run_search
@@ -316,6 +319,73 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
     }
 
 
+def _cmd_note(args: argparse.Namespace) -> int:
+    """Generate notes for stored videos.
+
+    Note contents never reach stdout, for exactly the reason transcripts do
+    not. A note is ten times smaller than a transcript and thirty-six of them
+    still fill a context window, which is the cost curve this whole design
+    exists to avoid.
+    """
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+
+    if args.status:
+        return _note_status(config, library)
+
+    video_ids: list[str] = []
+    for value in args.video or []:
+        video_id = extract_video_id(value)
+        if video_id is None:
+            return _error(f"not a YouTube URL or video ID: {value!r}", EXIT_USAGE)
+        video_ids.append(video_id)
+
+    client = LlmClient(config.llm)
+    with Ledger(library.ledger_path) as ledger:
+        run = write_notes(
+            config,
+            ledger,
+            library,
+            client,
+            video_ids=video_ids,
+            limit=args.limit,
+            regenerate=args.regenerate,
+            every=args.all,
+        )
+
+    for result in run.results:
+        _report(
+            result.outcome,
+            result.video_id,
+            result.detail,
+            f"v{result.version}" if result.version and result.outcome == NOTED else None,
+        )
+    print(
+        f"run:      {run.count(NOTED)} noted, {run.count(SKIPPED)} skipped, "
+        f"{run.count(FAILED)} failed, {run.requests} requests, "
+        f"${run.cost_usd:.2f}, {_elapsed(run.elapsed_s)}"
+        + (f", stopped: {run.stopped_because}" if run.stopped_because != "done" else "")
+    )
+    return EXIT_FAILED if run.count(FAILED) else EXIT_OK
+
+
+def _note_status(config: Config, library: Library) -> int:
+    version = note_version()
+    with Ledger(library.ledger_path) as ledger:
+        counts = ledger.note_counts(version=version)
+    print(
+        f"notes:    {counts['stored']} stored, {counts['current']} current, "
+        f"{counts['stale']} stale, {counts['missing']} missing  (prompt v{version})"
+    )
+    return EXIT_OK
+
+
+def _elapsed(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
+
+
 def _cmd_llm_check(args: argparse.Namespace) -> int:
     """One request against the configured provider. The first thing to run
     after swapping providers, and it must cost exactly one request."""
@@ -574,16 +644,7 @@ def _padded(field: str | None, width: int) -> str:
 
 
 def _duration(seconds: int | None) -> str:
-    """Compact and fixed-vocabulary: ``45s``, ``18m``, ``1h02m``, or ``?``."""
-    if not seconds or seconds < 0:
-        return "?"
-    if seconds < 60:
-        return f"{seconds}s"
-    minutes, _ = divmod(seconds, 60)
-    if minutes < 60:
-        return f"{minutes}m"
-    hours, remainder = divmod(minutes, 60)
-    return f"{hours}h{remainder:02d}m"
+    return format_duration(seconds)
 
 
 def _error(message: str, code: int) -> int:
@@ -646,6 +707,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     disco.add_argument("--json", action="store_true", help="emit structured output")
     disco.set_defaults(handler=_cmd_discover)
+
+    note = subparsers.add_parser("note", help="generate understanding notes")
+    note.add_argument("video", nargs="*", help="YouTube URL or video ID (default: everything due)")
+    note.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="stop after N notes — use this first, and read them before running the batch",
+    )
+    note.add_argument(
+        "--regenerate",
+        action="store_true",
+        help="rewrite notes with the current prompt, including videos named directly",
+    )
+    note.add_argument(
+        "--all",
+        action="store_true",
+        help="with --regenerate: every stored video, not only the stale ones",
+    )
+    note.add_argument("--status", action="store_true", help="how many notes are current or stale")
+    note.set_defaults(handler=_cmd_note)
 
     check = subparsers.add_parser(
         "llm-check", help="one request to the configured model provider"

@@ -30,7 +30,7 @@ from .providers.base import TranscriptLine
 
 log = logging.getLogger(__name__)
 
-__all__ = ["Library", "format_timestamp"]
+__all__ = ["Library", "format_timestamp", "format_duration"]
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _WS_RE = re.compile(r"\s+")
@@ -43,6 +43,19 @@ def format_timestamp(milliseconds: int) -> str:
     minutes, secs = divmod(seconds, 60)
     hours, mins = divmod(minutes, 60)
     return f"{hours:02d}:{mins:02d}:{secs:02d}.{millis:03d}"
+
+
+def format_duration(seconds: int | None) -> str:
+    """Compact and fixed-vocabulary: ``45s``, ``18m``, ``1h02m``, or ``?``."""
+    if not seconds or seconds < 0:
+        return "?"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, remainder = divmod(minutes, 60)
+    return f"{hours}h{remainder:02d}m"
 
 
 class Library:
@@ -72,6 +85,9 @@ class Library:
     def meta_path(self, video_id: str) -> Path:
         return self.video_dir(video_id) / "meta.json"
 
+    def note_path(self, video_id: str) -> Path:
+        return self.video_dir(video_id) / "note.md"
+
     # -- lifecycle ---------------------------------------------------------
 
     def ensure(self) -> None:
@@ -83,6 +99,9 @@ class Library:
 
     def has_transcript(self, video_id: str) -> bool:
         return self.transcript_path(video_id).is_file()
+
+    def has_note(self, video_id: str) -> bool:
+        return self.note_path(video_id).is_file()
 
     # -- writes ------------------------------------------------------------
 
@@ -108,6 +127,28 @@ class Library:
         path = self.meta_path(video_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, json.dumps(meta, indent=2, ensure_ascii=False) + "\n")
+
+    def write_note(self, video_id: str, text: str) -> int:
+        """Write ``note.md``, replacing any previous one. Returns bytes written.
+
+        The exact opposite rule to ``write_transcript``: a note is disposable
+        and overwriting is the normal case, because a better prompt is supposed
+        to be able to rewrite the whole library. The write is atomic, so a crash
+        mid-write leaves either the old note or none — never half of one, which
+        would silently fail every required-section check that follows.
+        """
+        path = self.note_path(video_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        body = text if text.endswith("\n") else text + "\n"
+        _atomic_write(path, body)
+        return len(body.encode("utf-8"))
+
+    def read_note(self, video_id: str) -> str | None:
+        """Callers MUST also call ``Ledger.touch_accessed(video_id)``."""
+        path = self.note_path(video_id)
+        if not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8")
 
     def read_meta(self, video_id: str) -> dict[str, Any] | None:
         path = self.meta_path(video_id)

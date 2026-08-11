@@ -99,7 +99,10 @@ CREATE TABLE IF NOT EXISTS videos (
   last_accessed  TEXT,
   attempts       INTEGER NOT NULL DEFAULT 0,
   fail_kind      TEXT,            -- permanent|transient
-  provider       TEXT
+  provider       TEXT,
+  note_version   TEXT,            -- the write_note prompt version behind note.md
+  note_model     TEXT,            -- which model read the transcript
+  noted_at       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_hash   ON videos(content_hash);
@@ -155,6 +158,12 @@ CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs(topic);
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("decisions", "run_id", "TEXT"),
     ("decisions", "model", "TEXT"),
+    # M5. A library of transcripts that predates notes is exactly the library
+    # notes are for; requiring a rebuild to add three nullable columns would
+    # destroy the fragile artifact to add the regenerable one.
+    ("videos", "note_version", "TEXT"),
+    ("videos", "note_model", "TEXT"),
+    ("videos", "noted_at", "TEXT"),
 )
 
 # Tables an older marginalia created that no longer exist. Their presence is
@@ -203,10 +212,23 @@ class VideoRow:
     attempts: int
     fail_kind: str | None
     provider: str | None
+    note_version: str | None = None
+    note_model: str | None = None
+    noted_at: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> VideoRow:
         return cls(**{field.name: row[field.name] for field in fields(cls)})
+
+    def note_is_current(self, version: str) -> bool:
+        """Does this video carry a note written by the current prompt?
+
+        Both halves matter. ``noted_at`` alone says a note was written once;
+        ``note_version`` says which prompt wrote it, and that is what turns
+        "which notes are stale?" into a query rather than a list somebody
+        maintains by hand.
+        """
+        return self.noted_at is not None and self.note_version == version
 
 
 @dataclass(frozen=True)
@@ -502,6 +524,67 @@ class Ledger:
         )
         log.info("ledger: %s -> rejected", video_id)
         return self._require(video_id)
+
+    # -- notes -------------------------------------------------------------
+    #
+    # Note state lives on the video row rather than in a table of its own:
+    # there is exactly one note per video, and it is regenerable. The three
+    # columns answer one question between them — *does this video carry a note
+    # written by the prompt currently on disk?* — which is what makes
+    # regeneration a query instead of a hand-maintained list.
+
+    def mark_noted(self, video_id: str, *, version: str, model: str | None) -> VideoRow:
+        """Record that ``note.md`` was written. Call it *after* the file lands.
+
+        The opposite ordering to ``mark_pending``, and deliberately so. A crash
+        before this leaves a video the next run picks up again, which costs one
+        model call. A crash after a row claiming a note that was never written
+        leaves a video nothing will ever revisit — the invisible failure, and
+        the one worth designing against. Notes are cheap; being wrong about
+        having one is not.
+        """
+        self._update(
+            video_id,
+            """
+            UPDATE videos SET
+                note_version = ?,
+                note_model   = ?,
+                noted_at     = ?,
+                last_updated = ?
+            WHERE video_id = ?
+            """,
+            (version, model, _utcnow(), _utcnow(), video_id),
+        )
+        log.info("ledger: %s noted (%s, %s)", video_id, version, model)
+        return self._require(video_id)
+
+    def videos_needing_note(
+        self, *, version: str, stale_only: bool = True, limit: int | None = None
+    ) -> list[VideoRow]:
+        """Stored videos with no note written by the current prompt.
+
+        ``stale_only=False`` returns every stored video instead — what
+        ``--regenerate --all`` means. Ordered by ``first_seen`` so a ``--limit``
+        run is a stable prefix rather than a random sample: reading three notes,
+        revising the prompt and running again should show you the same three.
+        """
+        rows = [row for row in self.list_by_status(STATUS_STORED)]
+        if stale_only:
+            rows = [row for row in rows if not row.note_is_current(version)]
+        return rows[:limit] if limit is not None else rows
+
+    def note_counts(self, *, version: str) -> dict[str, int]:
+        """How many stored videos are current, stale, or have never been noted."""
+        counts = {"stored": 0, "current": 0, "stale": 0, "missing": 0}
+        for row in self.list_by_status(STATUS_STORED):
+            counts["stored"] += 1
+            if row.noted_at is None:
+                counts["missing"] += 1
+            elif row.note_version == version:
+                counts["current"] += 1
+            else:
+                counts["stale"] += 1
+        return counts
 
     def touch_accessed(self, video_id: str) -> None:
         """Record that this video's stored text was read.

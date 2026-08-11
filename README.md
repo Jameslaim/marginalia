@@ -61,6 +61,7 @@ every time.
 ```bash
 marg ingest https://www.youtube.com/watch?v=dQw4w9WgXcQ
 marg search "prompt caching" --limit 25
+marg note --limit 3
 marg status dQw4w9WgXcQ
 marg list
 ```
@@ -152,6 +153,74 @@ Stopping conditions, whichever fires first: `--max-rounds`, two consecutive roun
 nothing new, `--max-videos`, `--max-requests`, or search going unavailable. Which one
 fired is recorded in `runs.stopped_because` — a loop that stops for an unknown reason
 cannot be tuned.
+
+## Notes
+
+```bash
+marg note --limit 3                # start here, always
+marg note --status
+marg note dQw4w9WgXcQ
+marg note --regenerate --all
+```
+
+```
+noted     dQw4w9WgXcQ  1,123 tokens  v2
+skipped   jNQXAC9IVRw  current note is v2
+failed    xK2mPq9dRtY  transient: connection refused
+run:      1 noted, 1 skipped, 1 failed, 3 requests, $0.17, 2m51s
+```
+
+One model reads one whole transcript, once, and writes down what it understood.
+A transcript is ~4–15k tokens; its note is ~1.5k. That is the difference between
+holding two videos in context and holding fifty, and it is the whole reason the
+reading happens at ingest rather than at query time.
+
+**A note is not a summary.** Seven fixed sections, free prose inside each:
+
+| Section | What it holds |
+|---------|---------------|
+| Claims | the actual assertions, stated so they could be disagreed with |
+| Wrong or shaky | errors with timestamps, self-corrections, contradictions, hedges |
+| Assumes you know | the prerequisites never explained |
+| Leaves out | objections never addressed, questions raised and dropped |
+| Key moments | timestamps worth jumping to, and where the pacing goes wrong |
+| Who's talking, what they want | speaker, affiliation, sponsor, share of runtime that is promotional |
+| Verbatim | short high-value excerpts: commands, config, exact numbers |
+
+"Leaves out" matters most. Someone asking *when is X not worth it?* should be led to
+the video that fails to answer it, and no topic label will ever do that.
+
+The headings are fixed so fifty notes can be read together; the prose inside is free
+so the note can say something a schema could not anticipate. A section with nothing to
+report must *say so* — "no errors found" is a claim, and a useful one — so a heading
+with nothing under it is treated as a missing section and the note is rejected. A
+rejected note is never written, and the video stays retryable.
+
+The first two lines are built from `meta.json`, not asked for. The video ID is the one
+field that must not be generated: escalating from a note back to its transcript is done
+by that ID.
+
+**`--limit` is not optional.** Generating thirty-six notes with an untuned prompt costs
+real money and produces thirty-six mediocre notes. Generate three, read them, revise
+the prompt, run again.
+
+### Regeneration, and why it is the point
+
+A video needs a note when it is `stored` and either has never been noted or carries a
+note some *older* prompt wrote. That is a query, not a list somebody maintains, which
+is what `note_version` on the video row buys. Bump the version in
+`prompts/write_note.md` and every existing note is stale by definition.
+
+Regeneration reads stored transcripts and calls the model. It never touches YouTube —
+and that is verified by running it with YouTube unreachable, not by assuming it.
+Acquisition is the fragile step; everything downstream of it being regenerable is what
+makes that survivable.
+
+Transcripts too long for the model's context are logged and skipped, never split.
+A note assembled from chunks would look like a note and would not be one: the value is
+in the reading that spans four minutes and notices the contradiction.
+
+Note contents never reach stdout, for the same reason transcripts do not.
 
 ## Swapping the model provider
 
@@ -280,6 +349,7 @@ it prevents.
 └── videos/
     └── <video_id>/
         ├── transcript.txt     immutable, one line per caption
+        ├── note.md            the understanding — rewritten freely
         └── meta.json
 ```
 
@@ -290,11 +360,16 @@ it prevents.
 
 ## Ledger
 
-SQLite, three tables: `videos`, `decisions`, `quota`.
+SQLite, four tables: `videos`, `decisions`, `quota`, `runs`.
 
 `videos` holds every video ID ever seen and its status: `pending`, `needs_asr`,
 `stored`, `rejected`, `failed`, `duplicate`. Rows are never deleted, even when data is —
-otherwise the agent re-downloads tomorrow what it discarded today.
+otherwise the agent re-downloads tomorrow what it discarded today. It also carries
+`note_version` / `note_model` / `noted_at`, which is what makes "which notes are stale?"
+a query. Those three arrived after the table shipped and are added in place: a library
+of transcripts predating notes is exactly the library notes are for, and rebuilding it
+to add three nullable columns would destroy the fragile artifact to add the regenerable
+one.
 
 `decisions` logs every verdict with the stage that produced it — not only the negative
 ones, because a rejection log alone cannot answer "why did the judge keep this?" months
@@ -329,6 +404,8 @@ pytest
 | `test_judge_parsing.py` | every way a model reply can be malformed |
 | `test_discover.py` | loop control flow, stopping conditions, dry-run inertness |
 | `test_cli_discover.py` | the discover report and `llm-check` |
+| `test_note.py` | section validation, staleness, retryability, the no-YouTube promise |
+| `test_cli_note.py` | the note report, and that no note content reaches stdout |
 
 `test_parsers.py` and `test_search_providers.py` use static fixtures because those
 parsers otherwise run for the first time on the day YouTube changes format.

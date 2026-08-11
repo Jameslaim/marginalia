@@ -39,6 +39,24 @@ a `PreToolUse` hook blocks it.
 them. The brief line matters most: it is what the run decided the topic *meant*, and
 it is the first thing to check when the results look wrong.
 
+## After a successful ingest
+
+Storing a transcript does not make it useful — the note does. Ingest deliberately
+returns without waiting on notes, so say how many are outstanding and offer to write
+them:
+
+```
+marg note --status
+marg note --limit 3
+```
+
+Suggest `--limit` first, always. It is a real model call per video against a whole
+transcript, and it costs money.
+
+Report the lines it returns. **Never read, open, or print a `note.md`.** A note is a
+tenth the size of a transcript and thirty-six of them still fill a context window;
+answering questions from notes is a separate command, not something to do by hand.
+
 ## Flags worth offering
 
 - `--dry-run` judges without fetching or storing anything. Offer this when the user

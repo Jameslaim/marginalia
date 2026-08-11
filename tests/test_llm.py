@@ -385,6 +385,7 @@ def test_every_shipped_prompt_loads_with_a_version() -> None:
         "expand_queries",
         "judge_metadata",
         "judge_opening",
+        "write_note",
     ):
         prompt = load_prompt(name)
         assert prompt.version, f"{name} has no version"

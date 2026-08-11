@@ -104,6 +104,11 @@ extra = { reasoning_effort = "high" }
 [llm.tasks.review_brief]
 extra = { reasoning_effort = "high" }
 
+# Once per video, reading a whole transcript, producing the artifact every
+# later question is answered from. The highest-consequence call in the system.
+[llm.tasks.write_note]
+extra = { reasoning_effort = "high" }
+
 [discover]
 # Stopping conditions. Whichever fires first wins, and which one fired is
 # recorded in runs.stopped_because.
@@ -127,3 +132,19 @@ fetch_delay_s = 3.0
 # slow or heavily queued provider.
 queries_per_round = 6
 results_per_query = 10
+
+[note]
+# The note pass reads whole transcripts, so its ceiling is a different number
+# from discovery's even though it is the same guard. 0 disables it.
+max_cost_usd = 5.0
+
+# A transcript longer than this is logged and skipped, never split. Chunking
+# would produce something that looks like a note and is not: the value of a
+# note is the reading that spans four minutes and notices the contradiction.
+# Characters rather than tokens, because counting tokens needs a tokenizer and
+# a tokenizer is a provider-shaped dependency. ~4 chars per token.
+max_transcript_chars = 400000
+
+# Room for a full note plus, on a provider whose thinking is always on, the
+# reasoning that bills against the same ceiling.
+max_tokens = 8192

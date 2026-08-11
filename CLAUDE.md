@@ -10,6 +10,10 @@ not drift.
    Not in output, not in error messages, not under `--verbose`. Scripts write to
    disk and return a one-line report. This is what keeps cost flat as the library
    grows, and it is the entire reason marginalia is a CLI.
+   **Notes are held to the same rule.** A note is roughly a tenth of a transcript
+   and thirty-six of them still fill a context window, so a skill that printed one
+   back would rebuild the exact cost curve this avoids. Reading notes is M6's job,
+   deliberately, and it happens once per question rather than once per command.
 
 2. **Never write into the library directory directly — always go through the CLI.**
    No `Write`, no `Edit`, no shell redirection into the library path. The ledger and
@@ -18,7 +22,10 @@ not drift.
 
 3. **Never modify a stored `transcript.txt`.** It is written once and is immutable.
    Acquisition is the fragile, blockable step; everything else in the system is
-   regenerable from the transcript.
+   regenerable from the transcript. `note.md` is the opposite and deliberately so:
+   overwritten freely, rewritten whole by a better prompt, and never a reason to
+   fetch anything. `marg note --regenerate --all` must complete with YouTube
+   unreachable, and that is checked by running it that way, not by assuming it.
 
 4. **All sources go behind a provider interface** — `TranscriptProvider` for
    transcripts, `SearchProvider` for search. Never import `yt_dlp`, or any other
@@ -72,6 +79,8 @@ not drift.
 - `llm.py` makes calls and knows nothing about verdicts. `judge.py` turns replies into
   verdicts and knows nothing about the loop. `discover.py` runs the loop and parses
   nothing. Keep that split; it is why the parsers are testable without a model.
+  `note.py` holds the same split internally: pure section parsing at the top, the
+  drain loop at the bottom, and nothing in between that needs a model to test.
 - `print` appears only in `cli.py`. Everything else uses `logging`.
 - Reading a transcript must be followed by `Ledger.touch_accessed(video_id)`. The
   deletion policy that arrives later depends on it, and it cannot be reconstructed
@@ -79,13 +88,21 @@ not drift.
 
 ## Scope
 
-Milestone 2b is ingest-one-URL, search and the two free gates, plus **relevance
-judging and the discovery loop**. A topic goes in, a library comes out.
+Milestone 5 adds **understanding notes**: `note.py`, `prompts/write_note.md`, the
+`marg note` command, and `note_version`/`note_model`/`noted_at` on `videos`. A stored
+transcript goes in, a note comes out, and the note is what every later question is
+answered from.
 
-Do not add ASR or Whisper, understanding notes, `note.py`, `/ask`, `ask.py`,
-embeddings, or content fingerprinting (Gate 3) — each belongs to a later milestone in
-`PLAN.md`. Do not build a gold evaluation set or tune the judge; both wait until real
-failures are observed, which is what the `decisions` log exists to make possible.
+Do not add `/ask` or `ask.py`, ASR or Whisper, embeddings, retrieval or ranking over
+notes, or content fingerprinting (Gate 3) — each belongs to another milestone in
+`PLAN.md`. Under ~100 videos the answer to "which notes are relevant?" is *all of
+them*, and there are 36. Do not build a gold evaluation set or tune the judge; both
+wait until real failures are observed, which is what the `decisions` log exists to
+make possible.
+
+**A note is not a summary.** A summary says what a video is about; a note says what it
+claims, what it gets wrong, what it assumes, and — most valuable — what it leaves out.
+If a section of a note could be replaced by a topic label, the prompt has drifted.
 
 Do not add model switching. One model everywhere; what varies per task is thinking
 effort, and that is config. A second model is a second variable while behaviour is
@@ -102,6 +119,7 @@ rate-limit handling is how you get silent failures.
 marg ingest <url>                  ingest one video
 marg search "<q>" [--limit N]      find candidates; --topic T, --json
 marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requests
+marg note [<video_id>...]          write notes; --limit N, --regenerate [--all], --status
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list                          list stored videos

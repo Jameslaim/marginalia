@@ -121,9 +121,15 @@ C:\youtube-agent\marginalia-library\
   videos/
     <video_id>/
       transcript.txt         full, timestamped, verbatim, never modified
-      note.md                the understanding
+      note.md                the understanding — overwritten freely
       meta.json              see fields below
 ```
+
+The two files are governed by opposite rules, and that is the design rather than an
+inconsistency. `transcript.txt` refuses to be overwritten because re-acquiring it may
+be impossible. `note.md` is rewritten whole whenever the prompt improves, from the
+transcript, with no network call to YouTube — verified by running the regeneration
+with YouTube unreachable, not by assuming it.
 
 `meta.json` holds exactly: `video_id`, `title`, `channel`, `duration_s`, `language`,
 `upload_date`, `source`, `caption_kind`, `provider`, `fetched_at`, `chapters`,
@@ -203,7 +209,10 @@ videos(
   last_accessed  TEXT,            -- required for future deletion policy
   attempts       INTEGER NOT NULL DEFAULT 0,
   fail_kind      TEXT,            -- permanent | transient
-  provider       TEXT
+  provider       TEXT,
+  note_version   TEXT,            -- the write_note prompt version behind note.md
+  note_model     TEXT,
+  noted_at       TEXT
 )
 
 decisions(
@@ -603,7 +612,7 @@ a quota that never runs out — right up until the overflow breaks too.
 | **M2** | Discovery | Brief, query expansion, cheap-model sorting, the loop-back |
 | **M3** | Extraction hardening | Provider fallbacks, artifact cleaning, chapter capture |
 | **M4** | ASR fallback | Videos without captions stop failing |
-| **M5** | Understanding | Background note worker, note schema, regeneration tooling |
+| **M5** | Understanding | Note worker, note schema, regeneration tooling — **built** |
 | **M6** | Query + eval | Ask with escalation, gold test set, cost tracking |
 
 M1 and M2 alone produce something genuinely useful.
@@ -655,12 +664,14 @@ expensive. The brain belongs in the built agent, not in the conversation driving
 
 ## 12. Definition of done
 
-- Ingesting a topic finds and stores relevant videos without supervision
-- Running it twice re-processes nothing
-- A video with no captions transcribes automatically
-- Ask answers with a clickable timestamp
-- "What does this video get wrong?" returns a real answer, not a summary
-- All notes regenerate from stored transcripts with zero network calls
+- ✅ Ingesting a topic finds and stores relevant videos without supervision
+- ✅ Running it twice re-processes nothing
+- A video with no captions transcribes automatically — M4
+- Ask answers with a clickable timestamp — M6
+- ✅ "What does this video get wrong?" returns a real answer, not a summary. The note
+  is where that answer lives; M6 only has to read it.
+- ✅ All notes regenerate from stored transcripts with zero network calls, checked by
+  running the regeneration with YouTube unreachable
 
 ---
 
@@ -768,6 +779,28 @@ deciding which are *known* is free, deterministic, and testable without a model,
 deciding which are *good* is none of those things. They will change for different
 reasons.
 
+### Milestone 5 adds
+
+`note.py`, `prompts/write_note.md`, the `marg note` command, a `[note]` config block,
+and `note_version` / `note_model` / `noted_at` on `videos`.
+
+Those three columns are added **in place** rather than by rebuilding. The no-migration
+rule held for `rejections` → `decisions`, where a table changed meaning; it does not
+hold here, where three nullable columns read NULL on existing rows and that is the
+honest answer to "which prompt wrote this note?" for a video noted before notes
+existed. A library of transcripts predating notes is exactly the library notes are
+for; destroying it to add a column would trade the irreplaceable artifact for the
+regenerable one.
+
+`note.py` mirrors the `judge.py` / `discover.py` split internally — pure section
+parsing at the top, the drain loop at the bottom — for the same reason: the prompt
+will change many times and the loop will not.
+
+The worker deliberately cannot reach a provider. It reads transcripts through
+`library.py` and calls the model through `llm.py`, and nothing else. That is what
+makes "notes regenerate with zero YouTube calls" a property of the code rather than
+a habit of the caller.
+
 ### Milestone 2b adds
 
 `llm.py`, `judge.py`, `discover.py`, `prompts/`, the `marg discover` and
@@ -874,4 +907,10 @@ ends. Visibility aid, not a substitute for a real daemon.
 - **Transcripts arrive dirty.** Scraper UI text leaks into output. Artifact stripping
   must be a tested component, not an afterthought.
 - **Store the note prompt version** alongside each note, so stale ones are identifiable
-  when the prompt improves.
+  when the prompt improves. Built in M5 as `videos.note_version`, which makes "what is
+  stale?" a query rather than a list.
+- **Automatic captions mangle exactly the terms a note cares about.** A garbled
+  threshold at the moment the speaker states the most important number is worth
+  recording — but as the transcriber's error, not the speaker's. `caption_kind` is
+  passed to the note prompt so the two can be told apart; without it a note puts
+  mistakes in people's mouths that they did not make.

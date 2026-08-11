@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from marginalia.config import Config, DiscoverConfig, LlmConfig
+from marginalia.config import Config, DiscoverConfig, LlmConfig, NoteConfig
 
-__all__ = ["make_config", "make_llm_config", "make_discover_config"]
+__all__ = ["make_config", "make_llm_config", "make_discover_config", "make_note_config"]
 
 
 def make_llm_config(**overrides: object) -> LlmConfig:
@@ -51,6 +51,16 @@ def make_discover_config(**overrides: object) -> DiscoverConfig:
     return DiscoverConfig(**values)  # type: ignore[arg-type]
 
 
+def make_note_config(**overrides: object) -> NoteConfig:
+    values: dict[str, object] = {
+        "max_cost_usd": 5.0,
+        "max_transcript_chars": 400_000,
+        "max_tokens": 8192,
+    }
+    values.update(overrides)
+    return NoteConfig(**values)  # type: ignore[arg-type]
+
+
 def make_config(tmp_path: Path, **overrides: object) -> Config:
     values: dict[str, object] = {
         "library_path": tmp_path / "library",
@@ -60,6 +70,7 @@ def make_config(tmp_path: Path, **overrides: object) -> Config:
         "youtube_daily_units": 10_000,
         "llm": make_llm_config(),
         "discover": make_discover_config(),
+        "note": make_note_config(),
         "path": tmp_path / "config.toml",
         "created": False,
     }

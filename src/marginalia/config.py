@@ -25,6 +25,7 @@ __all__ = [
     "ConfigError",
     "DiscoverConfig",
     "LlmConfig",
+    "NoteConfig",
     "load_config",
     "example_text",
 ]
@@ -61,6 +62,17 @@ DEFAULT_QUERIES_PER_ROUND = 9
 DEFAULT_RESULTS_PER_QUERY = 10
 DEFAULT_MAX_COST_USD = 2.0
 DEFAULT_FETCH_DELAY_S = 3.0
+
+# A note pass reads whole transcripts, so its ceiling is a different number
+# from discovery's even though it is the same kind of guard.
+DEFAULT_NOTE_MAX_COST_USD = 5.0
+# Characters, not tokens: counting tokens needs a tokenizer, and a tokenizer is
+# a provider-shaped dependency. ~4 chars per token puts this near 100k tokens,
+# comfortably inside any current context and a config change when it is not.
+DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS = 400_000
+# Higher than the global default: the reply is a full note, and on a provider
+# whose thinking is always on the reasoning bills against the same ceiling.
+DEFAULT_NOTE_MAX_TOKENS = 8192
 
 # Placeholders only. Real rates belong in config.toml — these exist so a run
 # without pricing configured still produces an estimate rather than zero,
@@ -152,6 +164,18 @@ class DiscoverConfig:
 
 
 @dataclass(frozen=True)
+class NoteConfig:
+    """The note worker's ceilings. Same shapes as discovery's, different numbers."""
+
+    max_cost_usd: float
+    # A transcript longer than this is skipped and logged, never split. The
+    # entire premise of a note is one model reading the whole thing at once —
+    # chunking would produce something that looks like a note and is not.
+    max_transcript_chars: int
+    max_tokens: int
+
+
+@dataclass(frozen=True)
 class Config:
     library_path: Path
     transcript_order: tuple[str, ...]
@@ -160,6 +184,7 @@ class Config:
     youtube_daily_units: int
     llm: LlmConfig
     discover: DiscoverConfig
+    note: NoteConfig
     path: Path
     created: bool
 
@@ -204,6 +229,7 @@ def load_config() -> Config:
         youtube_daily_units=_daily_units(providers, chosen),
         llm=_llm(data, chosen),
         discover=_discover(data, chosen),
+        note=_note(data, chosen),
         path=chosen,
         created=created,
     )
@@ -347,6 +373,23 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         fetch_delay_s=float(
             _number(section, "fetch_delay_s", DEFAULT_FETCH_DELAY_S, config_path, "discover")
         ),
+    )
+
+
+def _note(data: dict, config_path: Path) -> NoteConfig:
+    section = data.get("note") or {}
+    return NoteConfig(
+        max_cost_usd=float(
+            _number(section, "max_cost_usd", DEFAULT_NOTE_MAX_COST_USD, config_path, "note")
+        ),
+        max_transcript_chars=_positive(
+            section,
+            "max_transcript_chars",
+            DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS,
+            config_path,
+            "note",
+        ),
+        max_tokens=_positive(section, "max_tokens", DEFAULT_NOTE_MAX_TOKENS, config_path, "note"),
     )
 
 
