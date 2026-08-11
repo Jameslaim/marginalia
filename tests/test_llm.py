@@ -508,3 +508,43 @@ def test_a_task_block_overrides_the_global_key_by_key() -> None:
     instance.complete("s", "u", task="t")
 
     assert calls[0]["extra"] == {"temperature": 1, "top_p": 1, "reasoning_effort": "high"}
+
+
+# -- behavioural rules that live in prose ----------------------------------
+#
+# These are judge-bias rules, not formatting. They were each added because a
+# real run went wrong in a way only reading the decision log revealed, and
+# prose erodes silently under editing in a way code does not.
+
+
+def test_the_metadata_judge_is_told_duration_is_not_depth() -> None:
+    """Observed: the judge rejected candidates with reasons like "45-second
+    short, no demonstration or real numbers possible". Sound reasoning over an
+    unwarranted premise — the brief asked for implementation detail, never for
+    a minimum runtime. Short may mean MAYBE; it must never mean NO on its own."""
+    # Whitespace collapsed: the rule is prose and prose wraps, so a line break
+    # must not be able to break the assertion that guards it.
+    body = " ".join(load_prompt("judge_metadata").text.lower().split())
+
+    assert "duration is not depth" in body
+    assert "never, on its own, produce no" in body
+    # The rule is worthless without the routing that makes it cheap.
+    assert "maybe" in body
+
+
+def test_both_judges_state_the_inclusion_bias() -> None:
+    """The asymmetry is the reason the whole three-way verdict exists. If it
+    ever falls out of a prompt, the judge silently starts making the
+    invisible, permanent mistake instead of the cheap, visible one."""
+    for name in ("judge_metadata", "judge_opening"):
+        body = load_prompt(name).text.lower()
+        assert "invisible" in body, f"{name} lost the asymmetry argument"
+        assert "permanent" in body, f"{name} lost the asymmetry argument"
+
+
+def test_the_metadata_judge_rejects_other_depth_proxies_too() -> None:
+    """Duration was the one observed. View count and channel size are the same
+    inference and would be just as invisible."""
+    body = load_prompt("judge_metadata").text.lower()
+    assert "view count" in body
+    assert "channel size" in body

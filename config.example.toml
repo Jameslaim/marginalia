@@ -39,10 +39,25 @@ model = "kimi-k3"
 # max_tokens = 4096
 
 # Merged into every request body. Where a provider-wide setting lives when one
-# is needed. Nothing in the code reads inside it — `temperature` was hardcoded
-# once and broke the first provider swap, because some models accept only their
-# own default.
-# extra = { temperature = 0 }
+# is needed. Nothing in the code reads inside it.
+#
+# It is empty on purpose, and the temptation to fill it with `temperature = 0`
+# is exactly what broke the first provider swap. On kimi-k3, per Moonshot's
+# documentation:
+#
+#   * temperature is FIXED at 1.0. It is not configurable, and a request must
+#     omit it entirely — sending even the default value returns HTTP 400.
+#   * thinking mode is ALWAYS ON. reasoning_effort controls how much reasoning
+#     happens, never whether it happens. There is no "off".
+#
+# Together those mean K3 output is non-deterministic by design. The same
+# candidate judged twice can get different verdicts, and no temperature or seed
+# setting will change that. The decisions table records what the judge
+# concluded on that occasion, not what it always concludes — worth remembering
+# before reading a single verdict as the model's settled opinion.
+#
+# A different provider may well want something here. That is what it is for.
+# extra = { }
 
 [llm.limits]
 # The provider's ceiling. The limiter blocks to stay under it rather than

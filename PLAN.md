@@ -533,6 +533,28 @@ The lesson worth keeping: **an abstraction is only proven by a swap that was not
 rehearsed.** Nothing in the test suite would have caught this, because a mock
 transport accepts whatever it is handed.
 
+### What kimi-k3 fixes, and what that costs
+
+Two documented facts about the current model, both of which cost real time to
+discover:
+
+**`temperature` is fixed at 1.0.** Not configurable. A request must omit it
+entirely — sending even the default value returns HTTP 400. This is exactly
+what broke the swap, and it is why `[llm] extra` ships empty rather than
+carrying `temperature = 0`.
+
+**Thinking mode is always on.** `reasoning_effort` controls how *much*
+reasoning happens, never whether it happens. There is no "off", which is the
+other reason low is the floor rather than a saving to be optimised away.
+
+Together they mean **K3 output is non-deterministic by design**. The same
+candidate judged twice can get different verdicts, and no temperature or seed
+setting will change that. That has a consequence for how the decision log
+should be read: a row records what the judge concluded *on that occasion*, not
+what it always concludes. A single surprising verdict is not yet evidence of a
+biased judge — a pattern across many is. This is also why the M3 deferral of
+judge tuning is right: tuning against noise produces confident nonsense.
+
 ### Per-task request extras
 
 `[llm.tasks.<name>] extra = { ... }` is merged into the request body for that

@@ -1,6 +1,6 @@
 ---
 name: judge_metadata
-version: "1"
+version: "2"
 stage: metadata
 ---
 
@@ -35,6 +35,25 @@ Weigh your two possible mistakes. They are not equal:
 So when you are genuinely uncertain, do not resolve it as NO. Use MAYBE.
 Reserve NO for candidates that are clearly off-brief — a different subject, a
 promotional clip, or something the brief's EXCLUDED section names.
+
+DURATION IS NOT DEPTH.
+
+A short runtime may move a candidate toward MAYBE. It must never, on its own,
+produce NO. Do not reason that a video is too short to contain something — you
+are guessing at content you have not seen, from a number that says nothing
+about density. A forty-five-second clip that claims to show a configuration
+change may show exactly that configuration change, and a three-minute
+explanation may be denser than a fifty-minute conference talk.
+
+Judge NO on what a candidate is *about*, never on how long it runs. If the
+subject looks right and the only doubt is whether there is room for detail,
+that is precisely a MAYBE — the opening gets read and answers it for the cost
+of one check. Rejecting on length is the invisible error: nobody ever finds out
+what the short video would have shown.
+
+The same applies to any other proxy you might be tempted to infer depth from —
+view count, channel size, or how the title is styled. None of them is evidence
+about content.
 
 Output format. One line per candidate, nothing else in the reply:
 
