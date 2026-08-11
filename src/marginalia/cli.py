@@ -1,8 +1,10 @@
 """The marginalia command line.
 
     marg ingest <url>       ingest one video
+    marg search "<query>"   find candidate videos and say which are new
     marg status <url|id>    show ledger state for one video
     marg list               list stored videos
+    marg guard-write        internal: the PreToolUse hook
 
 Output is terse and single-line, because a skill reads it rather than a human.
 
@@ -14,9 +16,12 @@ calls directly.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
@@ -33,15 +38,21 @@ from .ledger import (
 from .library import Library
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider, TranscriptResult
+from .search import KNOWN, NEW, REJECTED, Candidate, SearchRun, run_search
 
 log = logging.getLogger("marginalia")
 
 EXIT_OK = 0
 EXIT_FAILED = 1
 EXIT_USAGE = 2
+# The PreToolUse contract: exit 2 blocks the tool call and shows stderr to the
+# agent. Anything else lets it through.
+EXIT_BLOCKED = 2
 
 _VERB_WIDTH = 9
 _TITLE_LIMIT = 80
+# Narrower than _TITLE_LIMIT so duration and channel line up in a search list.
+_SEARCH_TITLE_WIDTH = 46
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -58,6 +69,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         return int(args.handler(args))
     except ConfigError as exc:
+        return _error(str(exc), EXIT_USAGE)
+    except PermanentError as exc:
+        # A bad query, a rejected key, an unknown provider name. Deliberately
+        # not softened into a fallback: all three are the user's to fix.
         return _error(str(exc), EXIT_USAGE)
     except KeyboardInterrupt:  # pragma: no cover
         return _error("interrupted", EXIT_FAILED)
@@ -125,6 +140,80 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         return EXIT_OK
 
 
+def _cmd_search(args: argparse.Namespace) -> int:
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+
+    with Ledger(library.ledger_path) as ledger:
+        run = run_search(config, ledger, args.query, limit=args.limit, topic=args.topic)
+
+    if args.json:
+        print(json.dumps(_as_json(run), indent=2, ensure_ascii=False))
+        return EXIT_OK
+
+    for candidate in run.candidates:
+        if candidate.verdict == NEW:
+            _report(
+                NEW,
+                candidate.video_id,
+                _padded(
+                    _quoted(candidate.result.title, _SEARCH_TITLE_WIDTH - 2),
+                    _SEARCH_TITLE_WIDTH,
+                ),
+                _duration(candidate.result.duration_s),
+                candidate.result.channel or None,
+            )
+        else:
+            _report(candidate.verdict, candidate.video_id, candidate.reason)
+
+    print(_summary(run))
+    return EXIT_OK
+
+
+def _summary(run: SearchRun) -> str:
+    counts = run.counts
+    line = (
+        f"{counts['found']} found, {counts[KNOWN]} known, "
+        f"{counts[REJECTED]} previously rejected, {counts[NEW]} new"
+    )
+    line += f" — {run.provider}" if run.provider else " — no provider"
+    if run.fallbacks:
+        # Never silent: a fallback that nobody sees looks like a quota that
+        # never runs out, right up until the day the overflow breaks too.
+        fell = ", ".join(f"{name}: {why}" for name, why in run.fallbacks)
+        line += f" (fell back from {fell})"
+    return line
+
+
+def _as_json(run: SearchRun) -> dict[str, Any]:
+    """The same data, structured. M2b consumes this instead of parsing lines."""
+    return {
+        "query": run.query,
+        "topic": run.topic,
+        "provider": run.provider,
+        "fallbacks": [{"provider": name, "reason": why} for name, why in run.fallbacks],
+        "counts": run.counts,
+        "candidates": [_candidate_json(candidate) for candidate in run.candidates],
+    }
+
+
+def _candidate_json(candidate: Candidate) -> dict[str, Any]:
+    result = candidate.result
+    return {
+        "video_id": result.video_id,
+        "verdict": candidate.verdict,
+        "reason": candidate.reason,
+        "title": result.title,
+        "channel": result.channel,
+        "description": result.description,
+        "duration_s": result.duration_s,
+        "published_at": result.published_at,
+        "view_count": result.view_count,
+        "provider": result.provider,
+    }
+
+
 def _cmd_status(args: argparse.Namespace) -> int:
     video_id = extract_video_id(args.video)
     if video_id is None:
@@ -162,6 +251,72 @@ def _cmd_list(args: argparse.Namespace) -> int:
     if not rows:
         log.info("no videos with status %s", args.status)
     return EXIT_OK
+
+
+def _cmd_guard_write(args: argparse.Namespace) -> int:
+    """PreToolUse hook: refuse Write/Edit aimed inside the library.
+
+    ``CLAUDE.md`` rule 2 — never write into the library directly, always go
+    through the CLI — is the rule most likely to be broken *helpfully*, by an
+    agent that decides editing a ``meta.json`` by hand is simpler than adding a
+    flag. Instruction-following is not enforcement; this is.
+
+    Fails **open**. A guard that cannot read its own input must not block every
+    edit in the repository: that failure is loud, constant, and unrelated to
+    the library. The narrow rule it enforces is worth less than the session.
+    """
+    raw = args.stdin.read() if args.stdin is not None else sys.stdin.read()
+    try:
+        event = json.loads(raw or "{}")
+        target = _hook_target(event)
+        if target is None:
+            return EXIT_OK
+        root = load_config().library_path
+    except Exception as exc:  # noqa: BLE001 - see the fail-open note above
+        print(f"marg guard-write: could not evaluate the hook input: {exc}", file=sys.stderr)
+        return EXIT_OK
+
+    if not _inside(target, root):
+        return EXIT_OK
+
+    print(
+        f"marginalia: blocked a direct write to {target}.\n"
+        f"The library at {root} is CLI-owned: the ledger and the files on disk must "
+        f"stay in agreement, and transcript.txt is immutable. Use `marg` — add a "
+        f"command or a flag if none fits.",
+        file=sys.stderr,
+    )
+    return EXIT_BLOCKED
+
+
+def _hook_target(event: dict[str, Any]) -> Path | None:
+    """The path a Write/Edit-shaped tool call is aimed at, if any."""
+    tool_input = event.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return None
+    for key in ("file_path", "notebook_path", "path"):
+        value = tool_input.get(key)
+        if isinstance(value, str) and value:
+            path = Path(value)
+            if not path.is_absolute():
+                path = Path(str(event.get("cwd") or ".")) / path
+            # Not resolve(): the target usually does not exist yet, and on
+            # Windows resolve() of a missing path still normalises fine, but
+            # normpath keeps this honest about symlinks it cannot follow.
+            return Path(os.path.normpath(path))
+    return None
+
+
+def _inside(target: Path, root: Path) -> bool:
+    """Both sides through normcase: on Windows ``C:\\Lib`` and ``c:/lib`` are
+    the same directory, and a guard that misses that is no guard."""
+    inner = _comparable(target)
+    outer = _comparable(root)
+    return inner == outer or inner.startswith(outer.rstrip(os.sep) + os.sep)
+
+
+def _comparable(path: Path) -> str:
+    return os.path.normcase(os.path.normpath(str(path)))
 
 
 # -- ingest helpers --------------------------------------------------------
@@ -273,13 +428,31 @@ def _report(verb: str, video_id: str, *fields: str | None) -> None:
     print("  ".join(parts))
 
 
-def _quoted(title: str | None) -> str | None:
+def _quoted(title: str | None, limit: int = _TITLE_LIMIT) -> str | None:
     if not title:
         return None
     flat = " ".join(str(title).split()).replace('"', "'")
-    if len(flat) > _TITLE_LIMIT:
-        flat = flat[: _TITLE_LIMIT - 1].rstrip() + "…"
+    if len(flat) > limit:
+        flat = flat[: limit - 1].rstrip() + "…"
     return f'"{flat}"'
+
+
+def _padded(field: str | None, width: int) -> str:
+    """Left-align in a fixed column so the fields after it line up."""
+    return (field or '""').ljust(width)
+
+
+def _duration(seconds: int | None) -> str:
+    """Compact and fixed-vocabulary: ``45s``, ``18m``, ``1h02m``, or ``?``."""
+    if not seconds or seconds < 0:
+        return "?"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, _ = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours, remainder = divmod(minutes, 60)
+    return f"{hours}h{remainder:02d}m"
 
 
 def _error(message: str, code: int) -> int:
@@ -319,6 +492,17 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("url", help="YouTube URL or video ID")
     ingest.set_defaults(handler=_cmd_ingest)
 
+    search = subparsers.add_parser("search", help="find candidate videos")
+    search.add_argument("query", help="search query")
+    search.add_argument("--limit", type=int, default=25, help="candidates to request (default 25)")
+    search.add_argument(
+        "--topic",
+        default=None,
+        help="topic these candidates are judged against (default: the query)",
+    )
+    search.add_argument("--json", action="store_true", help="emit structured output")
+    search.set_defaults(handler=_cmd_search)
+
     status = subparsers.add_parser("status", help="show ledger state for one video")
     status.add_argument("video", help="YouTube URL or video ID")
     status.set_defaults(handler=_cmd_status)
@@ -328,6 +512,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--status", default=STATUS_STORED, help="ledger status to list (default: stored)"
     )
     listing.set_defaults(handler=_cmd_list)
+
+    guard = subparsers.add_parser(
+        "guard-write",
+        help="internal: PreToolUse hook, blocks direct writes into the library",
+    )
+    guard.set_defaults(handler=_cmd_guard_write, stdin=None)
 
     return parser
 

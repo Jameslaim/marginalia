@@ -1,0 +1,38 @@
+{
+  "_type": "playlist",
+  "id": "prompt caching",
+  "title": "prompt caching",
+  "extractor": "youtube:search",
+  "entries": [
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "dQw4w9WgXcQ",
+      "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      "title": "Prompt caching   explained",
+      "description": null,
+      "duration": 1112.0,
+      "channel": "Some Channel",
+      "uploader": "Some Channel",
+      "view_count": 148213,
+      "timestamp": 1773478807
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "id": "jNQXAC9IVRw",
+      "url": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+      "title": "Agent cost control",
+      "duration": null,
+      "uploader": "Another Channel",
+      "view_count": null,
+      "upload_date": "20260502"
+    },
+    {
+      "_type": "url",
+      "ie_key": "Youtube",
+      "url": "https://www.youtube.com/watch?v=missing",
+      "title": "An entry with no id at all"
+    }
+  ]
+}

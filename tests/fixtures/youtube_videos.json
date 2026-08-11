@@ -1,0 +1,27 @@
+{
+  "kind": "youtube#videoListResponse",
+  "etag": "recorded-fixture",
+  "pageInfo": { "totalResults": 2, "resultsPerPage": 2 },
+  "items": [
+    {
+      "kind": "youtube#video",
+      "id": "dQw4w9WgXcQ",
+      "contentDetails": {
+        "duration": "PT18M32S",
+        "definition": "hd",
+        "caption": "true"
+      },
+      "statistics": { "viewCount": "148213", "likeCount": "6021" }
+    },
+    {
+      "kind": "youtube#video",
+      "id": "jNQXAC9IVRw",
+      "contentDetails": {
+        "duration": "PT1H42M9S",
+        "definition": "hd",
+        "caption": "false"
+      },
+      "statistics": { "viewCount": "3907" }
+    }
+  ]
+}

@@ -206,13 +206,39 @@ videos(
   provider       TEXT
 )
 
-rejections(
-  video_id     TEXT NOT NULL,
-  topic        TEXT NOT NULL,
-  reason       TEXT,
-  rejected_at  TEXT NOT NULL
+decisions(
+  video_id   TEXT NOT NULL,
+  topic      TEXT NOT NULL,
+  stage      TEXT NOT NULL,   -- search | metadata | opening | note
+  verdict    TEXT NOT NULL,   -- yes | no | maybe
+  reason     TEXT,
+  decided_at TEXT NOT NULL
+)
+CREATE INDEX idx_decisions_topic ON decisions(topic, verdict);
+CREATE INDEX idx_decisions_video ON decisions(video_id);
+
+quota(
+  provider   TEXT NOT NULL,
+  date       TEXT NOT NULL,   -- UTC calendar date, YYYY-MM-DD
+  units_used INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (provider, date)
 )
 ```
+
+`decisions` replaced an earlier `rejections` table in M2a. Logging only the
+negative verdicts was too narrow in two ways: it cannot answer "why did the
+judge *keep* this?", and it does not record which stage decided — the two
+questions worth asking when the judge starts misbehaving. There is no migration;
+the schema-drift guard in `ledger.py` refuses a ledger carrying the old table
+and says to delete the library and re-ingest.
+
+`decisions` is deliberately **not** foreign-keyed to `videos`. A search
+candidate has not been touched yet, and inserting a `videos` row for all 25
+hits of every query would claim work was in flight that never started.
+
+`quota` is keyed by UTC date, so the daily reset is the key changing rather than
+a job anyone has to remember to run. Yesterday's rows are kept: they cost
+nothing and record what a day actually spent.
 
 **Timestamps are `TEXT`, not `TIMESTAMP`.** SQLite gives `TIMESTAMP` NUMERIC affinity —
 it contains none of `INT`/`CHAR`/`TEXT`/`BLOB`/`REAL`/`FLOA`/`DOUB`. ISO-8601 strings are
@@ -224,11 +250,33 @@ A global rejection list permanently blinds the agent. A video rejected while sea
 "prompt caching" because it is mostly about agent architecture must not be invisible
 when the user later searches "agent architecture."
 
-Rejections are therefore stored per topic. Gate 2 skips only when the new search is for
-the same or a closely related topic. For a different topic the video is re-judged — one
-cheap model call is far better than a permanent blind spot.
+Verdicts are therefore stored per topic. Gate 2 drops a candidate only when a `no`
+exists for that video *on this topic*. For a different topic the video is re-judged —
+one cheap model call is far better than a permanent blind spot.
 
-The ingest report should surface this: "3 previously-rejected videos matched — re-evaluating."
+The report surfaces it whenever it fires: `3 previously rejected` in the summary line,
+and one `rejected <id> no for this topic (<date>)` line per video.
+
+**Topic matching is exact, on the normalised string — nothing more.** The topic is
+lowercased and its whitespace collapsed before it is stored or compared, so
+"Prompt Caching" and "prompt  caching" are one topic. Beyond that there is no
+similarity, no stemming, no embedding.
+
+Fuzzy topic similarity is **deferred, and the asymmetry is the reason**. A wrong fuzzy
+match hides a video permanently and invisibly — the failure nobody can see. A missed
+exact match costs one cheap re-judge — the failure that shows up on a bill. Exact
+matching only ever makes the cheap error. Revisit only if re-judging measurably hurts.
+
+**Topics are lowercased; video IDs are never.** They look alike and the temptation to
+normalise both the same way is real, but a topic is a search string and a video ID is a
+case-sensitive identifier. `tests/test_topics.py` exists solely to state that asymmetry
+so nobody later "fixes" `ids.py` to match.
+
+### Gate 3 is still deferred
+
+Content fingerprinting has not been built. `content_hash` and `duplicate_of` exist in
+the schema, and Gate 1 already treats `duplicate` as known, but nothing writes them yet.
+M3 owns it.
 
 ### Write ordering — makes crashes safe
 
@@ -400,6 +448,27 @@ most important structural decision in the codebase.
 Search sits behind a `SearchProvider` interface for the same reason: official API
 primary, yt-dlp search as automatic overflow when the daily quota runs out.
 
+### Quota is tracked locally, and checked before the request
+
+A search costs 100 units against a 10,000/day default — roughly 100 searches. Spend is
+recorded in the ledger's `quota` table and charged *before* the request is sent, for the
+same reason `mark_pending` precedes the fetch: a crash mid-request must over-count
+rather than under-count. A request that would exceed the cap raises `QuotaExhausted`
+instead of firing and collecting an opaque 403 that looks identical to a revoked key.
+
+### What falls through, and what surfaces
+
+| Failure | Chain does | Because |
+|---------|-----------|---------|
+| `QuotaExhausted` | falls through | this is what the overflow provider is for |
+| `ProviderUnavailable` (no key) | falls through, named in the report | not configured ≠ rejected |
+| `TransientError` | falls through | the next source may be up |
+| `PermanentError` (bad query, rejected key) | **surfaces** | it fails identically everywhere |
+
+A fallback is never silent: the report names the provider that answered and, when it
+fell back, which provider declined and why. A degradation nobody sees looks exactly like
+a quota that never runs out — right up until the overflow breaks too.
+
 ---
 
 ## 9. Build order
@@ -524,13 +593,15 @@ marginalia/
 │   ├── cli.py                   single entry point
 │   ├── config.py
 │   ├── ids.py                   canonical video ID extraction
-│   ├── ledger.py                the three gates
+│   ├── ledger.py                the three gates, decisions, quota
 │   ├── library.py               folder layout read/write
+│   ├── search.py                provider chain + gates 1 and 2
 │   ├── discover.py              brief → queries → judge → loop
 │   ├── providers/
 │   │   ├── base.py              TranscriptProvider + SearchProvider interfaces
 │   │   ├── ytdlp.py
-│   │   ├── youtube_api.py
+│   │   ├── youtube_api.py       official search, metered
+│   │   ├── ytdlp_search.py      overflow search, unmetered
 │   │   └── whisper_local.py     faster-whisper small, int8, CPU
 │   ├── normalize.py             artifact stripping, chapters, gap preservation
 │   ├── note.py                  background note worker
@@ -560,6 +631,17 @@ Only these exist after M1: `plugin.json`, `CLAUDE.md`, `config.example.toml`,
 `skills/ingest/SKILL.md`, `bin/marg`, and `cli.py`, `config.py`, `ids.py`, `ledger.py`,
 `library.py`, `providers/{base,ytdlp}.py`, plus `tests/test_ids.py` and
 `tests/test_ledger.py`.
+
+### Milestone 2a adds
+
+`search.py`, `providers/youtube_api.py`, `providers/ytdlp_search.py`,
+`hooks/hooks.json`, the `marg search` and `marg guard-write` commands, and the
+`decisions` and `quota` tables.
+
+`search.py` is a separate file from `discover.py` (M2b) because finding candidates and
+deciding which are *known* is free, deterministic, and testable without a model, while
+deciding which are *good* is none of those things. They will change for different
+reasons.
 
 Everything else arrives with the milestone that needs it. Split a file when it has two
 different reasons to change — not before.

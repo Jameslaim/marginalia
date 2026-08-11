@@ -4,9 +4,11 @@ A Claude Code plugin that finds relevant YouTube videos, extracts their transcri
 writes an understanding note for each, and answers questions about them with
 timestamps.
 
-**This is Milestone 1: the foundation.** It ingests one URL end to end. There is no
-search, no relevance judging, no ASR, no notes, and no `/ask` yet — see `PLAN.md` for
-the build order.
+**This is Milestone 2a.** It ingests one URL end to end, and it searches for candidate
+videos and says which ones it already knows about. It does **not** yet judge whether a
+video is any *good* — that needs a model and arrives in M2b, along with the relevance
+brief and the discovery loop. There is no ASR, no notes, and no `/ask` yet. See
+`PLAN.md` for the build order.
 
 ## The architectural rule
 
@@ -44,14 +46,22 @@ path = "C:/youtube-agent/marginalia-library"
 
 [providers]
 transcript_order = ["ytdlp"]
+search_order = ["youtube_api", "ytdlp_search"]
+# youtube_api_key = ""        # or set YOUTUBE_API_KEY; the file wins
+# youtube_daily_units = 10000 # set to 0 to force the overflow provider
 ```
 
 The library lives outside the repository and is never committed.
+
+A YouTube Data API key is optional. Without one, `youtube_api` reports itself
+unavailable and the chain falls through to `ytdlp_search` — saying so in the report,
+every time.
 
 ## Use
 
 ```bash
 marg ingest https://www.youtube.com/watch?v=dQw4w9WgXcQ
+marg search "prompt caching" --limit 25
 marg status dQw4w9WgXcQ
 marg list
 ```
@@ -69,6 +79,43 @@ Exit codes: `0` success, skip, or needs-asr; `1` fetch failure; `2` bad input or
 unusable config.
 
 Inside Claude Code, `/marginalia:ingest <url>` does the same thing.
+
+## Search
+
+```
+new       dQw4w9WgXcQ  "Prompt caching explained"      18m  Some Channel
+new       xK2mPq9dRtY  "Agent cost control"            42m  Another Channel
+known     9fLmZz4kWpQ  already stored
+rejected  aB3cD4eF5gH  no for this topic (2026-08-09)
+24 found, 3 known, 1 previously rejected, 20 new — youtube_api
+```
+
+The verdict is always the first token. Two gates run, both free, both before anything
+is spent:
+
+1. **known ID** — already `stored` or `duplicate` in the ledger
+2. **rejection** — a `no` verdict recorded for *this exact topic*
+
+`--topic T` separates the search string from the judgement key, so the same query can
+be run against a different enquiry and re-evaluate everything. It defaults to the
+query. Topics are lowercased and whitespace-collapsed; video IDs never are.
+
+Every candidate, kept or dropped, gets a row in the `decisions` table. `--json` emits
+the same data structured, including the descriptions the terse form omits.
+
+Searching is metered. One `search.list` call costs 100 units against a 10,000/day
+default; spend is tracked locally per UTC date and checked *before* the request, so a
+would-be overspend falls through to `ytdlp_search` rather than collecting an opaque
+403.
+
+## The library is CLI-owned
+
+`hooks/hooks.json` registers a `PreToolUse` hook that blocks `Write` and `Edit` aimed
+anywhere inside the configured library path. The ledger and the files on disk have to
+stay in agreement, and `transcript.txt` is immutable — so the rule is enforced rather
+than merely written down. The guard fails **open**: input it cannot parse is let
+through, because blocking every edit in the repository is a worse failure than the one
+it prevents.
 
 ## What gets stored
 
@@ -88,9 +135,15 @@ Inside Claude Code, `/marginalia:ingest <url>` does the same thing.
 
 ## Ledger
 
-SQLite. Every video ID ever seen and its verdict: `pending`, `needs_asr`, `stored`,
-`rejected`, `failed`, `duplicate`. Rows are never deleted, even when data is —
+SQLite, three tables: `videos`, `decisions`, `quota`.
+
+`videos` holds every video ID ever seen and its status: `pending`, `needs_asr`,
+`stored`, `rejected`, `failed`, `duplicate`. Rows are never deleted, even when data is —
 otherwise the agent re-downloads tomorrow what it discarded today.
+
+`decisions` logs every verdict with the stage that produced it — not only the negative
+ones, because a rejection log alone cannot answer "why did the judge keep this?" months
+later, and none of it can be reconstructed retroactively.
 
 The row is written **before** the network call, so a crash leaves a visible
 `pending` rather than no trace at all. Re-running on a `pending` row re-attempts it;
@@ -105,9 +158,21 @@ transcription queue (M4).
 pytest
 ```
 
-`test_ids.py` covers every URL form and the case-sensitivity rule. `test_ledger.py`
-covers state transitions and write ordering. `test_parsers.py` pins all five caption
-serialisation formats to static fixtures in `tests/fixtures/`, since those parsers
-otherwise run for the first time on the day YouTube changes format.
+| File | Covers |
+|------|--------|
+| `test_ids.py` | every URL form, and the case-sensitivity rule |
+| `test_ledger.py` | state transitions, write ordering, decisions, quota, schema drift |
+| `test_parsers.py` | all five caption formats, pinned to static fixtures |
+| `test_errors.py` | provider error classification — permanent vs transient |
+| `test_topics.py` | topics are lowercased, video IDs are not |
+| `test_search.py` | the two gates, the provider chain, decision logging |
+| `test_search_providers.py` | both search providers against recorded payloads |
+| `test_cli_search.py` | the report format, which is a contract a skill parses |
+| `test_hook.py` | the library-write guard, blocking and failing open |
 
-No test touches the network, the real library, or yt-dlp.
+`test_parsers.py` and `test_search_providers.py` use static fixtures because those
+parsers otherwise run for the first time on the day YouTube changes format.
+
+No test touches the network, the real library, yt-dlp, or a YouTube API key.
+Live-network checks belong to acceptance: a test that needs a key and an internet
+connection stops being run, and a test that stops being run stops protecting anything.

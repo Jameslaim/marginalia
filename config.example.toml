@@ -8,3 +8,17 @@ path = "C:/youtube-agent/marginalia-library"
 [providers]
 # Transcript sources, tried in order. Only "ytdlp" exists today.
 transcript_order = ["ytdlp"]
+
+# Search sources, tried in order. The official API is primary; ytdlp_search is
+# the overflow, used when the daily quota runs out or no key is configured.
+search_order = ["youtube_api", "ytdlp_search"]
+
+# YouTube Data API v3 key. Leave it unset to read YOUTUBE_API_KEY from the
+# environment instead — the file wins when both are present.
+# youtube_api_key = ""
+
+# Daily unit allowance, checked locally before every request. Google's default
+# is 10000, and one search costs 100 — so roughly 100 searches a day. Lower it
+# to share the budget with something else; set it to 0 to force the overflow
+# provider.
+# youtube_daily_units = 10000

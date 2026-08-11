@@ -31,7 +31,9 @@ __all__ = [
     "Ledger",
     "LedgerError",
     "VideoRow",
+    "DecisionRow",
     "skip_reason",
+    "normalise_topic",
     "STATUS_PENDING",
     "STATUS_NEEDS_ASR",
     "STATUS_STORED",
@@ -40,6 +42,14 @@ __all__ = [
     "STATUS_DUPLICATE",
     "FAIL_PERMANENT",
     "FAIL_TRANSIENT",
+    "STAGE_SEARCH",
+    "STAGE_METADATA",
+    "STAGE_OPENING",
+    "STAGE_NOTE",
+    "VERDICT_YES",
+    "VERDICT_NO",
+    "VERDICT_MAYBE",
+    "KNOWN_STATUSES",
 ]
 
 STATUS_PENDING = "pending"
@@ -52,8 +62,28 @@ STATUS_DUPLICATE = "duplicate"
 FAIL_PERMANENT = "permanent"
 FAIL_TRANSIENT = "transient"
 
-# `rejections` is unused until M2 and `content_hash` until M3. Both are created
-# now on purpose: migrating later is worse than a few idle columns.
+# Which stage of the pipeline produced a verdict. Cost rises left to right;
+# `search` is free and decides only whether a video is *known*, never whether
+# it is good.
+STAGE_SEARCH = "search"
+STAGE_METADATA = "metadata"
+STAGE_OPENING = "opening"
+STAGE_NOTE = "note"
+_STAGES = frozenset({STAGE_SEARCH, STAGE_METADATA, STAGE_OPENING, STAGE_NOTE})
+
+# Three-way on purpose: forcing yes/no on thin evidence makes the judge guess.
+VERDICT_YES = "yes"
+VERDICT_NO = "no"
+VERDICT_MAYBE = "maybe"
+_VERDICTS = frozenset({VERDICT_YES, VERDICT_NO, VERDICT_MAYBE})
+
+# Gate 1: statuses meaning "we already have this video's content". Not
+# `failed` or `needs_asr` — those are unfinished work, and a later search
+# should surface them again.
+KNOWN_STATUSES = frozenset({STATUS_STORED, STATUS_DUPLICATE})
+
+# `content_hash` is unused until M3. It is created now on purpose: migrating
+# later is worse than one idle column.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
   video_id       TEXT PRIMARY KEY,
@@ -73,17 +103,54 @@ CREATE TABLE IF NOT EXISTS videos (
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_hash   ON videos(content_hash);
 
-CREATE TABLE IF NOT EXISTS rejections (
-  video_id    TEXT NOT NULL,
-  topic       TEXT NOT NULL,
-  reason      TEXT,
-  rejected_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS decisions (
+  video_id   TEXT NOT NULL,
+  topic      TEXT NOT NULL,
+  stage      TEXT NOT NULL,   -- search | metadata | opening | note
+  verdict    TEXT NOT NULL,   -- yes | no | maybe
+  reason     TEXT,
+  decided_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_topic ON decisions(topic, verdict);
+CREATE INDEX IF NOT EXISTS idx_decisions_video ON decisions(video_id);
+
+CREATE TABLE IF NOT EXISTS quota (
+  provider   TEXT NOT NULL,
+  date       TEXT NOT NULL,   -- UTC calendar date, YYYY-MM-DD
+  units_used INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (provider, date)
 );
 """
+
+# Tables an older marginalia created that no longer exist. Their presence is
+# proof the ledger predates a schema change, which `CREATE TABLE IF NOT
+# EXISTS` would otherwise hide.
+_LEGACY_TABLES: dict[str, str] = {
+    "rejections": "replaced by `decisions`, which logs every verdict and its stage",
+}
 
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _utctoday() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def normalise_topic(topic: str) -> str:
+    """Lowercase and collapse whitespace.
+
+    A topic is a *search string*, not an identifier — "Prompt Caching" and
+    "prompt  caching" name the same enquiry, and Gate 2 must recognise that.
+    This is the one place in marginalia where lowercasing is correct.
+
+    It is emphatically **not** what happens to a video ID: ``dQw4w9WgXcQ`` and
+    ``dqw4w9wgxcq`` are two different videos, and ``ids.py`` never touches
+    case. See ``tests/test_topics.py``, which exists to keep someone from
+    "fixing" one to match the other.
+    """
+    return " ".join(topic.split()).lower()
 
 
 @dataclass(frozen=True)
@@ -107,8 +174,43 @@ class VideoRow:
         return cls(**{field.name: row[field.name] for field in fields(cls)})
 
 
+@dataclass(frozen=True)
+class DecisionRow:
+    """One verdict, and which stage produced it.
+
+    Every judgement is logged, not only the negative ones. A rejection log
+    alone cannot answer "why did the judge keep this?" months later, and the
+    log cannot be reconstructed retroactively.
+    """
+
+    video_id: str
+    topic: str
+    stage: str
+    verdict: str
+    reason: str | None
+    decided_at: str
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> DecisionRow:
+        return cls(**{field.name: row[field.name] for field in fields(cls)})
+
+    @property
+    def decided_on(self) -> str:
+        """Just the calendar date, for a report line."""
+        return self.decided_at[:10]
+
+
+# Every table the current schema expects, and the columns it must have. Used
+# by the drift guard; kept beside the dataclasses so it cannot fall behind.
+_EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
+    "videos": frozenset(field.name for field in fields(VideoRow)),
+    "decisions": frozenset(field.name for field in fields(DecisionRow)),
+    "quota": frozenset({"provider", "date", "units_used"}),
+}
+
+
 class LedgerError(RuntimeError):
-    """Raised when the ledger is used out of order."""
+    """Raised when the ledger is used out of order, or is the wrong shape."""
 
 
 def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None:
@@ -319,6 +421,108 @@ class Ledger:
             (_utcnow(), video_id),
         )
 
+    # -- decisions ---------------------------------------------------------
+    #
+    # Deliberately not foreign-keyed to `videos`. A search candidate has not
+    # been touched yet — inserting a `videos` row for all 25 hits of every
+    # query would fill the ledger with videos nobody ever decided to fetch,
+    # and would say "in flight" about work that never started.
+
+    def log_decision(
+        self,
+        video_id: str,
+        topic: str,
+        *,
+        stage: str,
+        verdict: str,
+        reason: str | None = None,
+    ) -> DecisionRow:
+        """Record one verdict. ``topic`` is normalised on the way in."""
+        if stage not in _STAGES:
+            raise ValueError(f"unknown stage {stage!r}; expected one of {sorted(_STAGES)}")
+        if verdict not in _VERDICTS:
+            raise ValueError(f"unknown verdict {verdict!r}; expected one of {sorted(_VERDICTS)}")
+
+        row = DecisionRow(
+            video_id=video_id,
+            topic=normalise_topic(topic),
+            stage=stage,
+            verdict=verdict,
+            reason=reason,
+            decided_at=_utcnow(),
+        )
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO decisions (video_id, topic, stage, verdict, reason, decided_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (row.video_id, row.topic, row.stage, row.verdict, row.reason, row.decided_at),
+            )
+        log.info("decision: %s %s/%s for %r", video_id, stage, verdict, row.topic)
+        return row
+
+    def latest_decision(
+        self, video_id: str, topic: str, *, verdict: str | None = None
+    ) -> DecisionRow | None:
+        """The most recent verdict for this video on this exact topic.
+
+        Matching is on the normalised topic string and nothing else. Fuzzy
+        topic similarity is deliberately absent — see ``PLAN.md`` §6.
+        """
+        sql = "SELECT * FROM decisions WHERE video_id = ? AND topic = ?"
+        params: list[object] = [video_id, normalise_topic(topic)]
+        if verdict is not None:
+            sql += " AND verdict = ?"
+            params.append(verdict)
+        sql += " ORDER BY decided_at DESC, rowid DESC LIMIT 1"
+        row = self._conn.execute(sql, params).fetchone()
+        return DecisionRow.from_sqlite(row) if row is not None else None
+
+    def decisions_for(self, video_id: str) -> list[DecisionRow]:
+        rows = self._conn.execute(
+            "SELECT * FROM decisions WHERE video_id = ? ORDER BY decided_at, rowid",
+            (video_id,),
+        ).fetchall()
+        return [DecisionRow.from_sqlite(row) for row in rows]
+
+    # -- quota -------------------------------------------------------------
+    #
+    # Keyed by UTC calendar date, so the rollover is the key changing rather
+    # than a reset anyone has to remember to run. Old rows are kept: they cost
+    # nothing and record what a day actually spent.
+
+    def quota_used(self, provider: str, *, date: str | None = None) -> int:
+        row = self._conn.execute(
+            "SELECT units_used FROM quota WHERE provider = ? AND date = ?",
+            (provider, date or _utctoday()),
+        ).fetchone()
+        return int(row["units_used"]) if row is not None else 0
+
+    def spend_quota(self, provider: str, units: int, *, date: str | None = None) -> int:
+        """Add ``units`` to today's spend and return the new total.
+
+        Called *before* the request, for the same reason ``mark_pending`` is:
+        a crash mid-request must over-count rather than under-count. Losing a
+        few units is recoverable; believing you have quota you already spent
+        earns an opaque 403.
+        """
+        if units < 0:
+            raise ValueError(f"units must not be negative, got {units}")
+        today = date or _utctoday()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO quota (provider, date, units_used) VALUES (?, ?, ?)
+                ON CONFLICT(provider, date) DO UPDATE SET
+                    units_used = quota.units_used + excluded.units_used
+                """,
+                (provider, today, units),
+            )
+        total = self.quota_used(provider, date=today)
+        log.info("quota: %s spent %d, %d used on %s", provider, units, total, today)
+        return total
+
     # -- internals ---------------------------------------------------------
 
     def _update(self, video_id: str, sql: str, params: tuple[object, ...]) -> None:
@@ -333,19 +537,33 @@ class Ledger:
         """Fail loudly on a ledger written by an older version.
 
         ``CREATE TABLE IF NOT EXISTS`` silently leaves an existing table alone,
-        so a ledger predating a new column would otherwise fail later with an
-        opaque ``IndexError`` from row unpacking. There is no migration path
-        yet — M1 recreates the library instead — but the error should say so.
+        so a ledger predating a schema change would otherwise fail much later
+        with an opaque ``IndexError`` from row unpacking, or — worse — keep
+        writing verdicts into a table nothing reads. There is no migration
+        path yet, so the message must say exactly what to do instead.
         """
-        present = {r["name"] for r in self._conn.execute("PRAGMA table_info(videos)")}
-        expected = {field.name for field in fields(VideoRow)}
-        missing = sorted(expected - present)
-        if missing:
-            raise LedgerError(
-                f"{self.db_path} was written by an older version of marginalia and is "
-                f"missing column(s): {', '.join(missing)}. There is no migration yet — "
-                f"delete the library and re-ingest."
-            )
+        tables = {
+            row["name"]
+            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+
+        for name in sorted(_LEGACY_TABLES):
+            if name in tables:
+                raise self._stale(f"it still has the `{name}` table ({_LEGACY_TABLES[name]})")
+
+        for table, expected in _EXPECTED_COLUMNS.items():
+            present = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            missing = sorted(expected - present)
+            if missing:
+                raise self._stale(
+                    f"table `{table}` is missing column(s): {', '.join(missing)}"
+                )
+
+    def _stale(self, detail: str) -> LedgerError:
+        return LedgerError(
+            f"{self.db_path} was written by an older version of marginalia: {detail}. "
+            f"There is no migration yet — delete the library and re-ingest."
+        )
 
     def _require(self, video_id: str) -> VideoRow:
         row = self.get(video_id)

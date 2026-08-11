@@ -1,0 +1,42 @@
+{
+  "kind": "youtube#searchListResponse",
+  "etag": "recorded-fixture",
+  "regionCode": "GB",
+  "pageInfo": { "totalResults": 4213, "resultsPerPage": 3 },
+  "items": [
+    {
+      "kind": "youtube#searchResult",
+      "id": { "kind": "youtube#video", "videoId": "dQw4w9WgXcQ" },
+      "snippet": {
+        "publishedAt": "2026-03-14T09:00:07Z",
+        "channelId": "UCuAXFkgsw1L7xaCfnd5JJOw",
+        "title": "Prompt caching explained",
+        "description": "What actually gets cached, when the cache expires, and why the second call is cheaper.",
+        "channelTitle": "Some Channel",
+        "liveBroadcastContent": "none"
+      }
+    },
+    {
+      "kind": "youtube#searchResult",
+      "id": { "kind": "youtube#video", "videoId": "jNQXAC9IVRw" },
+      "snippet": {
+        "publishedAt": "2026-05-02T17:30:00Z",
+        "channelId": "UCkszU2WH9gy1mb0dV-11UJg",
+        "title": "Agent cost control: faster &amp; cheaper, here&#39;s how",
+        "description": "Budgets, caching &amp; when not to bother.",
+        "channelTitle": "Another Channel",
+        "liveBroadcastContent": "none"
+      }
+    },
+    {
+      "kind": "youtube#searchResult",
+      "id": { "kind": "youtube#channel", "channelId": "UCnotavideoatall" },
+      "snippet": {
+        "publishedAt": "2026-01-01T00:00:00Z",
+        "title": "A channel, not a video",
+        "description": "type=video is requested, but the API has been seen to leak these.",
+        "channelTitle": "Leaky Channel"
+      }
+    }
+  ]
+}

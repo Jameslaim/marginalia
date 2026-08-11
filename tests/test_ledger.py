@@ -16,12 +16,19 @@ import pytest
 from marginalia.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
+    STAGE_METADATA,
+    STAGE_NOTE,
+    STAGE_OPENING,
+    STAGE_SEARCH,
     STATUS_DUPLICATE,
     STATUS_FAILED,
     STATUS_NEEDS_ASR,
     STATUS_PENDING,
     STATUS_REJECTED,
     STATUS_STORED,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
     Ledger,
     LedgerError,
     VideoRow,
@@ -74,6 +81,68 @@ def test_an_older_ledger_fails_with_a_clear_message(tmp_path: Path) -> None:
         Ledger(path)
     assert "caption_kind" in str(caught.value)
     assert "re-ingest" in str(caught.value)
+
+
+def test_a_ledger_with_the_old_rejections_table_is_refused(tmp_path: Path) -> None:
+    """`rejections` was replaced by `decisions` in M2a. Left alone it would be
+    an M1 ledger quietly running M2a code — every verdict written to a table
+    nothing reads, and Gate 2 permanently finding nothing."""
+    import sqlite3
+
+    path = tmp_path / "m1.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE videos (
+          video_id TEXT PRIMARY KEY, status TEXT NOT NULL, source TEXT,
+          caption_kind TEXT, transcribed_at TEXT, content_hash TEXT,
+          duplicate_of TEXT, first_seen TEXT NOT NULL, last_updated TEXT NOT NULL,
+          last_accessed TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+          fail_kind TEXT, provider TEXT
+        );
+        CREATE TABLE rejections (
+          video_id TEXT NOT NULL, topic TEXT NOT NULL, reason TEXT,
+          rejected_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(LedgerError) as caught:
+        Ledger(path)
+    message = str(caught.value)
+    assert "rejections" in message
+    assert "decisions" in message
+    assert "re-ingest" in message
+
+
+def test_a_ledger_missing_a_decisions_column_is_refused(tmp_path: Path) -> None:
+    import sqlite3
+
+    path = tmp_path / "partial.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE videos (
+          video_id TEXT PRIMARY KEY, status TEXT NOT NULL, source TEXT,
+          caption_kind TEXT, transcribed_at TEXT, content_hash TEXT,
+          duplicate_of TEXT, first_seen TEXT NOT NULL, last_updated TEXT NOT NULL,
+          last_accessed TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+          fail_kind TEXT, provider TEXT
+        );
+        CREATE TABLE decisions (
+          video_id TEXT NOT NULL, topic TEXT NOT NULL, verdict TEXT NOT NULL,
+          reason TEXT, decided_at TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(LedgerError) as caught:
+        Ledger(path)
+    assert "stage" in str(caught.value)
 
 
 # -- the happy path ---------------------------------------------------------
@@ -353,14 +422,163 @@ def test_a_skip_reason_is_short_enough_for_a_report_line(status: str) -> None:
     assert verdict is None or (len(verdict) < 40 and "\n" not in verdict)
 
 
-# -- the rejections table exists now, though M2 is what fills it ------------
+# -- decisions --------------------------------------------------------------
+#
+# Every verdict is logged, not only the negative ones — a rejection log alone
+# cannot answer "why did the judge keep this?" months later, and none of it can
+# be reconstructed retroactively.
 
 
-def test_rejections_table_exists(ledger: Ledger) -> None:
+def test_the_schema_is_the_m2a_shape(ledger: Ledger) -> None:
     names = {
         row[0]
         for row in ledger._conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'"
         ).fetchall()
     }
-    assert {"videos", "rejections"} <= names
+    assert {"videos", "decisions", "quota"} <= names
+    assert "rejections" not in names
+
+
+def test_a_decision_round_trips(ledger: Ledger) -> None:
+    written = ledger.log_decision(
+        VIDEO_ID, "prompt caching", stage=STAGE_SEARCH, verdict=VERDICT_MAYBE,
+        reason="new candidate",
+    )
+    assert written.stage == STAGE_SEARCH
+    assert written.verdict == VERDICT_MAYBE
+    assert written.decided_at
+
+    found = ledger.latest_decision(VIDEO_ID, "prompt caching")
+    assert found == written
+
+
+def test_a_decision_needs_no_video_row(ledger: Ledger) -> None:
+    """Search candidates have not been touched. Inserting a `videos` row for
+    all 25 hits of every query would claim work was in flight that never
+    started — so `decisions` is deliberately not foreign-keyed."""
+    ledger.log_decision(VIDEO_ID, "topic", stage=STAGE_SEARCH, verdict=VERDICT_NO)
+    assert ledger.get(VIDEO_ID) is None
+
+
+def test_decision_topics_are_normalised_on_the_way_in(ledger: Ledger) -> None:
+    ledger.log_decision(
+        VIDEO_ID, "  Prompt   CACHING ", stage=STAGE_SEARCH, verdict=VERDICT_NO
+    )
+    row = ledger.latest_decision(VIDEO_ID, "prompt caching")
+    assert row is not None and row.topic == "prompt caching"
+
+
+def test_a_decision_is_found_however_the_topic_is_typed(ledger: Ledger) -> None:
+    ledger.log_decision(VIDEO_ID, "prompt caching", stage=STAGE_SEARCH, verdict=VERDICT_NO)
+    assert ledger.latest_decision(VIDEO_ID, "Prompt  Caching") is not None
+
+
+def test_a_decision_is_topic_relative_not_global(ledger: Ledger) -> None:
+    """The whole reason the topic column exists: a video rejected for one
+    enquiry must not be invisible to a different one."""
+    ledger.log_decision(VIDEO_ID, "prompt caching", stage=STAGE_SEARCH, verdict=VERDICT_NO)
+    assert ledger.latest_decision(VIDEO_ID, "prompt caching", verdict=VERDICT_NO) is not None
+    assert ledger.latest_decision(VIDEO_ID, "agent architecture", verdict=VERDICT_NO) is None
+
+
+def test_a_decision_is_video_relative(ledger: Ledger) -> None:
+    ledger.log_decision(VIDEO_ID, "topic", stage=STAGE_SEARCH, verdict=VERDICT_NO)
+    assert ledger.latest_decision(OTHER_ID, "topic", verdict=VERDICT_NO) is None
+
+
+def test_the_latest_decision_wins(ledger: Ledger) -> None:
+    """A later stage overrules an earlier one; the earlier row is kept."""
+    ledger.log_decision(VIDEO_ID, "topic", stage=STAGE_SEARCH, verdict=VERDICT_MAYBE)
+    ledger.log_decision(VIDEO_ID, "topic", stage=STAGE_METADATA, verdict=VERDICT_YES)
+
+    latest = ledger.latest_decision(VIDEO_ID, "topic")
+    assert latest is not None and latest.stage == STAGE_METADATA
+    assert len(ledger.decisions_for(VIDEO_ID)) == 2
+
+
+def test_decisions_can_be_filtered_by_verdict(ledger: Ledger) -> None:
+    """Gate 2 asks only one question: is there a `no` for this topic?"""
+    ledger.log_decision(VIDEO_ID, "topic", stage=STAGE_SEARCH, verdict=VERDICT_NO)
+    ledger.log_decision(VIDEO_ID, "topic", stage=STAGE_METADATA, verdict=VERDICT_YES)
+
+    assert ledger.latest_decision(VIDEO_ID, "topic").verdict == VERDICT_YES
+    no = ledger.latest_decision(VIDEO_ID, "topic", verdict=VERDICT_NO)
+    assert no is not None and no.stage == STAGE_SEARCH
+
+
+def test_every_stage_and_verdict_is_accepted(ledger: Ledger) -> None:
+    for stage in (STAGE_SEARCH, STAGE_METADATA, STAGE_OPENING, STAGE_NOTE):
+        for verdict in (VERDICT_YES, VERDICT_NO, VERDICT_MAYBE):
+            ledger.log_decision(VIDEO_ID, "topic", stage=stage, verdict=verdict)
+    assert len(ledger.decisions_for(VIDEO_ID)) == 12
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"stage": "guessing", "verdict": VERDICT_NO},
+        {"stage": STAGE_SEARCH, "verdict": "nope"},
+        {"stage": STAGE_SEARCH, "verdict": "NO"},
+    ],
+)
+def test_an_unknown_stage_or_verdict_is_refused(ledger: Ledger, kwargs: dict) -> None:
+    """A typo'd verdict is invisible: Gate 2 looks for `no` and finds nothing,
+    forever. Better to fail at the write."""
+    with pytest.raises(ValueError):
+        ledger.log_decision(VIDEO_ID, "topic", **kwargs)
+
+
+def test_decided_on_is_a_bare_date_for_the_report_line(ledger: Ledger) -> None:
+    row = ledger.log_decision(VIDEO_ID, "topic", stage=STAGE_SEARCH, verdict=VERDICT_NO)
+    assert len(row.decided_on) == 10
+    assert row.decided_on == row.decided_at[:10]
+    assert row.decided_on.count("-") == 2
+
+
+def test_ids_are_not_normalised_in_decisions_either(ledger: Ledger) -> None:
+    """The topic is lowercased. The video ID is never touched."""
+    ledger.log_decision("dQw4w9WgXcQ", "Topic", stage=STAGE_SEARCH, verdict=VERDICT_NO)
+    assert ledger.latest_decision("dQw4w9WgXcQ", "topic") is not None
+    assert ledger.latest_decision("dqw4w9wgxcq", "topic") is None
+
+
+# -- quota ------------------------------------------------------------------
+#
+# Keyed by UTC calendar date, so the daily reset is the key changing rather
+# than a job anyone has to remember to run.
+
+
+def test_quota_starts_at_zero(ledger: Ledger) -> None:
+    assert ledger.quota_used("youtube_api") == 0
+
+
+def test_quota_accumulates(ledger: Ledger) -> None:
+    assert ledger.spend_quota("youtube_api", 100) == 100
+    assert ledger.spend_quota("youtube_api", 1) == 101
+    assert ledger.quota_used("youtube_api") == 101
+
+
+def test_quota_is_per_provider(ledger: Ledger) -> None:
+    ledger.spend_quota("youtube_api", 100)
+    assert ledger.quota_used("some_other_api") == 0
+
+
+def test_quota_resets_on_the_date_rollover(ledger: Ledger) -> None:
+    """No reset job exists, and none is wanted: yesterday's spend simply lives
+    under yesterday's key."""
+    ledger.spend_quota("youtube_api", 9_900, date="2026-08-10")
+    assert ledger.quota_used("youtube_api", date="2026-08-10") == 9_900
+    assert ledger.quota_used("youtube_api", date="2026-08-11") == 0
+
+
+def test_yesterdays_spend_is_kept(ledger: Ledger) -> None:
+    """It costs nothing and records what a day actually cost."""
+    ledger.spend_quota("youtube_api", 300, date="2026-08-10")
+    ledger.spend_quota("youtube_api", 100, date="2026-08-11")
+    assert ledger.quota_used("youtube_api", date="2026-08-10") == 300
+
+
+def test_negative_spend_is_refused(ledger: Ledger) -> None:
+    with pytest.raises(ValueError):
+        ledger.spend_quota("youtube_api", -100)

@@ -24,6 +24,13 @@ __all__ = ["Config", "ConfigError", "load_config", "example_text"]
 
 DEFAULT_LIBRARY_PATH = "C:/youtube-agent/marginalia-library"
 DEFAULT_TRANSCRIPT_ORDER = ("ytdlp",)
+DEFAULT_SEARCH_ORDER = ("youtube_api", "ytdlp_search")
+DEFAULT_DAILY_UNITS = 10_000
+
+# Read only if the config file does not name a key. The file wins because it
+# is the thing the user edited on purpose; the variable is the fallback for
+# machines where a secret should not sit in a file.
+API_KEY_ENV = "YOUTUBE_API_KEY"
 
 # Fallback used when config.example.toml is not on disk (installed package).
 _EMBEDDED_EXAMPLE = f"""\
@@ -32,6 +39,7 @@ path = "{DEFAULT_LIBRARY_PATH}"
 
 [providers]
 transcript_order = ["ytdlp"]
+search_order = ["youtube_api", "ytdlp_search"]
 """
 
 
@@ -43,6 +51,9 @@ class ConfigError(RuntimeError):
 class Config:
     library_path: Path
     transcript_order: tuple[str, ...]
+    search_order: tuple[str, ...]
+    youtube_api_key: str | None
+    youtube_daily_units: int
     path: Path
     created: bool
 
@@ -78,9 +89,13 @@ def load_config() -> Config:
     except (OSError, tomllib.TOMLDecodeError) as exc:
         raise ConfigError(f"could not read config at {chosen}: {exc}") from exc
 
+    providers = data.get("providers") or {}
     return Config(
         library_path=_library_path(data, chosen),
-        transcript_order=_transcript_order(data, chosen),
+        transcript_order=_order(providers, "transcript_order", DEFAULT_TRANSCRIPT_ORDER, chosen),
+        search_order=_order(providers, "search_order", DEFAULT_SEARCH_ORDER, chosen),
+        youtube_api_key=_api_key(providers, chosen),
+        youtube_daily_units=_daily_units(providers, chosen),
         path=chosen,
         created=created,
     )
@@ -103,15 +118,36 @@ def _library_path(data: dict, config_path: Path) -> Path:
     return Path(os.path.normpath(path))
 
 
-def _transcript_order(data: dict, config_path: Path) -> tuple[str, ...]:
-    raw = (data.get("providers") or {}).get("transcript_order")
+def _order(
+    providers: dict, key: str, default: tuple[str, ...], config_path: Path
+) -> tuple[str, ...]:
+    raw = providers.get(key)
     if raw is None:
-        return DEFAULT_TRANSCRIPT_ORDER
+        return default
     if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
-        raise ConfigError(f"providers.transcript_order must be a list of strings in {config_path}")
+        raise ConfigError(f"providers.{key} must be a list of strings in {config_path}")
     if not raw:
-        raise ConfigError(f"providers.transcript_order is empty in {config_path}")
+        raise ConfigError(f"providers.{key} is empty in {config_path}")
     return tuple(raw)
+
+
+def _api_key(providers: dict, config_path: Path) -> str | None:
+    raw = providers.get("youtube_api_key")
+    if raw is not None and not isinstance(raw, str):
+        raise ConfigError(f"providers.youtube_api_key must be a string in {config_path}")
+    key = (raw or "").strip() or os.environ.get(API_KEY_ENV, "").strip()
+    return key or None
+
+
+def _daily_units(providers: dict, config_path: Path) -> int:
+    raw = providers.get("youtube_daily_units")
+    if raw is None:
+        return DEFAULT_DAILY_UNITS
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+        raise ConfigError(
+            f"providers.youtube_daily_units must be a non-negative integer in {config_path}"
+        )
+    return raw
 
 
 def _repo_root() -> Path:
