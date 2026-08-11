@@ -4,11 +4,10 @@ A Claude Code plugin that finds relevant YouTube videos, extracts their transcri
 writes an understanding note for each, and answers questions about them with
 timestamps.
 
-**This is Milestone 2a.** It ingests one URL end to end, and it searches for candidate
-videos and says which ones it already knows about. It does **not** yet judge whether a
-video is any *good* — that needs a model and arrives in M2b, along with the relevance
-brief and the discovery loop. There is no ASR, no notes, and no `/ask` yet. See
-`PLAN.md` for the build order.
+**This is Milestone 2b.** Give it a topic and it writes a brief, expands that into
+search queries, judges the candidates in two stages, stores what survives, and uses
+what the kept videos left unexplained to drive the next round. There is no ASR, no
+understanding notes, and no `/ask` yet. See `PLAN.md` for the build order.
 
 ## The architectural rule
 
@@ -108,6 +107,162 @@ default; spend is tracked locally per UTC date and checked *before* the request,
 would-be overspend falls through to `ytdlp_search` rather than collecting an opaque
 403.
 
+## Discover
+
+```bash
+marg discover "prompt caching"
+marg discover "agent cost control" --dry-run
+```
+
+```
+brief:    Understand how prompt caching cuts cost in practice.
+round 1:  5 queries, 63 candidates, 8 known, 41 no, 14 maybe → 9 stored
+round 2:  4 queries from threads, 22 candidates, 19 known, 2 no, 1 maybe → 1 stored
+run:      10 stored, 66 judged, 2 rounds, 24 requests, stopped: no_new_videos
+```
+
+A topic on its own is underspecified, so the run writes an explicit **brief** first —
+intent, must-contain, also-wanted, excluded, edge cases — has a second pass close its
+gaps, and judges everything against that rather than against the keyword. The brief is
+stored on the run and printed first, because when a library comes out wrong the first
+question is *what did it think I meant?*
+
+Judging is two stages:
+
+1. **Metadata**, batched. YES / NO / MAYBE per candidate. Three-way because forcing a
+   binary choice on a title and a truncated description makes the model guess.
+2. **Opening**, one call each, for the MAYBEs only. Fetches the transcript and judges
+   the first ~1000 words. This exists because a video can be exactly right while never
+   using the search term — titles lie, openings do not.
+
+Stage 2 also returns the concepts a video *mentions but never explains*, in the same
+response, at no extra request. Those become the next round's queries. That loop-back is
+the part that turns one topic into a library.
+
+Both judges are told to keep when genuinely uncertain. Keeping something useless costs
+one download and is visible; rejecting something valuable costs a video you will never
+learn existed. Anything the parser cannot read becomes MAYBE, never NO, for the same
+reason.
+
+`--dry-run` does the brief, queries, search and stage-1 judging, then stops before any
+fetch or store — and writes nothing at all, not even decision rows. Tuning the judge
+must not silently shrink the library it is meant to improve.
+
+Stopping conditions, whichever fires first: `--max-rounds`, two consecutive rounds with
+nothing new, `--max-videos`, `--max-requests`, or search going unavailable. Which one
+fired is recorded in `runs.stopped_because` — a loop that stops for an unknown reason
+cannot be tuned.
+
+## Swapping the model provider
+
+**Treat the provider as temporary.** Swapping is three config values, and it has been
+done once in anger — NVIDIA NIM to Moonshot, when the former went from ~235s per
+request to not completing at all.
+
+```toml
+[llm]
+base_url = "https://api.moonshot.ai/v1"
+model    = "kimi-k3"
+api_key  = "..."                 # or set MARGINALIA_LLM_API_KEY
+
+[llm.limits]
+requests_per_minute = 20         # the next provider's ceiling, not ours
+```
+
+Then, in order:
+
+```bash
+marg llm-check
+```
+
+One request. Reports model, latency, and whether the reply parsed. Run it first — a
+provider that answers but not usably otherwise shows up much later as an empty library.
+**If a single request takes more than ~30s, stop and reconsider the model** rather than
+starting a run; that was the entire problem with the previous provider and it is worth
+catching in one request instead of an hour.
+
+```bash
+marg discover "prompt caching" --dry-run
+```
+
+Then compare against the previous decision log. Both `runs` and `decisions` record the
+`model`, so:
+
+```sql
+SELECT model, verdict, count(*) FROM decisions GROUP BY model, verdict;
+```
+
+If judging quality shifted, that query is how you find out where.
+
+Known OpenAI-compatible options: **Groq**, **OpenRouter**, **DeepSeek**, **Together**,
+and local serving via **Ollama** or **vLLM**. All take the same three values.
+
+Only the OpenAI-compatible baseline is used — `chat/completions`, a system message, a
+user message, plain text back. No JSON mode, no structured outputs, no tool calling, no
+prefills, no provider-specific parameters. Every one of those is something some
+provider will lack. The parsers in `judge.py` are the price of that portability, and
+they are cheaper than a migration.
+
+### What the real swap actually cost
+
+Three config values and **one code deletion**. `llm.py` had `temperature=0` hardcoded;
+`kimi-k3` returns HTTP 400 for any temperature but its own default. Temperature looks
+like part of the OpenAI baseline and is not — reasoning models routinely refuse it.
+
+It is now gone from the code and lives in config as `[llm] extra` if a provider wants
+it. `_send` names only the four fields every endpoint requires, and a test reads its
+source to keep it that way. Nothing in the suite would have caught this: a mock
+transport accepts whatever it is handed. An abstraction is only proven by a swap
+nobody rehearsed.
+
+## Thinking effort per task
+
+One model everywhere — a second model is a second variable. What varies is effort:
+
+```toml
+[llm.tasks.judge_metadata]
+extra = { reasoning_effort = "low" }
+
+[llm.tasks.write_brief]
+extra = { reasoning_effort = "high" }
+```
+
+`llm.py` does not know what any of that means. It merges the block into the request
+body and sends it; `[llm] extra` applies to every request and a task block overrides it
+key by key. A provider without the feature has no blocks, gets an empty dict, and every
+request is the baseline — which is what keeps swapping config-only.
+
+`judge_metadata` runs most often and reasons least, and reasoning tokens bill as
+**output** at 5× the input rate, so effort on the highest-volume call is where cost and
+latency go wrong at once. `write_brief` runs once and decides what every later
+judgement is measured against. Low is the floor, never off: "off" is a different code
+path on some providers, and consistency beats the marginal saving.
+
+**Check the parameter is honoured before trusting it.** A silently ignored field looks
+identical to a working one. Send a deliberately invalid value, and compare output-token
+counts at low versus high. On `kimi-k3`: an invalid value is *accepted* without
+complaint (so it is not validated — a typo degrades to the default rather than
+erroring), but low produced 270–406 output tokens against high's 744–1395 on the same
+prompt, with median latency 15.4s against 33.2s. Honoured, not validated.
+
+## What a run costs
+
+Billing is per token, so the request count is a weak guard — one batch of fifty
+candidates and one of five cost the same requests and wildly different money.
+
+```toml
+[llm.pricing]
+input_per_million  = 3.0
+output_per_million = 15.0
+
+[discover]
+max_cost_usd = 1.50
+```
+
+Rates live in config because they change and the next provider's will differ. The
+ceiling is computed from the token counts already recorded on every run, and firing it
+is recorded as `stopped_because = max_cost`.
+
 ## The library is CLI-owned
 
 `hooks/hooks.json` registers a `PreToolUse` hook that blocks `Write` and `Edit` aimed
@@ -169,6 +324,11 @@ pytest
 | `test_search_providers.py` | both search providers against recorded payloads |
 | `test_cli_search.py` | the report format, which is a contract a skill parses |
 | `test_hook.py` | the library-write guard, blocking and failing open |
+| `test_config.py` | config parsing, and especially the provider-swap surface |
+| `test_llm.py` | rate-limiter pacing, retry classification, prompt loading |
+| `test_judge_parsing.py` | every way a model reply can be malformed |
+| `test_discover.py` | loop control flow, stopping conditions, dry-run inertness |
+| `test_cli_discover.py` | the discover report and `llm-check` |
 
 `test_parsers.py` and `test_search_providers.py` use static fixtures because those
 parsers otherwise run for the first time on the day YouTube changes format.

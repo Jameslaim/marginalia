@@ -1,0 +1,708 @@
+"""The discovery loop.
+
+Every model call is mocked. What is being tested is the control flow that
+spends money and fills a library: which candidates reach stage 2, when the loop
+gives up, what a dry run is allowed to touch, and whether every judgement can
+be traced back to the brief that produced it.
+
+The expensive mistakes here are all silent. A loop that never stops burns
+credits; a loop that stops too early looks like a thin topic; a dry run that
+writes decisions poisons the real run that follows it.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from conftest import make_config
+
+from marginalia.discover import (
+    STOP_DRY_RUN,
+    STOP_MAX_COST,
+    STOP_MAX_REQUESTS,
+    STOP_MAX_ROUNDS,
+    STOP_MAX_VIDEOS,
+    STOP_NO_NEW_VIDEOS,
+    discover,
+)
+from marginalia.judge import Brief, MetadataVerdict, OpeningVerdict
+from marginalia.ledger import (
+    STAGE_METADATA,
+    STAGE_OPENING,
+    STATUS_REJECTED,
+    STATUS_STORED,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
+    Ledger,
+)
+from marginalia.library import Library
+from marginalia.llm import LlmClient, Usage
+from marginalia.providers.base import (
+    PermanentError,
+    SearchResult,
+    TranscriptLine,
+    TranscriptResult,
+    TransientError,
+)
+
+TOPIC = "prompt caching"
+BRIEF = Brief(topic=TOPIC, text="INTENT\nLearn how prompt caching works.\n" + "x" * 200, version="1/1")
+
+
+def result(video_id: str, title: str = "A video") -> SearchResult:
+    return SearchResult(
+        video_id=video_id,
+        title=title,
+        channel="Chan",
+        description="",
+        duration_s=600,
+        published_at="2026-01-01T00:00:00Z",
+        view_count=10,
+        provider="fake",
+    )
+
+
+def transcript(text: str = "hello world") -> TranscriptResult:
+    return TranscriptResult(
+        lines=[TranscriptLine(0, 1000, text)],
+        language="en",
+        source="captions",
+        title="A video",
+        channel="Chan",
+        duration_s=600,
+        upload_date="20260101",
+    )
+
+
+class FakeJudge:
+    """Scripted verdicts. Records what it was asked, so routing is assertable."""
+
+    def __init__(self, *, queries=None, metadata=None, openings=None) -> None:
+        self._queries = list(queries or [["q1"]])
+        self._metadata = dict(metadata or {})
+        self._openings = dict(openings or {})
+        self.opening_calls: list[str] = []
+        self.query_calls: list[tuple[int, tuple[str, ...]]] = []
+        self.batch_sizes: list[int] = []
+
+    def write_brief(self, topic: str) -> Brief:
+        return BRIEF
+
+    def expand_queries(self, brief, *, count=9, concepts=()):
+        self.query_calls.append((len(self.query_calls) + 1, tuple(concepts)))
+        return self._queries.pop(0) if self._queries else []
+
+    def judge_metadata(self, brief, candidates, *, batch_size):
+        self.batch_sizes.append(batch_size)
+        return [
+            MetadataVerdict(
+                c.video_id, *self._metadata.get(c.video_id, (VERDICT_YES, "kept"))
+            )
+            for c in candidates
+        ]
+
+    def judge_opening(self, brief, candidate, *, opening, chapters=()):
+        self.opening_calls.append(candidate.video_id)
+        verdict, reason, concepts = self._openings.get(
+            candidate.video_id, (VERDICT_YES, "good", [])
+        )
+        return OpeningVerdict(candidate.video_id, verdict, reason, list(concepts))
+
+
+class FakeTranscripts:
+    name = "fake_transcripts"
+
+    def __init__(self, *, failures=None, missing=()) -> None:
+        self._failures = dict(failures or {})
+        self._missing = set(missing)
+        self.fetched: list[str] = []
+
+    def fetch(self, video_id: str):
+        self.fetched.append(video_id)
+        if video_id in self._failures:
+            raise self._failures[video_id]
+        if video_id in self._missing:
+            return None
+        return transcript()
+
+
+@pytest.fixture()
+def library(tmp_path: Path) -> Library:
+    instance = Library(tmp_path / "library")
+    instance.ensure()
+    return instance
+
+
+@pytest.fixture()
+def ledger(library: Library) -> Iterator[Ledger]:
+    with Ledger(library.ledger_path) as instance:
+        yield instance
+
+
+@pytest.fixture()
+def config(tmp_path: Path) -> object:
+    return make_config(tmp_path, search_order=("fake",))
+
+
+@pytest.fixture()
+def client() -> LlmClient:
+    from conftest import make_llm_config
+
+    return LlmClient(make_llm_config(), transport=lambda **_: None)
+
+
+@pytest.fixture()
+def searches(monkeypatch: pytest.MonkeyPatch):
+    """Control what each query returns, without touching search.py's gating."""
+    table: dict[str, list[SearchResult]] = {}
+    calls: list[str] = []
+
+    def fake_provider(name, **_):
+        class P:
+            name = "fake"
+
+            def search(self, query, limit=25):
+                calls.append(query)
+                return list(table.get(query, table.get("*", [])))
+
+            def quota_remaining(self):
+                return None
+
+        return P()
+
+    monkeypatch.setattr("marginalia.search.get_search_provider", fake_provider)
+    table["calls"] = calls  # type: ignore[assignment]
+    return table
+
+
+def run(config, ledger, library, client, judge, provider=None, **kwargs):
+    return discover(
+        config, ledger, library, client, TOPIC,
+        judge=judge, provider=provider or FakeTranscripts(), **kwargs,
+    )
+
+
+# -- routing: which verdicts reach stage 2 ---------------------------------
+
+
+def test_a_maybe_routes_to_stage_two(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+
+
+def test_a_yes_does_not_pay_for_stage_two(config, ledger, library, client, searches) -> None:
+    """Stage 2 is one request per video. A candidate already judged relevant
+    does not need re-litigating."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "clear")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == []
+
+
+def test_a_no_is_never_fetched(config, ledger, library, client, searches) -> None:
+    """Fetching is the expensive, blockable step. A NO must not reach it."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_NO, "off topic")})
+
+    run(config, ledger, library, client, judge, provider=provider, max_rounds=1)
+
+    assert provider.fetched == []
+    assert judge.opening_calls == []
+
+
+def test_a_maybe_that_flips_to_no_is_not_stored(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "actually a product demo", [])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.stored_ids == []
+    assert not library.has_transcript("aaaaaaaaaaa")
+    row = ledger.get("aaaaaaaaaaa")
+    assert row is not None and row.status == STATUS_REJECTED
+    assert outcome.rounds[0].flipped_to_no == 1
+
+
+def test_a_maybe_that_survives_is_stored(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.stored_ids == ["aaaaaaaaaaa"]
+    assert library.has_transcript("aaaaaaaaaaa")
+    assert ledger.get("aaaaaaaaaaa").status == STATUS_STORED
+
+
+def test_the_configured_batch_size_is_used(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    config = replace(config, llm=replace(config.llm, judge_batch_size=1))
+    judge = FakeJudge()
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.batch_sizes == [1]
+
+
+# -- fetch failures ---------------------------------------------------------
+
+
+def test_a_permanently_unavailable_video_is_recorded_not_stored(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts(failures={"aaaaaaaaaaa": PermanentError("private")})
+
+    outcome = run(config, ledger, library, client, FakeJudge(), provider=provider, max_rounds=1)
+
+    assert outcome.stored_ids == []
+    assert ledger.get("aaaaaaaaaaa").status == "failed"
+    assert outcome.rounds[0].failed == 1
+
+
+def test_a_video_without_captions_is_queued_not_failed(
+    config, ledger, library, client, searches
+) -> None:
+    """No captions is a route, not a failure. M4 picks these up."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts(missing={"aaaaaaaaaaa"})
+
+    run(config, ledger, library, client, FakeJudge(), provider=provider, max_rounds=1)
+
+    assert ledger.get("aaaaaaaaaaa").status == "needs_asr"
+
+
+def test_one_failure_does_not_abandon_the_round(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    provider = FakeTranscripts(failures={"aaaaaaaaaaa": TransientError("timeout")})
+
+    outcome = run(config, ledger, library, client, FakeJudge(), provider=provider, max_rounds=1)
+
+    assert outcome.stored_ids == ["bbbbbbbbbbb"]
+
+
+# -- threads: the loop's own findings --------------------------------------
+
+
+def test_concepts_from_stage_two_feed_the_next_round(
+    config, ledger, library, client, searches
+) -> None:
+    """The loop-back is the intelligence. A video that says "KV cache" without
+    explaining it has written round two's query."""
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    searches["q2"] = [result("bbbbbbbbbbb")]
+    judge = FakeJudge(
+        queries=[["q1"], ["q2"]],
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "good", ["kv cache eviction", "prefix matching"])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2)
+
+    assert judge.query_calls[0][1] == ()
+    assert judge.query_calls[1][1] == ("kv cache eviction", "prefix matching")
+    assert outcome.rounds[1].from_threads is True
+
+
+def test_repeated_queries_are_not_searched_twice(
+    config, ledger, library, client, searches
+) -> None:
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[["q1"], ["q1"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2)
+
+    assert searches["calls"].count("q1") == 1
+    assert outcome.stopped_because == STOP_NO_NEW_VIDEOS
+
+
+# -- stopping conditions ---------------------------------------------------
+
+
+def test_max_rounds_fires_and_is_recorded(config, ledger, library, client, searches) -> None:
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    searches["q2"] = [result("bbbbbbbbbbb")]
+    searches["q3"] = [result("ccccccccccc")]
+    judge = FakeJudge(queries=[["q1"], ["q2"], ["q3"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=3)
+
+    assert outcome.stopped_because == STOP_MAX_ROUNDS
+    assert ledger.get_run(outcome.run_id).stopped_because == STOP_MAX_ROUNDS
+
+
+def test_quiet_rounds_stop_the_loop(config, ledger, library, client, searches) -> None:
+    """Two rounds finding nothing new is the signal that a topic is exhausted."""
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    searches["q2"] = []
+    searches["q3"] = []
+    judge = FakeJudge(queries=[["q1"], ["q2"], ["q3"], ["q4"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=9)
+
+    assert outcome.stopped_because == STOP_NO_NEW_VIDEOS
+    assert len(outcome.rounds) == 3
+
+
+def test_max_videos_fires(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result(f"{c}{c}{c}{c}{c}{c}{c}{c}{c}{c}{c}") for c in "abcde"]
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=5, max_videos=2)
+
+    assert outcome.stopped_because == STOP_MAX_VIDEOS
+    assert len(outcome.stored_ids) == 2
+
+
+def test_max_requests_fires_before_spending(config, ledger, library, client, searches) -> None:
+    """The credit guard. It has to stop the round starting, not notice
+    afterwards that it overspent."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    client.usage = Usage(requests=100)
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=3, max_requests=100)
+
+    assert outcome.stopped_because == STOP_MAX_REQUESTS
+    assert outcome.rounds == []
+
+
+def test_every_stop_reason_is_written_to_the_run_row(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    row = ledger.get_run(outcome.run_id)
+    assert row is not None
+    assert row.stopped_because
+    assert row.finished_at is not None
+
+
+# -- the run row ------------------------------------------------------------
+
+
+def test_the_run_row_exists_before_judging(config, ledger, library, client, searches) -> None:
+    """Same ordering rule as the ledger: a run with no finished_at is a run
+    that crashed, and that is diagnosable."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    seen: list[bool] = []
+
+    class Watcher(FakeJudge):
+        def judge_metadata(self, brief, candidates, *, batch_size):
+            seen.append(bool(ledger.list_runs()))
+            return super().judge_metadata(brief, candidates, batch_size=batch_size)
+
+    run(config, ledger, library, client, Watcher(), max_rounds=1)
+    assert seen == [True]
+
+
+def test_the_brief_is_stored_on_the_run(config, ledger, library, client, searches) -> None:
+    """When a library looks wrong the first question is what it thought the
+    topic meant, and a topic string cannot answer that."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    row = ledger.get_run(outcome.run_id)
+    assert row.brief == BRIEF.text
+    assert row.brief_version == "1/1"
+    assert row.model == client.model
+
+
+def test_a_crashed_run_leaves_a_row_without_finished_at(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    class Exploding(FakeJudge):
+        def judge_metadata(self, brief, candidates, *, batch_size):
+            raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError):
+        run(config, ledger, library, client, Exploding(), max_rounds=1)
+
+    row = ledger.list_runs()[0]
+    assert row.stopped_because == "incomplete"
+
+
+def test_requests_and_tokens_are_recorded(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    client.usage = Usage(requests=7, input_tokens=900, output_tokens=120)
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    row = ledger.get_run(outcome.run_id)
+    assert (row.requests_made, row.input_tokens, row.output_tokens) == (7, 900, 120)
+
+
+# -- decision logging -------------------------------------------------------
+
+
+def test_every_judged_candidate_has_a_decision_row_with_a_run_id(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb"), result("ccccccccccc")]
+    judge = FakeJudge(
+        metadata={
+            "aaaaaaaaaaa": (VERDICT_YES, "clear"),
+            "bbbbbbbbbbb": (VERDICT_NO, "off topic"),
+            "ccccccccccc": (VERDICT_MAYBE, "unclear"),
+        }
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    rows = ledger.decisions_for_run(outcome.run_id)
+    metadata_rows = {r.video_id: r for r in rows if r.stage == STAGE_METADATA}
+    assert set(metadata_rows) == {"aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"}
+    assert metadata_rows["bbbbbbbbbbb"].verdict == VERDICT_NO
+    assert metadata_rows["bbbbbbbbbbb"].reason == "off topic"
+    assert all(r.run_id == outcome.run_id for r in rows)
+    assert all(r.model == client.model for r in rows if r.stage != "search")
+
+
+def test_yes_and_maybe_are_logged_not_only_no(
+    config, ledger, library, client, searches
+) -> None:
+    """A judge that wrongly keeps things is as broken as one that wrongly
+    rejects, and only the full log shows it."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "clear")})
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    verdicts = {r.verdict for r in ledger.decisions_for_run(outcome.run_id)}
+    assert VERDICT_YES in verdicts
+
+
+def test_stage_two_writes_its_own_row(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "product demo", [])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    stages = [(r.stage, r.verdict) for r in ledger.decisions_for_run(outcome.run_id)]
+    assert (STAGE_METADATA, VERDICT_MAYBE) in stages
+    assert (STAGE_OPENING, VERDICT_NO) in stages
+
+
+# -- dry run ----------------------------------------------------------------
+
+
+def test_a_dry_run_writes_nothing(config, ledger, library, client, searches) -> None:
+    """This is how the judge gets tuned without burning credits or filling the
+    library with mistakes, so it has to be genuinely inert."""
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "clear")})
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1, dry_run=True)
+
+    assert outcome.stopped_because == STOP_DRY_RUN
+    assert outcome.stored_ids == []
+    assert ledger.list_by_status() == [], "no videos rows"
+    assert ledger.decisions_for_run(outcome.run_id) == [], "no decisions rows"
+    assert not any(library.videos_dir.iterdir()), "no library files"
+
+
+def test_a_dry_run_still_judges_and_reports(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    judge = FakeJudge(
+        metadata={
+            "aaaaaaaaaaa": (VERDICT_YES, "clear"),
+            "bbbbbbbbbbb": (VERDICT_NO, "off topic"),
+        }
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1, dry_run=True)
+
+    assert outcome.rounds[0].verdict_yes == 1
+    assert outcome.rounds[0].verdict_no == 1
+    assert outcome.judged == 2
+
+
+def test_a_dry_run_never_fetches(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+
+    run(config, ledger, library, client, FakeJudge(), provider=provider, max_rounds=1, dry_run=True)
+
+    assert provider.fetched == []
+
+
+def test_a_dry_run_does_not_poison_gate_2(config, ledger, library, client, searches) -> None:
+    """A dry run that logged `no` rows would make the real run that follows it
+    skip everything the tuning pass rejected — silently shrinking the library
+    the tuning was meant to improve."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_NO, "off topic")})
+
+    run(config, ledger, library, client, judge, max_rounds=1, dry_run=True)
+    real = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert real.stored_ids == ["aaaaaaaaaaa"]
+
+
+# -- the gates still hold across runs --------------------------------------
+
+
+def test_a_second_run_stores_nothing_new(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    first = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+    second = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert first.stored_ids == ["aaaaaaaaaaa"]
+    assert second.stored_ids == []
+    assert second.rounds[0].known == 1
+
+
+def test_a_rejected_video_is_not_rejudged_on_the_same_topic(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_NO, "off topic")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+    second_judge = FakeJudge()
+    outcome = run(config, ledger, library, client, second_judge, max_rounds=1)
+
+    assert outcome.rounds[0].rejected_before == 1
+    assert second_judge.batch_sizes == [], "gate 2 dropped it before any model call"
+
+
+# -- the cost guard ---------------------------------------------------------
+#
+# Under per-token billing a request count stops being a guard: one batch of
+# fifty candidates and one of five cost the same number of requests and wildly
+# different money.
+
+
+def test_max_cost_stops_the_loop(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    config = replace(config, discover=replace(config.discover, max_cost_usd=0.01))
+    # $3/M in and $15/M out: 1M output tokens is far past a one-cent ceiling.
+    client.usage = Usage(requests=3, input_tokens=0, output_tokens=1_000_000)
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=2)
+
+    assert outcome.stopped_because == STOP_MAX_COST
+    assert ledger.get_run(outcome.run_id).stopped_because == STOP_MAX_COST
+
+
+def test_a_cheap_run_is_not_stopped(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    client.usage = Usage(requests=3, input_tokens=1000, output_tokens=200)
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert outcome.stopped_because != STOP_MAX_COST
+
+
+def test_a_zero_ceiling_means_no_cost_limit(config, ledger, library, client, searches) -> None:
+    """Opting out has to be possible without editing code."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    config = replace(config, discover=replace(config.discover, max_cost_usd=0.0))
+    client.usage = Usage(requests=1, input_tokens=0, output_tokens=100_000_000)
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert outcome.stopped_because != STOP_MAX_COST
+
+
+def test_the_run_records_what_it_cost(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    client.usage = Usage(requests=4, input_tokens=1_000_000, output_tokens=1_000_000)
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert outcome.cost_usd == pytest.approx(18.0)
+
+
+# -- fetch pacing -----------------------------------------------------------
+
+
+def test_fetches_are_paced_apart(config, ledger, library, client, searches, monkeypatch) -> None:
+    """Observed: a run that pulled six videos quickly had its next thirteen
+    fetches all fail inside nine seconds. Real backoff is M3; not provoking
+    the throttle is cheap and belongs here."""
+    slept: list[float] = []
+    monkeypatch.setattr("marginalia.discover.time.sleep", lambda s: slept.append(s))
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb"), result("ccccccccccc")]
+    config = replace(config, discover=replace(config.discover, fetch_delay_s=2.5))
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert slept == [2.5, 2.5], "paced between fetches, not before the first"
+
+
+def test_no_delay_is_configurable(config, ledger, library, client, searches, monkeypatch) -> None:
+    slept: list[float] = []
+    monkeypatch.setattr("marginalia.discover.time.sleep", lambda s: slept.append(s))
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert slept == []
+
+
+def test_a_dry_run_never_waits(config, ledger, library, client, searches, monkeypatch) -> None:
+    slept: list[float] = []
+    monkeypatch.setattr("marginalia.discover.time.sleep", lambda s: slept.append(s))
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    config = replace(config, discover=replace(config.discover, fetch_delay_s=9.0))
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1, dry_run=True)
+
+    assert slept == [], "nothing is fetched, so nothing needs pacing"
+
+
+# -- threads have to be auditable, not just asserted ------------------------
+
+
+def test_extracted_concepts_are_recorded_on_the_round(
+    config, ledger, library, client, searches
+) -> None:
+    """`from_threads` alone only says concepts were passed in. Proving the
+    loop-back actually fed forward needs to know *what* was extracted — a real
+    run produced round-2 queries that were equally explicable by the brief, and
+    the question was unanswerable because nothing recorded them."""
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    searches["q2"] = [result("bbbbbbbbbbb")]
+    judge = FakeJudge(
+        queries=[["q1"], ["q2"]],
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "good", ["kv cache eviction", "prefix matching"])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2)
+
+    assert outcome.rounds[0].concepts == ["kv cache eviction", "prefix matching"]
+    assert outcome.rounds[1].concepts == []
+
+
+def test_a_round_that_found_nothing_records_no_concepts(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "clear")})
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.rounds[0].concepts == []

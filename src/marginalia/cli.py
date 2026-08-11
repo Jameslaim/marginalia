@@ -2,6 +2,8 @@
 
     marg ingest <url>       ingest one video
     marg search "<query>"   find candidate videos and say which are new
+    marg discover "<topic>" turn a topic into a library
+    marg llm-check          one request to the configured model provider
     marg status <url|id>    show ledger state for one video
     marg list               list stored videos
     marg guard-write        internal: the PreToolUse hook
@@ -20,13 +22,16 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
 from .config import Config, ConfigError, load_config
+from .discover import DiscoverRun, discover
 from .ids import extract_video_id
+from .llm import LlmClient, LlmError
 from .ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
@@ -212,6 +217,132 @@ def _candidate_json(candidate: Candidate) -> dict[str, Any]:
         "view_count": result.view_count,
         "provider": result.provider,
     }
+
+
+def _cmd_discover(args: argparse.Namespace) -> int:
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+
+    client = LlmClient(config.llm)
+    with Ledger(library.ledger_path) as ledger:
+        run = discover(
+            config,
+            ledger,
+            library,
+            client,
+            args.topic,
+            max_rounds=args.max_rounds,
+            max_videos=args.max_videos,
+            max_requests=args.max_requests,
+            dry_run=args.dry_run,
+        )
+
+    if args.json:
+        print(json.dumps(_discover_json(run), indent=2, ensure_ascii=False))
+        return EXIT_OK
+
+    for line in _discover_report(run):
+        print(line)
+    return EXIT_OK
+
+
+def _discover_report(run: DiscoverRun) -> list[str]:
+    lines = [f"brief:    {run.brief.intent}"]
+    for report in run.rounds:
+        source = "queries from threads" if report.from_threads else "queries"
+        line = (
+            f"round {report.number}:  {len(report.queries)} {source}, "
+            f"{report.candidates} candidates, {report.known} known, "
+            f"{report.verdict_no} no, {report.verdict_maybe} maybe "
+            f"→ {report.stored} stored"
+        )
+        # Never silent. A round where every fetch failed otherwise reads
+        # exactly like a round where the judge rejected everything — observed
+        # in a real run, where 13 transient fetch failures left no trace in
+        # the report at all.
+        if report.failed:
+            line += f" ({report.failed} fetch failed)"
+        if report.rejected_before:
+            line += f", {report.rejected_before} previously rejected"
+        lines.append(line)
+    verb = "would store" if run.dry_run else "stored"
+    lines.append(
+        f"run:      {len(run.stored_ids)} {verb}, {run.judged} judged, "
+        f"{len(run.rounds)} rounds, {run.requests} requests, "
+        f"stopped: {run.stopped_because}"
+    )
+    return lines
+
+
+def _discover_json(run: DiscoverRun) -> dict[str, Any]:
+    return {
+        "run_id": run.run_id,
+        "topic": run.topic,
+        "model": run.model,
+        "dry_run": run.dry_run,
+        "brief": run.brief.text,
+        "brief_version": run.brief.version,
+        "brief_intent": run.brief.intent,
+        "stopped_because": run.stopped_because,
+        "requests": run.requests,
+        "input_tokens": run.input_tokens,
+        "output_tokens": run.output_tokens,
+        "candidates_seen": run.candidates_seen,
+        "judged": run.judged,
+        "stored": run.stored_ids,
+        "rounds": [
+            {
+                "number": report.number,
+                "from_threads": report.from_threads,
+                "queries": report.queries,
+                # What stage 2 found unexplained in this round's videos. These
+                # are what the *next* round is supposed to have searched for,
+                # so they are the only way to check the loop-back really fed
+                # forward rather than the brief being re-expanded.
+                "concepts": report.concepts,
+                "candidates": report.candidates,
+                "known": report.known,
+                "rejected_before": report.rejected_before,
+                "yes": report.verdict_yes,
+                "no": report.verdict_no,
+                "maybe": report.verdict_maybe,
+                "flipped_to_no": report.flipped_to_no,
+                "stored": report.stored,
+                "failed": report.failed,
+            }
+            for report in run.rounds
+        ],
+    }
+
+
+def _cmd_llm_check(args: argparse.Namespace) -> int:
+    """One request against the configured provider. The first thing to run
+    after swapping providers, and it must cost exactly one request."""
+    config = _load(args)
+    client = LlmClient(config.llm)
+
+    started = time.monotonic()
+    try:
+        reply = client.complete(
+            "Answer in one word.",
+            "Reply with exactly the word: ready",
+        )
+    except LlmError as exc:
+        return _error(f"{config.llm.provider}: {exc}", EXIT_USAGE)
+
+    elapsed = time.monotonic() - started
+    parsed = "ready" in reply.text.lower()
+    _report("llm", config.llm.provider, reply.model)
+    print(
+        f"          {elapsed:.1f}s  "
+        f"in={reply.usage.input_tokens} out={reply.usage.output_tokens}  "
+        f"parse={'ok' if parsed else 'FAILED'}  base_url={config.llm.base_url}"
+    )
+    if not parsed:
+        print(f"          reply was: {_quoted(reply.text, 60)}", file=sys.stderr)
+        return EXIT_FAILED
+    return EXIT_OK
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -502,6 +633,24 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument("--json", action="store_true", help="emit structured output")
     search.set_defaults(handler=_cmd_search)
+
+    disco = subparsers.add_parser("discover", help="turn a topic into a library")
+    disco.add_argument("topic", help="what to build a library about")
+    disco.add_argument("--max-rounds", type=int, default=None, help="search rounds (config default)")
+    disco.add_argument("--max-videos", type=int, default=None, help="videos to store this run")
+    disco.add_argument("--max-requests", type=int, default=None, help="model requests this run")
+    disco.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="brief, queries, search and stage-1 judging only; writes nothing",
+    )
+    disco.add_argument("--json", action="store_true", help="emit structured output")
+    disco.set_defaults(handler=_cmd_discover)
+
+    check = subparsers.add_parser(
+        "llm-check", help="one request to the configured model provider"
+    )
+    check.set_defaults(handler=_cmd_llm_check)
 
     status = subparsers.add_parser("status", help="show ledger state for one video")
     status.add_argument("video", help="YouTube URL or video ID")

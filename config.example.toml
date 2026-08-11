@@ -22,3 +22,93 @@ search_order = ["youtube_api", "ytdlp_search"]
 # to share the budget with something else; set it to 0 to force the overflow
 # provider.
 # youtube_daily_units = 10000
+
+[llm]
+# The model provider. Swapping is these three values and no code — see
+# "Swapping the model provider" in README.md. Any OpenAI-compatible endpoint
+# works: Groq, OpenRouter, DeepSeek, Together, or local Ollama / vLLM.
+provider = "moonshot"
+base_url = "https://api.moonshot.ai/v1"
+model = "kimi-k3"
+
+# Leave unset to read MARGINALIA_LLM_API_KEY from the environment instead.
+# The file wins when both are present.
+# api_key = ""
+
+# timeout_s = 420
+# max_tokens = 4096
+
+# Merged into every request body. Where a provider-wide setting lives when one
+# is needed. Nothing in the code reads inside it — `temperature` was hardcoded
+# once and broke the first provider swap, because some models accept only their
+# own default.
+# extra = { temperature = 0 }
+
+[llm.limits]
+# The provider's ceiling. The limiter blocks to stay under it rather than
+# erroring — a discovery run legitimately needs more than this many requests.
+# Set it conservatively: too low costs patience, too high costs failed runs.
+requests_per_minute = 20
+
+# Candidates judged per stage-1 request. Under per-request credits this saved
+# requests; under per-token billing it sends the brief once per batch instead
+# of once per candidate. Set to 1 and behaviour is identical either way.
+judge_batch_size = 10
+
+[llm.pricing]
+# Per million tokens, for the cost estimate and the max_cost_usd guard. In
+# config because rates change and the next provider's will differ.
+input_per_million = 3.0
+output_per_million = 15.0
+
+# Thinking effort per task, merged into that task's request body and passed
+# through untouched. A provider without the feature simply has no blocks here,
+# and every request is the portable baseline.
+#
+# The split follows volume and consequence. judge_metadata runs most often and
+# reasons least — and reasoning tokens bill as output, at 5x the input rate —
+# so effort on the highest-volume call is where cost and latency go wrong at
+# once. write_brief runs once and decides what every later judgement is measured
+# against. Low is the floor, never off: "off" is a different code path on some
+# providers, and consistency beats the marginal saving.
+#
+# Verify it is honoured before trusting it: a silently ignored field looks
+# identical to a working one. Compare output-token counts at low versus high.
+[llm.tasks.judge_metadata]
+extra = { reasoning_effort = "low" }
+
+[llm.tasks.expand_queries]
+extra = { reasoning_effort = "low" }
+
+[llm.tasks.judge_opening]
+extra = { reasoning_effort = "medium" }
+
+[llm.tasks.write_brief]
+extra = { reasoning_effort = "high" }
+
+[llm.tasks.review_brief]
+extra = { reasoning_effort = "high" }
+
+[discover]
+# Stopping conditions. Whichever fires first wins, and which one fired is
+# recorded in runs.stopped_because.
+max_rounds = 3
+max_videos = 25
+max_requests = 120
+# Rounds finding nothing new before the loop gives up.
+quiet_rounds = 2
+
+# The real guard under per-token billing: a request count says nothing about
+# what a batch of fifty candidates cost versus a batch of five. 0 disables it.
+max_cost_usd = 1.50
+
+# Seconds between transcript fetches. YouTube throttles a burst — a run that
+# pulled six videos quickly had its next thirteen fetches all fail within nine
+# seconds. Real backoff belongs to M3; this keeps a run polite.
+fetch_delay_s = 3.0
+
+# How wide each round casts. These multiply: queries × results is the candidate
+# count, and candidates ÷ judge_batch_size is the request count. Lower them on a
+# slow or heavily queued provider.
+queries_per_round = 6
+results_per_query = 10

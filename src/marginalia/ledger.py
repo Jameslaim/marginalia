@@ -32,6 +32,7 @@ __all__ = [
     "LedgerError",
     "VideoRow",
     "DecisionRow",
+    "RunRow",
     "skip_reason",
     "normalise_topic",
     "STATUS_PENDING",
@@ -109,10 +110,13 @@ CREATE TABLE IF NOT EXISTS decisions (
   stage      TEXT NOT NULL,   -- search | metadata | opening | note
   verdict    TEXT NOT NULL,   -- yes | no | maybe
   reason     TEXT,
-  decided_at TEXT NOT NULL
+  decided_at TEXT NOT NULL,
+  run_id     TEXT,            -- the discovery run, and so the brief, behind it
+  model      TEXT             -- which model said so; the provider is temporary
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_topic ON decisions(topic, verdict);
 CREATE INDEX IF NOT EXISTS idx_decisions_video ON decisions(video_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_run   ON decisions(run_id);
 
 CREATE TABLE IF NOT EXISTS quota (
   provider   TEXT NOT NULL,
@@ -120,7 +124,38 @@ CREATE TABLE IF NOT EXISTS quota (
   units_used INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (provider, date)
 );
+
+CREATE TABLE IF NOT EXISTS runs (
+  run_id          TEXT PRIMARY KEY,
+  topic           TEXT NOT NULL,
+  brief           TEXT NOT NULL,
+  brief_version   TEXT,
+  model           TEXT,
+  started_at      TEXT NOT NULL,
+  finished_at     TEXT,
+  rounds          INTEGER NOT NULL DEFAULT 0,
+  candidates_seen INTEGER NOT NULL DEFAULT 0,
+  videos_stored   INTEGER NOT NULL DEFAULT 0,
+  requests_made   INTEGER NOT NULL DEFAULT 0,
+  input_tokens    INTEGER NOT NULL DEFAULT 0,
+  output_tokens   INTEGER NOT NULL DEFAULT 0,
+  stopped_because TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs(topic);
 """
+
+# Columns added after a table shipped, which can be introduced in place.
+#
+# The no-migration rule still holds for anything that changes meaning — M2a
+# replaced `rejections` with `decisions` and that required a rebuild, correctly.
+# But adding a *nullable* column loses nothing and invents nothing: existing
+# rows read NULL, which is the honest answer to "which run produced this?" for
+# a decision made before runs existed. Destroying a library of transcripts to
+# add a column nobody had yet would be the more damaging choice.
+_ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    ("decisions", "run_id", "TEXT"),
+    ("decisions", "model", "TEXT"),
+)
 
 # Tables an older marginalia created that no longer exist. Their presence is
 # proof the ledger predates a schema change, which `CREATE TABLE IF NOT
@@ -189,6 +224,8 @@ class DecisionRow:
     verdict: str
     reason: str | None
     decided_at: str
+    run_id: str | None = None
+    model: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> DecisionRow:
@@ -200,12 +237,42 @@ class DecisionRow:
         return self.decided_at[:10]
 
 
+@dataclass(frozen=True)
+class RunRow:
+    """One discovery run: the brief it worked from, and what it cost.
+
+    ``brief`` is stored in full rather than summarised. When a library looks
+    wrong the first question is always *what did it think I meant?*, and that
+    is unanswerable from a topic string.
+    """
+
+    run_id: str
+    topic: str
+    brief: str
+    brief_version: str | None
+    model: str | None
+    started_at: str
+    finished_at: str | None
+    rounds: int
+    candidates_seen: int
+    videos_stored: int
+    requests_made: int
+    input_tokens: int
+    output_tokens: int
+    stopped_because: str | None
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> RunRow:
+        return cls(**{field.name: row[field.name] for field in fields(cls)})
+
+
 # Every table the current schema expects, and the columns it must have. Used
 # by the drift guard; kept beside the dataclasses so it cannot fall behind.
 _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "videos": frozenset(field.name for field in fields(VideoRow)),
     "decisions": frozenset(field.name for field in fields(DecisionRow)),
     "quota": frozenset({"provider", "date", "units_used"}),
+    "runs": frozenset(field.name for field in fields(RunRow)),
 }
 
 
@@ -264,6 +331,10 @@ class Ledger:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row
+        # Migration first: _SCHEMA indexes columns that an older ledger does
+        # not have yet, so CREATE INDEX would fail before the guard could
+        # produce a readable message.
+        self._add_missing_columns()
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
         self._check_schema()
@@ -409,6 +480,29 @@ class Ledger:
         log.info("ledger: %s -> failed (%s)", video_id, fail_kind)
         return self._require(video_id)
 
+    def mark_rejected(self, video_id: str, *, provider: str | None = None) -> VideoRow:
+        """A video that was fetched, read, and declined.
+
+        The row is kept and the transcript is not written. Status `rejected`
+        rather than `failed`: nothing went wrong, and ``skip_reason`` still
+        re-attempts it if the user later names this video directly, because a
+        judgement made for one brief says nothing about a direct request.
+        """
+        self._update(
+            video_id,
+            """
+            UPDATE videos SET
+                status       = ?,
+                provider     = COALESCE(?, provider),
+                last_updated = ?,
+                fail_kind    = NULL
+            WHERE video_id = ?
+            """,
+            (STATUS_REJECTED, provider, _utcnow(), video_id),
+        )
+        log.info("ledger: %s -> rejected", video_id)
+        return self._require(video_id)
+
     def touch_accessed(self, video_id: str) -> None:
         """Record that this video's stored text was read.
 
@@ -436,8 +530,15 @@ class Ledger:
         stage: str,
         verdict: str,
         reason: str | None = None,
+        run_id: str | None = None,
+        model: str | None = None,
     ) -> DecisionRow:
-        """Record one verdict. ``topic`` is normalised on the way in."""
+        """Record one verdict. ``topic`` is normalised on the way in.
+
+        ``model`` is recorded because the provider is temporary. When it
+        changes and judging quality shifts, the only way to work out why is to
+        know which model produced which verdict.
+        """
         if stage not in _STAGES:
             raise ValueError(f"unknown stage {stage!r}; expected one of {sorted(_STAGES)}")
         if verdict not in _VERDICTS:
@@ -450,17 +551,118 @@ class Ledger:
             verdict=verdict,
             reason=reason,
             decided_at=_utcnow(),
+            run_id=run_id,
+            model=model,
         )
         with self._conn:
             self._conn.execute(
                 """
-                INSERT INTO decisions (video_id, topic, stage, verdict, reason, decided_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO decisions
+                    (video_id, topic, stage, verdict, reason, decided_at, run_id, model)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (row.video_id, row.topic, row.stage, row.verdict, row.reason, row.decided_at),
+                (
+                    row.video_id,
+                    row.topic,
+                    row.stage,
+                    row.verdict,
+                    row.reason,
+                    row.decided_at,
+                    row.run_id,
+                    row.model,
+                ),
             )
         log.info("decision: %s %s/%s for %r", video_id, stage, verdict, row.topic)
         return row
+
+    def decisions_for_run(self, run_id: str) -> list[DecisionRow]:
+        rows = self._conn.execute(
+            "SELECT * FROM decisions WHERE run_id = ? ORDER BY rowid", (run_id,)
+        ).fetchall()
+        return [DecisionRow.from_sqlite(row) for row in rows]
+
+    # -- runs --------------------------------------------------------------
+
+    def start_run(
+        self,
+        run_id: str,
+        topic: str,
+        *,
+        brief: str,
+        brief_version: str | None = None,
+        model: str | None = None,
+    ) -> RunRow:
+        """Open a run. Written before the first model call, always.
+
+        Same ordering rule as ``mark_pending``: a run with no ``finished_at``
+        is a run that crashed, and that is diagnosable. Recording only on
+        success leaves no trace that anything was ever attempted.
+        """
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO runs (run_id, topic, brief, brief_version, model, started_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (run_id, normalise_topic(topic), brief, brief_version, model, _utcnow()),
+            )
+        log.info("run %s started for %r", run_id, topic)
+        return self.get_run(run_id)  # type: ignore[return-value]
+
+    def finish_run(
+        self,
+        run_id: str,
+        *,
+        rounds: int,
+        candidates_seen: int,
+        videos_stored: int,
+        requests_made: int,
+        input_tokens: int,
+        output_tokens: int,
+        stopped_because: str,
+    ) -> RunRow:
+        with self._conn:
+            cursor = self._conn.execute(
+                """
+                UPDATE runs SET
+                    finished_at     = ?,
+                    rounds          = ?,
+                    candidates_seen = ?,
+                    videos_stored   = ?,
+                    requests_made   = ?,
+                    input_tokens    = ?,
+                    output_tokens   = ?,
+                    stopped_because = ?
+                WHERE run_id = ?
+                """,
+                (
+                    _utcnow(),
+                    rounds,
+                    candidates_seen,
+                    videos_stored,
+                    requests_made,
+                    input_tokens,
+                    output_tokens,
+                    stopped_because,
+                    run_id,
+                ),
+            )
+        if cursor.rowcount == 0:
+            raise LedgerError(f"no run row for {run_id!r}: start_run() must be called first")
+        return self.get_run(run_id)  # type: ignore[return-value]
+
+    def get_run(self, run_id: str) -> RunRow | None:
+        row = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+        return RunRow.from_sqlite(row) if row is not None else None
+
+    def list_runs(self, topic: str | None = None) -> list[RunRow]:
+        if topic is None:
+            rows = self._conn.execute("SELECT * FROM runs ORDER BY started_at").fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM runs WHERE topic = ? ORDER BY started_at", (normalise_topic(topic),)
+            ).fetchall()
+        return [RunRow.from_sqlite(row) for row in rows]
 
     def latest_decision(
         self, video_id: str, topic: str, *, verdict: str | None = None
@@ -532,6 +734,21 @@ class Ledger:
             raise LedgerError(
                 f"no ledger row for {video_id!r}: mark_pending() must be called first"
             )
+
+    def _add_missing_columns(self) -> None:
+        """Introduce nullable columns added after a table shipped.
+
+        Runs before the drift guard, so a ledger that only lacks additive
+        columns is repaired rather than rejected. Anything the guard still
+        objects to after this genuinely cannot be migrated.
+        """
+        for table, column, declaration in _ADDITIVE_COLUMNS:
+            present = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+            if not present or column in present:
+                continue
+            log.info("ledger: adding %s.%s to an older ledger", table, column)
+            with self._conn:
+                self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def _check_schema(self) -> None:
         """Fail loudly on a ledger written by an older version.

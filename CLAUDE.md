@@ -37,15 +37,41 @@ not drift.
    `tests/test_topics.py` exists to defend it. Do not make the two consistent.
 
 6. **Always write the ledger row before fetching, never after.** `mark_pending()`
-   precedes every network call. A crash then leaves `pending`, which tells the next
+   precedes every network call, and `start_run()` precedes the first judgement. A
+   crash then leaves `pending`, or a run with no `finished_at`, which tells the next
    run the job was in flight. The ledger enforces this: `mark_stored` and friends
    raise if no row exists.
+
+7. **`llm.py` is the only place a model is named, a request is built, or a prompt is
+   loaded.** The provider is temporary and has already been replaced once, so swapping
+   it must mean editing `config.toml` and nothing else. Use only the OpenAI-compatible
+   baseline: `chat/completions`, a system message, a user message, plain text back.
+   **Never** JSON mode, structured outputs, tool calling, prefills, or a
+   provider-specific parameter; each is something some future provider will lack.
+   Prompts stay model-agnostic — a test asserts none of them names a model family.
+
+   **`_send` may name only `model`, `messages`, `max_tokens` and `extra`.** Everything
+   else a provider wants comes from `[llm] extra` or `[llm.tasks.<name>] extra`, merged
+   in and passed through without `llm.py` knowing what any of it means. This is not
+   theoretical: a hardcoded `temperature=0` was the single thing that broke the first
+   real provider swap, because `kimi-k3` refuses any temperature but its own default.
+   A test reads `_send`'s source to keep it honest.
+
+8. **Anything a judge cannot parse becomes MAYBE, never NO.** Keeping a useless video
+   costs one download and is visible in the library. Rejecting a good one costs a
+   video nobody will ever know existed — invisible and permanent. A parser bug, a
+   refused batch, a network blip mid-judgement: all resolve toward keeping. The two
+   mistakes are not symmetric and the code must not treat them as if they were.
 
 ## Structure
 
 - `cli.py` is the only entry point. Skills are thin: they call `marg` and report the
-  line it returns. Logic never lives in a `SKILL.md`.
+  line it returns. Logic never lives in a `SKILL.md` — the ingest skill routes on
+  whether the argument parses as a video ID, and does nothing else.
 - `library.py` builds every library path. No other module constructs one.
+- `llm.py` makes calls and knows nothing about verdicts. `judge.py` turns replies into
+  verdicts and knows nothing about the loop. `discover.py` runs the loop and parses
+  nothing. Keep that split; it is why the parsers are testable without a model.
 - `print` appears only in `cli.py`. Everything else uses `logging`.
 - Reading a transcript must be followed by `Ledger.touch_accessed(video_id)`. The
   deletion policy that arrives later depends on it, and it cannot be reconstructed
@@ -53,24 +79,30 @@ not drift.
 
 ## Scope
 
-Milestone 2a is ingest-one-URL plus **search and the two free gates**. `marg search`
-decides only whether a candidate is *known* — never whether it is any good.
+Milestone 2b is ingest-one-URL, search and the two free gates, plus **relevance
+judging and the discovery loop**. A topic goes in, a library comes out.
 
-Do not add LLM calls of any kind, `llm.py`, `prompts/`, `discover.py`, relevance
-judging, the discovery loop, ASR, understanding notes, `/ask`, embeddings, or content
-fingerprinting (Gate 3) — each belongs to a later milestone in `PLAN.md`.
+Do not add ASR or Whisper, understanding notes, `note.py`, `/ask`, `ask.py`,
+embeddings, or content fingerprinting (Gate 3) — each belongs to a later milestone in
+`PLAN.md`. Do not build a gold evaluation set or tune the judge; both wait until real
+failures are observed, which is what the `decisions` log exists to make possible.
 
-If you find yourself wanting to decide whether a video is good, stop. That is M2b.
+Do not add model switching. One model everywhere; what varies per task is thinking
+effort, and that is config. A second model is a second variable while behaviour is
+still stabilising.
 
-Do not add dependencies beyond `yt-dlp` and `pytest`. The YouTube Data API is reached
-with stdlib `urllib`; it is two GETs returning JSON and an HTTP library would buy
-nothing.
+Dependencies are `yt-dlp`, `openai`, and `pytest`. Nothing else. The YouTube Data API
+is reached with stdlib `urllib` — it is two GETs returning JSON and an HTTP library
+would buy nothing. `openai` earns its place because hand-rolling retries and
+rate-limit handling is how you get silent failures.
 
 ## Running it
 
 ```
 marg ingest <url>                  ingest one video
 marg search "<q>" [--limit N]      find candidates; --topic T, --json
+marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requests
+marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list                          list stored videos
 marg guard-write                   internal: the PreToolUse hook, reads stdin

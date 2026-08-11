@@ -96,14 +96,28 @@ class SearchRun:
 
 
 def run_search(
-    config: Config, ledger: Ledger, query: str, *, limit: int = 25, topic: str | None = None
+    config: Config,
+    ledger: Ledger,
+    query: str,
+    *,
+    limit: int = 25,
+    topic: str | None = None,
+    log_decisions: bool = True,
+    run_id: str | None = None,
 ) -> SearchRun:
-    """Search, gate, log. No network call is made for a gated-out video."""
+    """Search, gate, log. No network call is made for a gated-out video.
+
+    ``log_decisions=False`` gates without recording anything, which is what
+    ``discover --dry-run`` needs: a dry run that wrote `no` rows would poison
+    Gate 2 for the real run that follows, so tuning the judge would silently
+    shrink the library it was meant to improve.
+    """
     normalised = normalise_topic(topic if topic is not None else query)
     results, provider, fallbacks = _search(config, ledger, query, limit)
 
     candidates = [
-        _gate(ledger, result, normalised) for result in _deduplicate(results)
+        _gate(ledger, result, normalised, log=log_decisions, run_id=run_id)
+        for result in _deduplicate(results)
     ]
     return SearchRun(
         query=query,
@@ -117,15 +131,24 @@ def run_search(
 # -- the gates -------------------------------------------------------------
 
 
-def _gate(ledger: Ledger, result: SearchResult, topic: str) -> Candidate:
+def _gate(
+    ledger: Ledger,
+    result: SearchResult,
+    topic: str,
+    *,
+    log: bool = True,
+    run_id: str | None = None,
+) -> Candidate:
     verdict, reason, logged = _verdict(ledger, result, topic)
-    ledger.log_decision(
-        result.video_id,
-        topic,
-        stage=STAGE_SEARCH,
-        verdict=logged,
-        reason=reason,
-    )
+    if log:
+        ledger.log_decision(
+            result.video_id,
+            topic,
+            stage=STAGE_SEARCH,
+            verdict=logged,
+            reason=reason,
+            run_id=run_id,
+        )
     return Candidate(result=result, verdict=verdict, reason=reason)
 
 

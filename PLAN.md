@@ -391,19 +391,37 @@ agent extracts "mentioned but unexplored" terms and proposes follow-up rounds.
 **Stopping condition:** two or three consecutive rounds returning no new videos above
 threshold, or a configured budget cap.
 
-### Model tiering
+### Effort tiering — one model, varying thinking effort
 
-| Task | Frequency | Tier |
-|------|-----------|------|
-| Write brief | once per topic | Strong |
-| Review brief | once per topic | Strong |
-| Expand queries | once per topic | Cheap |
-| Judge metadata | ~50× per topic | Cheap |
-| Judge opening | ~10× per topic | Cheap |
-| Write note | once per video | Strong |
+Not model switching. One model everywhere: a second model is a second variable
+while behaviour is still stabilising, and the cost difference across a
+provider's range is a few cents per run. What varies is *thinking effort*, set
+per task in `[llm.tasks.<name>] extra` and passed through untouched.
 
-Rule: anything that runs many times gets a cheap model; anything that runs once gets
-a strong one.
+| Task | Frequency | Effort |
+|------|-----------|--------|
+| Write brief | once per topic | high |
+| Review brief | once per topic | high |
+| Expand queries | once per round | low |
+| Judge metadata | ~50× per topic | low |
+| Judge opening | ~10× per topic | medium |
+| Write note (M5) | once per video | high |
+
+The split follows volume and consequence together. `judge_metadata` runs most
+often and reasons least — and reasoning tokens bill as *output*, at 5× the input
+rate, so effort on the highest-volume call is where cost and latency go wrong at
+once. `write_brief` runs once and decides what every later judgement is measured
+against.
+
+**Effort is never off.** Low is the floor. Beyond quality, "off" is a different
+code path on some providers with different behaviour, and consistency is worth
+more than the marginal saving.
+
+Measured on `kimi-k3`: low produced 270–406 output tokens on a fixed prompt,
+high produced 744–1395 — ranges that do not overlap — with median latency 15.4s
+against 33.2s. The parameter is honoured. It is not *validated*: an invalid
+value is accepted silently, so a typo in config degrades to the default rather
+than erroring.
 
 ### Decision logging — required from day one
 
@@ -434,10 +452,94 @@ diagnosis possible when the time comes.
 | Search | Official YouTube Data API, yt-dlp search as overflow | Sanctioned, keyed, free (~100/day) |
 | Transcripts | yt-dlp, second provider as fallback | Never depend on one method |
 | No captions | faster-whisper `small`, int8, CPU, local | No usable GPU; ASR is a minority path |
-| Sorting | Cheap model, one call per video | Easy question, high volume, flat cost |
-| Understanding | Strong model, one pass per video | Hard question, done once |
+| Judging | Moonshot, `kimi-k3`, OpenAI-compatible | Paid, no queue; see below |
+| Understanding | Same provider, one pass per video | Hard question, done once |
 | Storage | Files + SQLite ledger | Zero setup, portable, inspectable |
 | Browser automation | **None** | Slower, costlier, more fragile than APIs |
+
+### The model provider, and why it is temporary
+
+M2b judges with **Moonshot** (`https://api.moonshot.ai/v1`, model `kimi-k3`)
+through the `openai` SDK. It is the *second* provider: the design was built
+against NVIDIA NIM's free tier and swapped in anger, which is the only real
+test the abstraction was ever going to get.
+
+**What the first provider taught, and why it was abandoned.** NVIDIA NIM served
+`z-ai/glm-5.2` free, at 40 requests/minute, with credits billed per request.
+Latency turned out to be a *queue*, not generation: ~235–300s per request
+regardless of prompt size, against ~8s for `nemotron-3-super-120b-a12b` on the
+same key. It then degraded further — HTTP 504s, and single requests failing to
+return inside 500s — which is what forced the swap. A discovery run there took
+35–100 minutes.
+
+**Rate limiting blocks, it does not fail.** A token bucket in `llm.py`, sized
+from config. A discovery run legitimately needs more requests than any
+per-minute ceiling permits; it should pace itself, not fail at request 41.
+Verified live at 69 requests with 26 pauses in 59 seconds.
+
+**Batching survived the change of billing model.** Under per-request credits it
+saved requests. Under Moonshot's per-token billing it saves sending the brief
+once per batch instead of once per candidate. Still correct, for a different
+reason. `judge_batch_size = 1` must behave identically either way.
+
+**Money is the real guard now.** Under per-token billing a request count says
+nothing: one batch of fifty candidates and one of five cost the same number of
+requests and wildly different amounts. `max_cost_usd` is computed from the token
+counts already recorded and per-million rates in config.
+
+**The tier is still temporary and the successor is still unchosen.** The
+provider is treated as disposable from the first line of code.
+
+### Swapping providers is config, never code
+
+Only the OpenAI-compatible baseline is used: `chat/completions`, a system
+message, a user message, plain text back. Deliberately **not** used — JSON mode,
+structured outputs, tool calling, response prefills, any provider-specific
+parameter. Each is something some future provider will lack or implement
+differently. Robust text parsing works everywhere, and the parsers in
+`judge.py` are cheaper than a migration.
+
+Consequences that must hold:
+
+- Prompts are model-agnostic. No "you are X" framing, no reliance on one
+  model's formatting habits. A test asserts no prompt names a model family.
+- Everything provider-shaped is config, `requests_per_minute` included — the
+  next provider will have a different ceiling.
+- `model` is recorded on both `runs` and `decisions`. When the provider changes
+  and quality shifts, the only way to find out why is to know which model
+  produced which verdict.
+- `marg llm-check` sends one trivial request and reports model, latency and
+  whether parsing worked. First thing to run after a swap.
+
+Known OpenAI-compatible fallbacks: Groq, OpenRouter, DeepSeek, Together, and
+local serving via Ollama or vLLM. All take the same three config values.
+
+### What the real swap cost — one line of code
+
+Swapping NVIDIA NIM for Moonshot was three config values and **one code
+deletion**: `llm.py` had `temperature=0` hardcoded in the request, and
+`kimi-k3` returns HTTP 400 for any temperature but its own default. Temperature
+looks like part of the OpenAI baseline and is not — reasoning models routinely
+refuse it.
+
+The abstraction was 95% right and the missing 5% was exactly the failure mode it
+was built to prevent: a provider-shaped parameter living in code. Removed and
+pushed into config as `[llm] extra`, which now carries anything provider-wide.
+`_send` names only the four fields every endpoint requires — `model`,
+`messages`, `max_tokens`, and the opaque `extra` — and a test reads its source
+to keep it that way.
+
+The lesson worth keeping: **an abstraction is only proven by a swap that was not
+rehearsed.** Nothing in the test suite would have caught this, because a mock
+transport accepts whatever it is handed.
+
+### Per-task request extras
+
+`[llm.tasks.<name>] extra = { ... }` is merged into the request body for that
+task, with `[llm] extra` as the base. `llm.py` never looks inside either: no
+named parameter, no validation, no branching on provider. A provider without
+the feature has no blocks, gets an empty dict, and every request is the
+baseline. That is what keeps the swap config-only.
 
 ### Provider abstraction
 
@@ -596,6 +698,7 @@ marginalia/
 │   ├── ledger.py                the three gates, decisions, quota
 │   ├── library.py               folder layout read/write
 │   ├── search.py                provider chain + gates 1 and 2
+│   ├── judge.py                 model output → verdicts (the parsers)
 │   ├── discover.py              brief → queries → judge → loop
 │   ├── providers/
 │   │   ├── base.py              TranscriptProvider + SearchProvider interfaces
@@ -643,6 +746,21 @@ deciding which are *known* is free, deterministic, and testable without a model,
 deciding which are *good* is none of those things. They will change for different
 reasons.
 
+### Milestone 2b adds
+
+`llm.py`, `judge.py`, `discover.py`, `prompts/`, the `marg discover` and
+`marg llm-check` commands, the `runs` table, and `run_id`/`model` on `decisions`.
+
+`judge.py` sits between the other two rather than inside either. `llm.py` knows
+how to make a call and nothing about verdicts; `discover.py` knows the loop and
+nothing about parsing. Between them is the part most likely to break — turning
+free text into a decision — and it is worth isolating because the model is
+temporary and the prompts will change while the loop does not.
+
+The three-way split also matches the test surface: `test_judge_parsing.py` is
+pure functions over strings, `test_llm.py` is pacing and retries with an
+injected clock, `test_discover.py` is control flow with everything mocked.
+
 Everything else arrives with the milestone that needs it. Split a file when it has two
 different reasons to change — not before.
 
@@ -659,43 +777,38 @@ Start standalone for fast iteration; convert to a distributable plugin only when
 
 ## 15. Claude Code capabilities to use
 
-### Model switching — native, per task
+### Model calls: settled, and not through Claude Code
 
-Subagents accept `model` (`haiku`, `sonnet`, `opus`, `fable`, a full model ID, or
-`inherit`) and `effort` (`low` → `max`) in frontmatter. Model tiering becomes
-configuration rather than code.
-
-```yaml
-# agents/judge-relevance.md
----
-description: Decides if one video matches the relevance brief
-model: haiku
-effort: low
-maxTurns: 1
-tools: Read
----
-```
-
-```yaml
-# agents/write-note.md
----
-description: Reads a full transcript and writes the understanding note
-model: opus
-effort: high
----
-```
-
-Resolution order: `CLAUDE_CODE_SUBAGENT_MODEL` → per-invocation parameter → frontmatter
-→ inherit. `maxTurns` caps runaway subagents — the judge should decide in one turn.
-
-### Two ways to make model calls
+M1's plan left this open — prototype judging with Claude Code subagents, then move
+it into `llm.py` when unattended runs were needed. **M2b settled it: all model
+calls go through `llm.py` against an OpenAI-compatible HTTP provider.** Subagents
+were not used at all, and `agents/judge-relevance.md` was never written.
 
 | | Python → API (`llm.py`) | Claude Code subagents |
 |---|---|---|
-| Billing | API key, per-token | Uses the session |
-| Model tiering | Code | Frontmatter |
+| Billing | Provider key | Uses the session |
+| Model choice | `config.toml` | Frontmatter |
 | Unattended batches | **Yes** | No — session only |
-| Setup cost | Keys, billing | None |
+| Rate limiting | Ours, and blocking | Not exposed |
+| Provider swap | Three config values | Tied to Claude Code |
+
+The deciding factor was never billing. It is that a discovery run must be
+reproducible, rate-limited, and diagnosable from the `decisions` table months
+later, and a subagent judging inside a conversation is none of those. The
+loop-back that makes discovery work is a `while` in `discover.py`, not a model
+deciding to search again.
+
+The consequence is that this project is only a *Claude Code plugin* at its
+edges — skills that call a CLI. The intelligence is in Python, which is also
+what lets it run unattended for M4's ASR queue and M5's note worker.
+
+### Still worth using
+
+- **`hooks/`** — `PreToolUse` blocks direct writes to the library. Enforcement,
+  not instruction. Shipped in M2a and verified firing.
+- **`bin/`** — CLI on the Bash tool's PATH while the plugin is active.
+- **`isolation: worktree`** — isolated checkouts if two agents ever work the
+  codebase concurrently.
 
 The plan depends on background ASR and note queues running unattended, so `llm.py` is
 the destination. But prototype M1–M2 with subagents to avoid billing setup, then move

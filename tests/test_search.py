@@ -15,6 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from conftest import make_config
 
 from marginalia.config import Config
 from marginalia.ledger import (
@@ -81,15 +82,7 @@ def ledger(tmp_path: Path) -> Iterator[Ledger]:
 
 @pytest.fixture()
 def config(tmp_path: Path) -> Config:
-    return Config(
-        library_path=tmp_path / "library",
-        transcript_order=("ytdlp",),
-        search_order=("primary",),
-        youtube_api_key="key",
-        youtube_daily_units=10_000,
-        path=tmp_path / "config.toml",
-        created=False,
-    )
+    return make_config(tmp_path)
 
 
 @pytest.fixture()
