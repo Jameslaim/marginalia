@@ -1,0 +1,43 @@
+#!/usr/bin/env sh
+# marginalia CLI entrypoint. Claude Code puts bin/ on the Bash tool's PATH
+# while the plugin is enabled, so this must work with nothing else set up.
+#
+# Runs from a source checkout without installation: src/ goes on PYTHONPATH.
+
+set -e
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+
+# A candidate counts only if it actually runs and is new enough. Testing with
+# `command -v` is not enough: on Windows that finds the Microsoft Store alias
+# stubs for python/python3, which are not interpreters and exit 49.
+usable() {
+  [ -n "$1" ] || return 1
+  "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1
+}
+
+python_bin=""
+for candidate in \
+  "$MARGINALIA_PYTHON" \
+  "$root/.venv/Scripts/python.exe" \
+  "$root/.venv/bin/python" \
+  python3 \
+  python
+do
+  if usable "$candidate"; then
+    python_bin="$candidate"
+    break
+  fi
+done
+
+if [ -z "$python_bin" ]; then
+  echo "marg: no working Python 3.11+ found." >&2
+  echo "      tried: \$MARGINALIA_PYTHON, $root/.venv, python3, python" >&2
+  echo "      set MARGINALIA_PYTHON to a Python 3.11+ interpreter." >&2
+  exit 127
+fi
+
+PYTHONPATH="$root/src${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+
+exec "$python_bin" -m marginalia.cli "$@"

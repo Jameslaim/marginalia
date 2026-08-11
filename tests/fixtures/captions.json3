@@ -1,0 +1,11 @@
+{
+  "wireMagic": "pb3",
+  "events": [
+    {"tStartMs": 0, "dDurationMs": 1500, "aAppend": 1, "segs": [{"utf8": "\n"}]},
+    {"tStartMs": 1500, "dDurationMs": 1500, "segs": [{"utf8": "Tom &amp; Jerry&#39;s big day"}]},
+    {"tStartMs": 3000, "dDurationMs": 0, "segs": [{"utf8": "Zero length cue"}]},
+    {"tStartMs": 4000, "dDurationMs": 3250, "segs": [{"utf8": "First line"}, {"utf8": "\nsecond line"}]},
+    {"tStartMs": 8000, "dDurationMs": 1000, "segs": [{"utf8": "   "}]},
+    {"tStartMs": 10000, "dDurationMs": 2000, "segs": [{"utf8": "Final line"}]}
+  ]
+}

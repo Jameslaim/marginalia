@@ -1,0 +1,10 @@
+# Copy to config.toml (or ~/.marginalia/config.toml) and edit.
+# Resolution order: MARGINALIA_CONFIG -> ./config.toml -> ~/.marginalia/config.toml
+
+[library]
+# Where transcripts and the ledger live. Never inside the git repository.
+path = "C:/youtube-agent/marginalia-library"
+
+[providers]
+# Transcript sources, tried in order. Only "ytdlp" exists today.
+transcript_order = ["ytdlp"]

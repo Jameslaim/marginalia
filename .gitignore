@@ -1,0 +1,29 @@
+# Local configuration — points at machine-specific paths
+config.toml
+
+# Claude Code local overrides
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Library data — NEVER in git.
+# The library is transcripts and a ledger; it lives outside this repo, but these
+# patterns exist so an accidental copy inside the tree can never be committed.
+marginalia-library/
+**/marginalia-library/
+library/
+videos/
+ledger.db
+*.db
+*.db-wal
+*.db-shm
+**/transcript.txt
+**/meta.json

@@ -1,0 +1,5 @@
+{
+  "name": "marginalia",
+  "version": "0.1.0",
+  "description": "Ingest YouTube videos into a local transcript library. Transcripts stay on disk; only one-line reports reach the conversation."
+}
