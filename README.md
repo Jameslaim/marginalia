@@ -190,6 +190,41 @@ reading happens at ingest rather than at query time.
 "Leaves out" matters most. Someone asking *when is X not worth it?* should be led to
 the video that fails to answer it, and no topic label will ever do that.
 
+### Record versus inference
+
+Anything in a note that did not come from the transcript carries a marker:
+
+```
+[note: from the figures given, break-even is ~1.3 cached reads — the video never states this]
+```
+
+Arithmetic, extrapolation, outside knowledge of the subject, the speaker or the
+product, and comparison to anything outside the video. Inference is **not** banned —
+"the video never states break-even, but its own figures give ~1.3 reads" is worth far
+more than silence. What is banned is that sentence being indistinguishable from
+something the speaker said.
+
+The convention is greppable on purpose:
+
+```bash
+grep -c '\[note:' /c/youtube-agent/marginalia-library/videos/*/note.md
+```
+
+That number is how much of the understanding layer is inference rather than record.
+
+This came out of an audit rather than a design session. v2 was told to mark outside
+knowledge, but only in the *Who's talking* section — and that is precisely and only
+where it did so: 20 markers across 36 notes, almost all of them about the speaker,
+while *Leaves out* quietly asserted provider prices, token thresholds and API
+behaviour that no transcript contained. Reading five notes against their transcripts
+found ~44 outside-knowledge claims written in the video's voice against 2 marked. The
+lesson worth keeping: **a rule stated inside one section is scoped to that section**,
+however general its wording.
+
+Timestamps cite the start of the transcript line where a claim begins. Measured across
+23 citations before that was explicit: 12 landed late, mean +3.7s, worst +7s — fine for
+jumping to a moment, wrong for quoting one, and M6 does both.
+
 The headings are fixed so fifty notes can be read together; the prose inside is free
 so the note can say something a schema could not anticipate. A section with nothing to
 report must *say so* — "no errors found" is a claim, and a useful one — so a heading

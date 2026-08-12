@@ -543,6 +543,63 @@ def test_both_judges_state_the_inclusion_bias() -> None:
         assert "permanent" in body, f"{name} lost the asymmetry argument"
 
 
+def test_the_note_prompt_demands_a_marker_on_anything_inferred() -> None:
+    """An audit of five notes found ~44 outside-knowledge assertions written in
+    the video's own voice, against 2 marked. M6 answers from notes, so an
+    unmarked inference becomes an asserted fact two layers from any transcript
+    that could contradict it."""
+    # Whitespace collapsed: the rule is prose, prose wraps, and a line break
+    # must not be able to break the assertion guarding it.
+    body = " ".join(load_prompt("write_note").text.lower().split())
+
+    assert "[note:" in body, "the marker convention itself is gone"
+    assert "if it did not come out of the transcript" in body
+    # The four things that must carry it. Arithmetic and outside knowledge were
+    # the two observed; extrapolation and comparison are the same mistake.
+    for kind in ("arithmetic you performed", "extrapolation", "outside knowledge", "comparison"):
+        assert kind in body, f"the marker no longer covers {kind}"
+
+
+def test_the_note_prompt_does_not_ban_inference() -> None:
+    """Banning it would be worse than the problem. "The video never states
+    break-even, but its own figures give ~1.3 reads" is more useful than
+    silence — what is forbidden is it reading as something the speaker said."""
+    body = " ".join(load_prompt("write_note").text.lower().split())
+
+    assert "your own reasoning is welcome" in body
+    assert "indistinguishable" in body
+
+
+def test_the_note_prompt_names_the_two_sections_that_leak_most() -> None:
+    """The audit found inference concentrated in Leaves out and Wrong or shaky,
+    for a structural reason: saying "the video never covers X" requires knowing
+    X, and the explanation of X that follows is the note's, not the video's."""
+    body = " ".join(load_prompt("write_note").text.lower().split())
+
+    assert "the section where this goes wrong most is **leaves out**" in body
+    assert "the same applies to **wrong or shaky**" in body
+
+
+def test_the_note_prompt_pins_timestamps_to_where_a_claim_starts() -> None:
+    """Measured across 23 citations in five notes: 12 landed late, mean +3.7s,
+    worst +7s. Deep links are M6's primary output and mid-sentence is wrong for
+    quoting."""
+    body = " ".join(load_prompt("write_note").text.lower().split())
+
+    assert "start timestamp of the transcript line where the claim begins" in body
+    assert "not where the sentence finishes" in body
+
+
+def test_the_note_prompt_asks_for_a_deliberate_undefined_terms_pass() -> None:
+    """A recall miss, not a rule failure: "breakpoint" was used undefined and
+    never reached Assumes you know. By the end of a transcript every term in it
+    feels familiar, which is exactly why it needs a separate pass."""
+    body = " ".join(load_prompt("write_note").text.lower().split())
+
+    assert "deliberate pass" in body
+    assert "without ever being defined" in body
+
+
 def test_the_metadata_judge_rejects_other_depth_proxies_too() -> None:
     """Duration was the one observed. View count and channel size are the same
     inference and would be just as invisible."""

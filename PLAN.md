@@ -909,6 +909,16 @@ ends. Visibility aid, not a substitute for a real daemon.
 - **Store the note prompt version** alongside each note, so stale ones are identifiable
   when the prompt improves. Built in M5 as `videos.note_version`, which makes "what is
   stale?" a query rather than a list.
+- **A note asserting something the transcript does not contain, in the transcript's
+  voice, is the failure mode that matters most.** M6 answers from notes, so an
+  unmarked inference becomes an asserted fact two layers from any transcript that
+  could contradict it. Everything not from the transcript carries `[note: ...]`;
+  inference is welcome, indistinguishability is not.
+- **A rule stated inside one section is scoped to that section.** v2 told the note to
+  mark outside knowledge, in the *Who's talking* paragraph — and that is exactly and
+  only where it complied, while *Leaves out* asserted provider prices and token
+  thresholds no transcript contained. General rules belong in a general place, and it
+  took an audit rather than a review to see it.
 - **Automatic captions mangle exactly the terms a note cares about.** A garbled
   threshold at the moment the speaker states the most important number is worth
   recording — but as the transcriber's error, not the speaker's. `caption_kind` is

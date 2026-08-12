@@ -104,6 +104,16 @@ make possible.
 claims, what it gets wrong, what it assumes, and — most valuable — what it leaves out.
 If a section of a note could be replaced by a topic label, the prompt has drifted.
 
+**Everything in a note that did not come from the transcript carries a `[note: ...]`
+marker.** Arithmetic, extrapolation, outside knowledge of the subject or the speaker,
+comparison to anything outside the video. Inference is not banned — it is often the
+most valuable thing in a note — but it must never be indistinguishable from what the
+speaker said. M6 answers from notes, so an unmarked inference becomes an asserted fact
+two layers away from any transcript that could contradict it. `grep -c '\[note:'`
+across the library says how much of the understanding layer is inference rather than
+record. Audited at v2 and found systematic: ~44 outside-knowledge assertions across
+five notes, two of them marked.
+
 Do not add model switching. One model everywhere; what varies per task is thinking
 effort, and that is config. A second model is a second variable while behaviour is
 still stabilising.
