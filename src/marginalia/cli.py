@@ -44,6 +44,7 @@ from .ledger import (
 )
 from .library import Library, format_duration
 from .note import FAILED, NOTED, SKIPPED, note_version, write_notes
+from .timestamps import snap_library
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider, TranscriptResult
 from .search import KNOWN, NEW, REJECTED, Candidate, SearchRun, run_search
@@ -454,6 +455,67 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_snap_timestamps(args: argparse.Namespace) -> int:
+    """Align cited timestamps onto the transcript line they refer to.
+
+    Note text never reaches stdout here either. What is printed is the
+    citations themselves — ``00:09:33 -> 00:09:31`` — plus a truncated preview
+    of the note's own line, which is the note's words about the video rather
+    than the video's words. The transcript is read and never quoted.
+    """
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+
+    video_ids: list[str] = []
+    for value in args.video or []:
+        video_id = extract_video_id(value)
+        if video_id is None:
+            return _error(f"not a YouTube URL or video ID: {value!r}", EXIT_USAGE)
+        video_ids.append(video_id)
+
+    results = snap_library(library, video_ids, dry_run=args.dry_run)
+    if not results:
+        print("no notes to snap")
+        return EXIT_OK
+
+    snapped = left = failed = 0
+    for result in results:
+        if result.error:
+            failed += 1
+            _report("skipped", result.video_id, result.error)
+            continue
+        snapped += len(result.snapped)
+        left += len(result.left)
+        if result.snapped:
+            _report(
+                "snapped" if not args.dry_run else "would",
+                result.video_id,
+                f"{len(result.snapped)} of {result.total}",
+            )
+            for change in result.snapped:
+                shift = change.delta_ms / 1000.0
+                print(
+                    f"             {change.before} -> {change.after} "
+                    f"({shift:+.1f}s, {change.section})  {change.preview}"
+                )
+        elif result.total:
+            _report("unchanged", result.video_id, f"0 of {result.total}")
+
+    reasons: dict[str, int] = {}
+    for result in results:
+        for _section, _raw, reason in result.left:
+            reasons[reason] = reasons.get(reason, 0) + 1
+    for reason, count in sorted(reasons.items(), key=lambda item: -item[1]):
+        print(f"left:     {count:3d}  {reason}")
+
+    print(
+        f"run:      {snapped} snapped, {left} left alone, {failed} skipped, "
+        f"{len(results)} notes" + (" (dry run, nothing written)" if args.dry_run else "")
+    )
+    return EXIT_OK
+
+
 def _cmd_guard_write(args: argparse.Namespace) -> int:
     """PreToolUse hook: refuse Write/Edit aimed inside the library.
 
@@ -743,6 +805,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--status", default=STATUS_STORED, help="ledger status to list (default: stored)"
     )
     listing.set_defaults(handler=_cmd_list)
+
+    snap = subparsers.add_parser(
+        "snap-timestamps", help="align cited timestamps in notes to the transcript"
+    )
+    snap.add_argument("video", nargs="*", help="video IDs or URLs (default: every note)")
+    snap.add_argument(
+        "--dry-run", action="store_true", help="report what would change, write nothing"
+    )
+    snap.set_defaults(handler=_cmd_snap_timestamps)
 
     guard = subparsers.add_parser(
         "guard-write",

@@ -130,6 +130,7 @@ marg ingest <url>                  ingest one video
 marg search "<q>" [--limit N]      find candidates; --topic T, --json
 marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requests
 marg note [<video_id>...]          write notes; --limit N, --regenerate [--all], --status
+marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --dry-run
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list                          list stored videos
