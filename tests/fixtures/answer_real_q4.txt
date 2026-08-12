@@ -1,0 +1,32 @@
+Across the synthetic caching talks in this fixture, speakers frequently describe read discounts
+while omitting or under-specifying cache write pricing and break-even thresholds.
+
+**Missing write-cost details:**
+
+- Synthetic Talk 1 describes read discounts (synVidQ0001 00:01) without pricing the initial write (synVidQ0001 01:01).
+- Synthetic Talk 2 describes read discounts (synVidQ0002 00:02) without pricing the initial write (synVidQ0002 01:02).
+- Synthetic Talk 3 describes read discounts (synVidQ0003 00:03) without pricing the initial write (synVidQ0003 01:03).
+- Synthetic Talk 4 describes read discounts (synVidQ0004 00:04) without pricing the initial write (synVidQ0004 01:04).
+- Synthetic Talk 5 describes read discounts (synVidQ0005 00:05) without pricing the initial write (synVidQ0005 01:05).
+- Synthetic Talk 6 describes read discounts (synVidQ0006 00:06) without pricing the initial write (synVidQ0006 01:06).
+- Synthetic Talk 7 describes read discounts (synVidQ0007 00:07) without pricing the initial write (synVidQ0007 01:07).
+- Synthetic Talk 8 describes read discounts (synVidQ0008 00:08) without pricing the initial write (synVidQ0008 01:08).
+- Synthetic Talk 9 describes read discounts (synVidQ0009 00:09) without pricing the initial write (synVidQ0009 01:09).
+- Synthetic Talk 10 describes read discounts (synVidQ0010 00:10) without pricing the initial write (synVidQ0010 01:10).
+- Synthetic Talk 11 describes read discounts (synVidQ0011 00:11) without pricing the initial write (synVidQ0011 01:11).
+- Synthetic Talk 12 describes read discounts (synVidQ0012 00:12) without pricing the initial write (synVidQ0012 01:12).
+- Synthetic Talk 13 describes read discounts (synVidQ0013 00:13) without pricing the initial write (synVidQ0013 01:13).
+- Synthetic Talk 14 describes read discounts (synVidQ0014 00:14) without pricing the initial write (synVidQ0014 01:14).
+- Synthetic Talk 15 describes read discounts (synVidQ0015 00:15) without pricing the initial write (synVidQ0015 01:15).
+- Synthetic Talk 16 describes read discounts (synVidQ0016 00:16) without pricing the initial write (synVidQ0016 01:16).
+- Synthetic Talk 17 describes read discounts (synVidQ0017 00:17) without pricing the initial write (synVidQ0017 01:17).
+- Synthetic Talk 18 describes read discounts (synVidQ0018 00:18) without pricing the initial write (synVidQ0018 01:18).
+- Synthetic Talk 19 describes read discounts (synVidQ0019 00:19) without pricing the initial write (synVidQ0019 01:19).
+- Synthetic Talk 20 describes read discounts (synVidQ0020 00:20) without pricing the initial write (synVidQ0020 01:20).
+
+**Stated without break-even arithmetic:**
+
+- Synthetic Talk 21 mentions both write and read multipliers (synVidQ0021 00:45, 00:58) without showing break-even math.
+- Synthetic Talk 22 notes a short TTL window (synVidQ0022 01:36.760) and a re-write fee (synVidQ0022 03:28.939).
+
+ask:      22 notes, 0 citations, 1 requests, $0.0010, 1s, v1

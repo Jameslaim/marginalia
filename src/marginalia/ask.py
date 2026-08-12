@@ -43,11 +43,14 @@ log = logging.getLogger(__name__)
 __all__ = [
     "Answer",
     "Citation",
+    "CitationScan",
     "LoadedNote",
     "answer_question",
     "deep_link",
     "load_notes",
+    "normalise_dashes",
     "parse_citations",
+    "scan_citations",
     "parse_escalations",
     "render_links",
 ]
@@ -57,19 +60,56 @@ __all__ = [
 # request for one.
 _ESCALATE_RE = re.compile(r"^\s*ESCALATE:\s*([A-Za-z0-9_-]{11})\s*:?\s*(.*)$", re.MULTILINE)
 
-# `[<video_id> MM:SS]` or `[<video_id> HH:MM:SS]`, as the prompt asks for —
-# and the same thing in parentheses, which is not what the prompt asks for and
-# is what the model writes perhaps a third of the time.
+# Citation parsing. Liberal on purpose, and the reason is a measured failure:
+# a real answer carrying well over a hundred inline citations reported two,
+# because the parser accepted only the one shape the prompt asks for. Every
+# other shape the model actually writes was discarded in silence.
 #
-# Accepting both is not laxity. A citation is only worth anything if it becomes
-# a link, and the alternative here was an answer that cited thirty moments
-# across a dozen videos, every one of them correct, and produced no links at
-# all because the brackets were round. Losing the entire product surface to a
-# delimiter is a worse failure than tolerating two spellings of the same thing.
-# Trailing milliseconds are tolerated and dropped: a link takes whole seconds.
-_CITE_RE = re.compile(
-    r"[\[(]([A-Za-z0-9_-]{11})\s+(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})?[\])]"
+# What real output contains, all of it dropped by the strict version:
+#
+#     [AMwrLF_TeWo 00:00:42-00:01:02]              a range
+#     [GfNdXFS8O0w 00:00:37; 6cEQEba0i2A 00:02:29] two citations in one bracket
+#     [-YTupW6YG1k 01:00-01:09, 02:28]             a list, second entry has no ID
+#     [--_0uiiJfsBPI 15:48-16:40]                  stray punctuation before the ID
+#     [-YTupW6YG1k 00:00-00:42? - under-specifies] prose trailing inside
+#
+# Two things make this tractable rather than a guessing game.
+#
+# **Dashes are normalised to ASCII first.** The model writes U+2011 inside IDs,
+# rendering `-YTupW6YG1k` as `‑YTupW6YG1k`. A pattern that cannot see the real
+# character does not fail loudly, it matches something else — the same lesson
+# the Arabic quotes taught the timestamp snapper.
+#
+# **IDs are resolved against the ledger, not inferred from punctuation.** A
+# YouTube ID may legitimately begin with a hyphen, which makes `-YTupW6YG1k
+# 01:00-01:09` ambiguous to any amount of clever regex: the leading dash could
+# be part of the ID or a stray, and the middle one could be a range or an ID
+# character. Looking the ID up in the set the library actually holds resolves
+# both, and simultaneously satisfies the rule that a liberal parser must never
+# invent a link. Every ID is exactly eleven characters, so none can contain
+# another and substring matching is safe.
+_DASHES = str.maketrans(
+    {ch: "-" for ch in "‐‑‒–—―−﹘﹣－"}
 )
+
+# A bracketed or parenthesised span, not nested. Bounded so a runaway bracket
+# cannot make this quadratic over a long answer.
+_GROUP_RE = re.compile(r"[\[(]([^\[\]()]{1,400})[\])]")
+
+# MM:SS or HH:MM:SS, optional milliseconds. Guarded so "$4", "1.25x" and a
+# ratio like "2:1" cannot match.
+_TS_RE = re.compile(r"(?<![\d.:])(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})?(?![\d:])")
+
+# Fallback when no ledger is available (unit tests, mostly). Shape only.
+_ID_SHAPE_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+
+# Entries inside one bracket. A range separator is a dash and must NOT split.
+_ENTRY_SPLIT_RE = re.compile(r"[;,]")
+
+
+def normalise_dashes(text: str) -> str:
+    """Every Unicode dash becomes ASCII ``-`` so one pattern can see them all."""
+    return text.translate(_DASHES)
 
 ESCALATION_ALLOWED = "allowed — you have not been given any transcripts yet"
 ESCALATION_SPENT = (
@@ -90,18 +130,93 @@ class Citation:
     raw: str
 
 
-def parse_citations(text: str) -> list[Citation]:
-    """Every `[video_id MM:SS]` in an answer, in order."""
-    out: list[Citation] = []
-    for match in _CITE_RE.finditer(text):
-        video_id, first, second, third = match.groups()
-        seconds = (
-            int(first) * 3600 + int(second) * 60 + int(third)
-            if third is not None
-            else int(first) * 60 + int(second)
-        )
-        out.append(Citation(video_id=video_id, seconds=seconds, raw=match.group(0)))
-    return out
+@dataclass(frozen=True)
+class CitationScan:
+    """What the parser found, and what it could not read.
+
+    ``unparsed`` is the whole point. Three times in this project something was
+    dropped silently and looked like success — a hardcoded temperature, an
+    ASCII-only word class, and this parser. A count that says "104 shaped, 2
+    unparsed" turns the fourth occurrence into a visible line instead of an
+    absence nobody thinks to look for.
+    """
+
+    citations: list[Citation]
+    unparsed: list[str]
+
+    @property
+    def shaped(self) -> int:
+        return len(self.citations) + len(self.unparsed)
+
+
+def _seconds_of(match: re.Match[str]) -> int:
+    first, second, third = match.group(1), match.group(2), match.group(3)
+    if third is not None:
+        return int(first) * 3600 + int(second) * 60 + int(third)
+    return int(first) * 60 + int(second)
+
+
+def _find_id(entry: str, known: Sequence[str] | None) -> str | None:
+    """The video this entry refers to, resolved against the library when we can.
+
+    Without ``known`` this falls back to the eleven-character shape, which is
+    right often enough for a unit test and wrong exactly where the ambiguity
+    lives — `--_0uiiJfsBPI` yields `--_0uiiJfsB`. That is why the real path
+    always passes the ledger's IDs.
+    """
+    if known:
+        for video_id in known:
+            if video_id in entry:
+                return video_id
+        return None
+    match = _ID_SHAPE_RE.search(entry)
+    return match.group(0) if match else None
+
+
+def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationScan:
+    """Every citation in an answer, plus every citation-shaped thing that failed.
+
+    A range contributes its start: `01:00-01:09` is a link to 01:00. Entries
+    after the first in one bracket inherit the last ID seen, because that is
+    what `[-YTupW6YG1k 01:00-01:09, 02:28]` means.
+    """
+    flat = normalise_dashes(text)
+    citations: list[Citation] = []
+    unparsed: list[str] = []
+
+    for group in _GROUP_RE.finditer(flat):
+        inside = group.group(1)
+        if not _TS_RE.search(inside):
+            continue  # ordinary parentheses, not a citation
+        current: str | None = None
+        for entry in _ENTRY_SPLIT_RE.split(inside):
+            stamp = _TS_RE.search(entry)
+            if stamp is None:
+                continue
+            found = _find_id(entry, known)
+            if found is not None:
+                current = found
+            if current is None:
+                # Shaped like a citation, names a video we do not hold. Never
+                # linked — a liberal parser must not become an inventive one.
+                unparsed.append(" ".join(entry.split())[:80])
+                continue
+            citations.append(
+                Citation(
+                    video_id=current,
+                    seconds=_seconds_of(stamp),
+                    raw=f"[{current} {stamp.group(0)}]",
+                )
+            )
+
+    for fragment in unparsed:
+        log.debug("ask: citation-shaped but unreadable: %s", fragment)
+    return CitationScan(citations=citations, unparsed=unparsed)
+
+
+def parse_citations(text: str, known: Sequence[str] | None = None) -> list[Citation]:
+    """Just the citations. See ``scan_citations`` for what was dropped."""
+    return scan_citations(text, known).citations
 
 
 def parse_escalations(text: str, *, known: Sequence[str], limit: int) -> list[tuple[str, str]]:
@@ -256,6 +371,9 @@ class Answer:
     notes_loaded: int = 0
     opened: list[tuple[str, str]] = field(default_factory=list)  # video_id, why
     citations: list[Citation] = field(default_factory=list)
+    # Citation-shaped strings the parser could not read. Reported rather than
+    # discarded: a parser that drops most of its input must say so.
+    unparsed: list[str] = field(default_factory=list)
     titles: dict[str, str] = field(default_factory=dict)
     requests: int = 0
     input_tokens: int = 0
@@ -326,7 +444,9 @@ def answer_question(
 
     result.text = reply.text.strip()
     result.opened = [(item.video_id, item.why) for item in opened]
-    result.citations = parse_citations(result.text)
+    scan = scan_citations(result.text, known)
+    result.citations = scan.citations
+    result.unparsed = scan.unparsed
     result.truncated = not result.text
     _account(result, client, config)
     result.elapsed_s = time.monotonic() - started

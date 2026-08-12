@@ -17,9 +17,11 @@ from marginalia.ask import (
     answer_question,
     deep_link,
     load_notes,
+    normalise_dashes,
     parse_citations,
     parse_escalations,
     render_links,
+    scan_citations,
 )
 from marginalia.library import Library
 from marginalia.llm import LlmClient
@@ -294,3 +296,85 @@ def test_citations_in_parentheses_are_accepted():
 
 def test_trailing_milliseconds_are_tolerated():
     assert parse_citations(f"[{A} 01:36.600]")[0].seconds == 96
+
+
+# -- real output, not imagined output ----------------------------------------
+#
+# The strict parser passed every mock test in this file and still dropped 98%
+# of a real answer, because the mocks returned the shape the test author had in
+# mind. These fixtures are verbatim model output, Unicode dashes included.
+
+FIXTURES = Path(__file__).parent / "fixtures"
+
+LIBRARY_IDS = [
+    "AMwrLF_TeWo", "GfNdXFS8O0w", "6cEQEba0i2A", "HDMqDV7mmGo", "-YTupW6YG1k",
+    "iywyv-ZzfeA", "_0uiiJfsBPI", "tWJzCxV6Aqc", "dTh5fnB9CE8", "skXT6WFNQnc",
+]
+
+
+def shapes() -> str:
+    return (FIXTURES / "answer_shapes.md").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(
+    "video_id,seconds",
+    [
+        ("AMwrLF_TeWo", 42),          # HH:MM:SS range, en-dash -> start
+        ("GfNdXFS8O0w", 37),          # first of two in one bracket, semicolon
+        ("6cEQEba0i2A", 149),         # second of two in one bracket
+        ("HDMqDV7mmGo", 159),         # MM:SS range
+        ("-YTupW6YG1k", 60),          # ID beginning with a hyphen
+        ("iywyv-ZzfeA", 62),          # U+2011 inside the ID
+        ("_0uiiJfsBPI", 948),         # doubled dash before the ID
+        ("dTh5fnB9CE8", 69),          # round brackets
+        ("skXT6WFNQnc", 96),          # trailing milliseconds
+    ],
+)
+def test_every_real_shape_is_recovered(video_id, seconds):
+    found = parse_citations(shapes(), known=LIBRARY_IDS)
+    assert (video_id, seconds) in [(c.video_id, c.seconds) for c in found]
+
+
+def test_a_comma_list_inherits_the_video_from_the_entry_before_it():
+    found = parse_citations(shapes(), known=LIBRARY_IDS)
+    assert ("-YTupW6YG1k", 148) in [(c.video_id, c.seconds) for c in found]
+
+
+def test_prose_inside_a_bracket_does_not_stop_the_citation():
+    found = parse_citations(shapes(), known=LIBRARY_IDS)
+    assert ("-YTupW6YG1k", 0) in [(c.video_id, c.seconds) for c in found]
+
+
+def test_an_unknown_video_never_becomes_a_link():
+    scan = scan_citations(shapes(), known=LIBRARY_IDS)
+    assert all(c.video_id != "zzzzzzzzzzz" for c in scan.citations)
+    assert scan.unparsed, "an unresolvable citation must be reported, not dropped"
+
+
+def test_ordinary_parentheses_and_ratios_are_not_citations():
+    scan = scan_citations("(see above) a 2:1 ratio, $4 per million", known=LIBRARY_IDS)
+    assert scan.citations == [] and scan.unparsed == []
+
+
+def test_the_real_answer_that_reported_two_citations_now_parses_many():
+    """h2 reported 2 citations against dozens of inline references."""
+    text = (FIXTURES / "answer_real_h2.txt").read_text(encoding="utf-8")
+    ids = sorted({c.video_id for c in parse_citations(text, known=None)})
+    scan = scan_citations(text, known=ids or None)
+    assert len(scan.citations) > 2
+
+
+def test_the_leaves_out_answer_parses_its_parenthesised_citations():
+    text = (FIXTURES / "answer_real_q4.txt").read_text(encoding="utf-8")
+    ids = sorted({c.video_id for c in parse_citations(text)})
+    assert len(parse_citations(text, known=ids)) >= 30
+
+
+def test_the_scan_reports_shaped_and_unparsed_counts():
+    scan = scan_citations(shapes(), known=LIBRARY_IDS)
+    assert scan.shaped == len(scan.citations) + len(scan.unparsed)
+    assert scan.shaped > len(scan.citations)
+
+
+def test_unicode_dashes_normalise_to_ascii():
+    assert normalise_dashes("a\u2011b\u2013c\u2014d\u2212e") == "a-b-c-d-e"

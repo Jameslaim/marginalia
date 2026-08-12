@@ -1,6 +1,6 @@
 ---
 name: answer
-version: "1"
+version: "2"
 stage: ask
 ---
 
@@ -29,9 +29,16 @@ came from a speaker or from the layers above them.
 
 ## Citations
 
-Write a citation as the video ID and a timestamp, like this:
+Write a citation as the video ID and a single timestamp, in square brackets:
 
     [rGf9Db4tjUQ 09:31]
+
+That exact shape, every time. **One video and one timestamp per bracket.** Not a
+range, not two videos separated by a semicolon, not a comma-separated list of
+times, and no commentary inside the brackets — write the commentary as prose
+beside them. Two moments means two brackets: `[rGf9Db4tjUQ 09:31] and
+[rGf9Db4tjUQ 14:07]`. A claim with no timestamp is not a citation, so do not
+write a bare video ID on its own.
 
 Use the timestamps exactly as the notes give them. They have been aligned
 against the transcripts and are correct; a number you adjust or invent is worse

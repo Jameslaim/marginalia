@@ -1,0 +1,14 @@
+Across the synthetic engineering notes in this fixture library, talks assume familiarity
+with token budgets, prompt structure, local storage, and caching basics.
+
+## Caching & token assumptions
+
+- **Tokens.** Talk 1 cites a 1,024-token threshold without defining tokenization [-synVidA0001 06:12];
+  Talk 2 compares a long context to a short query [synVidA0002 00:01:22];
+  Talk 3 discusses prefix lifetimes without defining TTL [synVidA0003 03:45].
+- **Prompt structure.** Talk 4 assumes system and user message roles [synVidA0004 01:15];
+  Talk 5 discusses tool schemas without introducing JSON schema [synVidA0005 04:20].
+- **Local persistence.** Talk 6 assumes WAL mode and SQLite pragmas [synVidA0006 02:10];
+  Talk 7 compares journal modes without introducing transactions [synVidA0007 05:30].
+- **Workflows.** Talk 8 refers to earlier episodes in the same synthetic series [synVidA0008 08:05];
+  Talk 9 assumes familiarity with CLI hooks and exit codes [synVidA0009 09:40].

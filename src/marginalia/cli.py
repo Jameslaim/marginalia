@@ -501,6 +501,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                     "opened": [
                         {"video_id": video_id, "why": why} for video_id, why in answer.opened
                     ],
+                    "citation_shaped": len(answer.citations) + len(answer.unparsed),
+                    "unparsed": answer.unparsed,
                     "citations": [
                         {
                             "video_id": citation.video_id,
@@ -536,10 +538,18 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             print(f"  {video_id}  {why}")
 
     print(
-        f"\nask:      {answer.notes_loaded} notes, {len(answer.citations)} citations, "
+        f"\nask:      {answer.notes_loaded} notes, "
+        f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
+        f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
         f"{answer.requests} requests, ${answer.cost_usd:.4f}, {_elapsed(answer.elapsed_s)}"
         f", v{answer.version}"
     )
+    if answer.unparsed:
+        # Named, not merely counted. A number tells you something was lost; the
+        # fragment tells you which shape to teach the parser next.
+        log.info("ask: %d citation-shaped strings were unreadable", len(answer.unparsed))
+        for fragment in answer.unparsed:
+            log.debug("ask: unreadable citation: %s", fragment)
     return EXIT_OK
 
 
