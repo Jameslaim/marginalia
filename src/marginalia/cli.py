@@ -4,12 +4,16 @@
     marg search "<query>"   find candidate videos and say which are new
     marg discover "<topic>" turn a topic into a library
     marg note               write understanding notes for stored videos
+    marg snap-timestamps    align cited timestamps in notes to the transcript
+    marg ask "<question>"   answer a question from every note at once
     marg llm-check          one request to the configured model provider
     marg status <url|id>    show ledger state for one video
     marg list               list stored videos
     marg guard-write        internal: the PreToolUse hook
 
 Output is terse and single-line, because a skill reads it rather than a human.
+The one exception is `ask`, which prints the answer itself — that is the product,
+and it is prose written *from* the notes rather than the notes.
 
 Transcript contents are never printed. Not on success, not on error, not under
 --verbose. That rule is the whole reason this is a CLI and not a tool the model
@@ -44,6 +48,7 @@ from .ledger import (
 )
 from .library import Library, format_duration
 from .note import FAILED, NOTED, SKIPPED, note_version, write_notes
+from .ask import answer_question, deep_link, render_links
 from .timestamps import snap_library
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider, TranscriptResult
@@ -455,6 +460,89 @@ def _cmd_list(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _cmd_ask(args: argparse.Namespace) -> int:
+    """Answer a question from the library and print the finished answer.
+
+    The one command that deliberately prints a lot. Everything else here
+    returns a line, because everything else is about material the conversation
+    must not hold; this returns the *product* — prose written from the notes,
+    with a link per claim. Notes and transcripts stay inside Python either way.
+    """
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+
+    deep: list[str] = []
+    for value in args.deep or []:
+        video_id = extract_video_id(value)
+        if video_id is None:
+            return _error(f"not a YouTube URL or video ID: {value!r}", EXIT_USAGE)
+        deep.append(video_id)
+
+    question = " ".join(args.question.split())
+    if not question:
+        return _error("ask what?", EXIT_USAGE)
+
+    client = LlmClient(config.llm)
+    with Ledger(library.ledger_path) as ledger:
+        answer = answer_question(
+            config, library, client, question, ledger=ledger, deep=deep
+        )
+
+    if args.json:
+        print(
+            json.dumps(
+                {
+                    "question": answer.question,
+                    "answer": answer.text,
+                    "prompt_version": answer.version,
+                    "model": answer.model,
+                    "notes_loaded": answer.notes_loaded,
+                    "opened": [
+                        {"video_id": video_id, "why": why} for video_id, why in answer.opened
+                    ],
+                    "citations": [
+                        {
+                            "video_id": citation.video_id,
+                            "seconds": citation.seconds,
+                            "url": deep_link(citation.video_id, citation.seconds),
+                        }
+                        for citation in answer.citations
+                    ],
+                    "requests": answer.requests,
+                    "cost_usd": round(answer.cost_usd, 6),
+                    "elapsed_s": round(answer.elapsed_s, 1),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return EXIT_FAILED if not answer.text else EXIT_OK
+
+    if not answer.text:
+        return _error("the model returned an empty answer", EXIT_FAILED)
+
+    print(answer.text)
+
+    links = render_links(answer.citations, answer.titles)
+    if links:
+        print("\nlinks:")
+        for line in links:
+            print(f"  {line}")
+
+    if answer.opened:
+        print("\nopened transcripts:")
+        for video_id, why in answer.opened:
+            print(f"  {video_id}  {why}")
+
+    print(
+        f"\nask:      {answer.notes_loaded} notes, {len(answer.citations)} citations, "
+        f"{answer.requests} requests, ${answer.cost_usd:.4f}, {_elapsed(answer.elapsed_s)}"
+        f", v{answer.version}"
+    )
+    return EXIT_OK
+
+
 def _cmd_snap_timestamps(args: argparse.Namespace) -> int:
     """Align cited timestamps onto the transcript line they refer to.
 
@@ -805,6 +893,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--status", default=STATUS_STORED, help="ledger status to list (default: stored)"
     )
     listing.set_defaults(handler=_cmd_list)
+
+    ask = subparsers.add_parser("ask", help="answer a question from the library")
+    ask.add_argument("question", help="the question, in quotes")
+    ask.add_argument(
+        "--deep",
+        action="append",
+        default=[],
+        metavar="VIDEO",
+        help="force a transcript open (repeatable); the model may still open more",
+    )
+    ask.add_argument("--json", action="store_true", help="machine-readable output")
+    ask.set_defaults(handler=_cmd_ask)
 
     snap = subparsers.add_parser(
         "snap-timestamps", help="align cited timestamps in notes to the transcript"

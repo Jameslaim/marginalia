@@ -26,6 +26,7 @@ __all__ = [
     "DiscoverConfig",
     "LlmConfig",
     "NoteConfig",
+    "AskConfig",
     "load_config",
     "example_text",
 ]
@@ -73,6 +74,13 @@ DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS = 400_000
 # Higher than the global default: the reply is a full note, and on a provider
 # whose thinking is always on the reasoning bills against the same ceiling.
 DEFAULT_NOTE_MAX_TOKENS = 8192
+
+# The answering pass. Every note at once is a large input and a moderate output,
+# a shape this provider has not been measured on, so the ceiling is generous
+# and the effort setting is verified rather than assumed.
+DEFAULT_ASK_MAX_TOKENS = 32_768
+DEFAULT_ASK_MAX_TRANSCRIPTS = 3
+DEFAULT_ASK_MAX_TRANSCRIPT_CHARS = 120_000
 
 # Placeholders only. Real rates belong in config.toml — these exist so a run
 # without pricing configured still produces an estimate rather than zero,
@@ -176,6 +184,25 @@ class NoteConfig:
 
 
 @dataclass(frozen=True)
+class AskConfig:
+    """The answering pass. One call over the whole library, sometimes two."""
+
+    # Generous, because the shape of this call is new: a very large input (every
+    # note at once) and a moderate output. `review_brief` spent its entire 8192
+    # budget on reasoning and returned nothing, and reasoning bills against this
+    # ceiling, so an answer that converges must have room to be written after
+    # the thinking is done.
+    max_tokens: int
+    # Transcripts a single question may open. Escalation is the model's call,
+    # and a ceiling on it is the difference between reading three transcripts
+    # and reading the library.
+    max_transcripts: int
+    # Per transcript, when escalating. A 101k-character transcript is a fifth of
+    # this budget on its own.
+    max_transcript_chars: int
+
+
+@dataclass(frozen=True)
 class Config:
     library_path: Path
     transcript_order: tuple[str, ...]
@@ -185,6 +212,7 @@ class Config:
     llm: LlmConfig
     discover: DiscoverConfig
     note: NoteConfig
+    ask: AskConfig
     path: Path
     created: bool
 
@@ -230,6 +258,7 @@ def load_config() -> Config:
         llm=_llm(data, chosen),
         discover=_discover(data, chosen),
         note=_note(data, chosen),
+        ask=_ask(data, chosen),
         path=chosen,
         created=created,
     )
@@ -390,6 +419,23 @@ def _note(data: dict, config_path: Path) -> NoteConfig:
             "note",
         ),
         max_tokens=_positive(section, "max_tokens", DEFAULT_NOTE_MAX_TOKENS, config_path, "note"),
+    )
+
+
+def _ask(data: dict, config_path: Path) -> AskConfig:
+    section = data.get("ask") or {}
+    return AskConfig(
+        max_tokens=_positive(section, "max_tokens", DEFAULT_ASK_MAX_TOKENS, config_path, "ask"),
+        max_transcripts=_positive(
+            section, "max_transcripts", DEFAULT_ASK_MAX_TRANSCRIPTS, config_path, "ask"
+        ),
+        max_transcript_chars=_positive(
+            section,
+            "max_transcript_chars",
+            DEFAULT_ASK_MAX_TRANSCRIPT_CHARS,
+            config_path,
+            "ask",
+        ),
     )
 
 

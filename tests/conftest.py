@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from marginalia.config import Config, DiscoverConfig, LlmConfig, NoteConfig
+from marginalia.config import AskConfig, Config, DiscoverConfig, LlmConfig, NoteConfig
 
-__all__ = ["make_config", "make_llm_config", "make_discover_config", "make_note_config"]
+__all__ = ["make_config", "make_llm_config", "make_discover_config", "make_note_config", "make_ask_config"]
 
 
 def make_llm_config(**overrides: object) -> LlmConfig:
@@ -61,6 +61,16 @@ def make_note_config(**overrides: object) -> NoteConfig:
     return NoteConfig(**values)  # type: ignore[arg-type]
 
 
+def make_ask_config(**overrides: object) -> AskConfig:
+    values: dict[str, object] = {
+        "max_tokens": 32_768,
+        "max_transcripts": 3,
+        "max_transcript_chars": 120_000,
+    }
+    values.update(overrides)
+    return AskConfig(**values)  # type: ignore[arg-type]
+
+
 def make_config(tmp_path: Path, **overrides: object) -> Config:
     values: dict[str, object] = {
         "library_path": tmp_path / "library",
@@ -71,6 +81,7 @@ def make_config(tmp_path: Path, **overrides: object) -> Config:
         "llm": make_llm_config(),
         "discover": make_discover_config(),
         "note": make_note_config(),
+        "ask": make_ask_config(),
         "path": tmp_path / "config.toml",
         "created": False,
     }
