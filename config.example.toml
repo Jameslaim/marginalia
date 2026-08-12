@@ -27,34 +27,37 @@ search_order = ["youtube_api", "ytdlp_search"]
 # The model provider. Swapping is these three values and no code — see
 # "Swapping the model provider" in README.md. Any OpenAI-compatible endpoint
 # works: Groq, OpenRouter, DeepSeek, Together, or local Ollama / vLLM.
-provider = "moonshot"
-base_url = "https://api.moonshot.ai/v1"
-model = "kimi-k3"
+#
+# Three providers so far: NVIDIA NIM (z-ai/glm-5.2) -> Moonshot (kimi-k3) ->
+# DeepSeek. Only the second swap was genuinely config-only; the first also
+# required deleting a hardcoded `temperature=0` from llm.py, which is the
+# reason `_send` now names only model/messages/max_tokens/extra.
+provider = "deepseek"
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
 
 # Leave unset to read MARGINALIA_LLM_API_KEY from the environment instead.
 # The file wins when both are present.
 # api_key = ""
 
 # timeout_s = 420
-# max_tokens = 4096
+
+# Reasoning bills against max_tokens on a thinking provider, so a high effort
+# setting can spend the entire budget on reasoning and leave nothing for the
+# answer. Measured on deepseek-v4-flash: reasoning_effort="max" with
+# max_tokens=2000 produced 2000 reasoning tokens and empty content. [note] sets
+# its own, higher, ceiling — that is the one that matters.
+# max_tokens = 8192
 
 # Merged into every request body. Where a provider-wide setting lives when one
 # is needed. Nothing in the code reads inside it.
 #
 # It is empty on purpose, and the temptation to fill it with `temperature = 0`
-# is exactly what broke the first provider swap. On kimi-k3, per Moonshot's
-# documentation:
-#
-#   * temperature is FIXED at 1.0. It is not configurable, and a request must
-#     omit it entirely — sending even the default value returns HTTP 400.
-#   * thinking mode is ALWAYS ON. reasoning_effort controls how much reasoning
-#     happens, never whether it happens. There is no "off".
-#
-# Together those mean K3 output is non-deterministic by design. The same
-# candidate judged twice can get different verdicts, and no temperature or seed
-# setting will change that. The decisions table records what the judge
-# concluded on that occasion, not what it always concludes — worth remembering
-# before reading a single verdict as the model's settled opinion.
+# is exactly what broke the first provider swap: kimi-k3 fixed temperature at
+# 1.0 and returned HTTP 400 for any request that named it at all. DeepSeek
+# accepts temperature in every mode, so the field is portable again — but that
+# is a fact about this provider, not about the baseline, which is why it lives
+# in a task block below rather than here.
 #
 # A different provider may well want something here. That is what it is for.
 # extra = { }
@@ -72,42 +75,121 @@ judge_batch_size = 10
 
 [llm.pricing]
 # Per million tokens, for the cost estimate and the max_cost_usd guard. In
-# config because rates change and the next provider's will differ.
-input_per_million = 3.0
-output_per_million = 15.0
+# config because rates change and the next provider's will differ. DeepSeek V4
+# flash, cache-miss rates: ~21x cheaper in and ~54x cheaper out than kimi-k3's
+# 3.00/15.00, which is what turned regenerating the whole library from a
+# decision into a routine operation.
+input_per_million = 0.14
+output_per_million = 0.28
 
-# Thinking effort per task, merged into that task's request body and passed
-# through untouched. A provider without the feature simply has no blocks here,
-# and every request is the portable baseline.
+# -- thinking, per task -------------------------------------------------------
 #
-# The split follows volume and consequence. judge_metadata runs most often and
-# reasons least — and reasoning tokens bill as output, at 5x the input rate —
-# so effort on the highest-volume call is where cost and latency go wrong at
-# once. write_brief runs once and decides what every later judgement is measured
-# against. Low is the floor, never off: "off" is a different code path on some
-# providers, and consistency beats the marginal saving.
+# Merged into that task's request body and passed through untouched. A provider
+# without the feature simply has no blocks here, and every request is the
+# portable baseline.
 #
-# Verify it is honoured before trusting it: a silently ignored field looks
-# identical to a working one. Compare output-token counts at low versus high.
+# The split below is by MODE, not by degree: thinking off for the two calls that
+# classify, maximum thinking for the four that reason. That is a DeepSeek-shaped
+# choice — thinking-off is the only genuinely cheap tier this provider has.
+#
+# Everything that follows was VERIFIED against the API, not read from
+# documentation, because a silently ignored field looks identical to a working
+# one. Reproduce it before trusting it on the next provider.
+#
+# reasoning_effort accepts exactly seven values. The API enumerates them itself
+# when given an invalid one, which is also the cheapest way to prove the field
+# is arriving at all:
+#
+#     unknown variant `banana`, expected one of
+#     `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`
+#
+# These are distinct tiers, not aliases for each other. Each loads a different
+# prompt scaffold, visible in prompt_tokens for an identical message:
+# none/low = 69, medium/high = 148, max = 161. Setting `low` does take effect.
+# high vs max also differ in output: 3319 vs 4091 mean tokens over three
+# samples, 31s vs 39s.
+#
+# `thinking = { type = "disabled" }` is the documented equivalent of
+# `reasoning_effort = "none"` and behaves identically — same prompt_tokens, zero
+# reasoning_tokens, no reasoning_content. One field across every task reads
+# better than a flat key on some and a nested table on others, so this file uses
+# reasoning_effort throughout. `thinking.type` accepts `adaptive`, `enabled`,
+# `disabled`.
+#
+# DO NOT use `enable_thinking = false`. It returns HTTP 200 and is silently
+# ignored: reasoning stays fully on. It is the one shape here that fails without
+# saying so.
+
+# Thinking off, low variance — NOT deterministic, and the difference matters.
+#
+# Same prompt, eight samples:
+#     temperature = 2          8 distinct / 8
+#     no temperature at all    8 distinct / 8
+#     temperature = 0          3 distinct / 8   (5 identical)
+#     temperature = 0 + seed   2 distinct / 8   (7 identical)
+#
+# temperature is honoured — it is not being dropped — but it does not buy
+# determinism. Judging the same ten candidates three times gave the same verdict
+# on nine and flipped the tenth between MAYBE and YES. The residue is the
+# serving layer, not this file: V4 is a mixture-of-experts model served with an
+# fp8 KV cache, and batch-dependent expert routing makes even greedy decoding
+# non-reproducible. No setting available here closes that gap.
+#
+# So variance is now confined to genuinely borderline candidates rather than
+# unbounded — a real improvement on kimi-k3, where temperature was rejected
+# outright and thinking could not be switched off. It is not repeatability. The
+# decisions table still records what the judge concluded on that occasion, and
+# rule 8 (unparseable becomes MAYBE, never NO) matters more here, not less.
 [llm.tasks.judge_metadata]
-extra = { reasoning_effort = "low" }
+extra = { reasoning_effort = "none", temperature = 0, seed = 42 }
 
 [llm.tasks.expand_queries]
-extra = { reasoning_effort = "low" }
+extra = { reasoning_effort = "none", temperature = 0, seed = 42 }
 
+# Thinking on for the four that reason rather than classify — but NOT all at
+# maximum, and the reason is the most important thing on this page.
+#
+# `max` does not self-limit. It expands to fill whatever token budget it is
+# given and then stops on finish_reason="length", so it succeeds only where the
+# task is intrinsically short enough to finish first. Measured, same prompts:
+#
+#   task            effort   finish    reasoning   content
+#   judge_opening   max      stop            685      187ch   ok
+#   write_brief     max      stop          2,256    2,969ch   ok
+#   review_brief    max      length        8,192        0ch   EMPTY
+#   review_brief    high     stop          2,320    2,432ch   ok
+#   write_note      max      length       29,636   truncated  5 of 7 sections
+#   write_note      high     length       32,768        0ch   EMPTY
+#   write_note      low      stop         12,271   12,838ch   ok
+#
+# Raising max_tokens does not fix it — write_note at max produced 108k chars of
+# reasoning under a 32,768 ceiling and 204k under 65,536, hitting "length" both
+# times. The ladder is also not monotonic: `high` was worse than `max` for
+# write_note, spending the whole budget on reasoning for no output at all.
+#
+# So "the hardest task deserves the most thinking" is the wrong instinct on
+# this provider. Match effort to how much the task has to WRITE, not to how
+# hard it is. And verify after any prompt grows: write_brief at max is
+# comfortable today, not safe by construction.
 [llm.tasks.judge_opening]
-extra = { reasoning_effort = "medium" }
+extra = { reasoning_effort = "max" }
 
 [llm.tasks.write_brief]
-extra = { reasoning_effort = "high" }
+extra = { reasoning_effort = "max" }
 
 [llm.tasks.review_brief]
 extra = { reasoning_effort = "high" }
 
 # Once per video, reading a whole transcript, producing the artifact every
-# later question is answered from. The highest-consequence call in the system.
+# later question is answered from. The highest-consequence call in the system,
+# and the one that must have the LEAST thinking — see the table above. `low`
+# still spends ~11.7k reasoning tokens on a 101k-char transcript and returns a
+# valid note in about two minutes for roughly a cent, so this is not a token
+# gesture. Escalating to deepseek-v4-pro does not help: pro at max effort
+# reasoned 10,159 tokens and returned an empty message, so the failure is max
+# thinking on a long structured output, not flash running out of capacity.
 [llm.tasks.write_note]
-extra = { reasoning_effort = "high" }
+extra = { reasoning_effort = "low" }
 
 [discover]
 # Stopping conditions. Whichever fires first wins, and which one fired is
@@ -145,6 +227,11 @@ max_cost_usd = 5.0
 # a tokenizer is a provider-shaped dependency. ~4 chars per token.
 max_transcript_chars = 400000
 
-# Room for a full note plus, on a provider whose thinking is always on, the
-# reasoning that bills against the same ceiling.
-max_tokens = 8192
+# Room for a full note plus, on a thinking provider, the reasoning that bills
+# against the same ceiling. Raised from 8192 for DeepSeek at reasoning_effort
+# = "max": the budget is shared between thinking and the note rather than
+# reserved for the note. A truncated reply loses a required section and
+# `validate_note` fails it — retryable, but three failures in a row stop the
+# run, so an under-set ceiling here is a run-killer rather than a quality
+# issue. A ceiling, not a target; unused headroom costs nothing per-token.
+max_tokens = 32768

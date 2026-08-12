@@ -1,7 +1,11 @@
 ---
 name: write_note
-version: "3"
+version: "4"
 stage: note
+note: "v4 is a regeneration marker, not a prompt change — the text is identical
+  to v3. Bumped so that every stored note goes stale and the library is re-noted
+  in one pass under a new provider, keeping note_version honest about which
+  generation of notes a row holds. Any real edit to the text below takes v5."
 ---
 
 You have read one video end to end. Write down what you understood, for a
