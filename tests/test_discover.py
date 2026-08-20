@@ -19,28 +19,33 @@ from pathlib import Path
 import pytest
 from conftest import make_config
 
+from marginalia.contracts import (
+    STOP_MAX_COST,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
+    Brief,
+    MetadataVerdict,
+    OpeningVerdict,
+    Usage,
+)
 from marginalia.flow.discover import (
     STOP_DRY_RUN,
-    STOP_MAX_COST,
     STOP_MAX_REQUESTS,
     STOP_MAX_ROUNDS,
     STOP_MAX_VIDEOS,
     STOP_NO_NEW_VIDEOS,
     discover,
 )
-from marginalia.brain.judge import Brief, MetadataVerdict, OpeningVerdict
 from marginalia.core.ledger import (
     STAGE_METADATA,
     STAGE_OPENING,
     STATUS_REJECTED,
     STATUS_STORED,
-    VERDICT_MAYBE,
-    VERDICT_NO,
-    VERDICT_YES,
     Ledger,
 )
 from marginalia.core.library import Library
-from marginalia.llm import LlmClient, Usage
+from marginalia.llm import LlmClient
 from marginalia.providers.base import (
     PermanentError,
     SearchResult,

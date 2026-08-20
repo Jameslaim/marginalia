@@ -24,16 +24,66 @@ import sqlite3
 from dataclasses import dataclass, field, fields
 
 __all__ = [
+    # verdict vocabulary
+    "VERDICT_YES",
+    "VERDICT_NO",
+    "VERDICT_MAYBE",
+    # transcripts and search
     "TranscriptLine",
     "TranscriptResult",
     "SearchResult",
+    # judgement
     "Brief",
     "MetadataVerdict",
     "OpeningVerdict",
+    # ledger rows
     "VideoRow",
+    # discovery runs
     "RoundReport",
     "DiscoverRun",
+    # search runs
+    "NEW",
+    "KNOWN",
+    "REJECTED",
+    "Candidate",
+    "SearchRun",
+    # note runs
+    "NOTED",
+    "SKIPPED",
+    "FAILED",
+    "STOP_DONE",
+    "STOP_MAX_COST",
+    "STOP_LIMIT",
+    "STOP_REPEATED_FAILURES",
+    "NoteResult",
+    "NoteRun",
+    # answers
+    "AnswerCitation",
+    "CitationScan",
+    "LoadedNote",
+    "Opened",
+    "Answer",
+    # timestamp snapping
+    "TranscriptIndex",
+    "NoteCitation",
+    "Change",
+    "SnapResult",
+    # model calls
+    "Usage",
 ]
+
+
+# -- verdicts ---------------------------------------------------------------
+
+# Three-way on purpose: forcing yes/no on thin evidence makes the judge guess.
+#
+# Here rather than in `core/ledger.py` because these three strings are the
+# vocabulary brain, flow and core all speak. Importing them from the ledger
+# pulled sqlite3 into every process that imported the judge — a reasoning
+# module reaching a database module to learn the word "maybe".
+VERDICT_YES = "yes"
+VERDICT_NO = "no"
+VERDICT_MAYBE = "maybe"
 
 
 # -- transcripts ------------------------------------------------------------
@@ -216,3 +266,248 @@ class DiscoverRun:
             report.verdict_no + report.verdict_maybe + report.verdict_yes
             for report in self.rounds
         )
+
+
+# -- search runs -------------------------------------------------------------
+
+# What the report prints in its first column, and what `--json` carries.
+NEW = "new"
+KNOWN = "known"
+REJECTED = "rejected"
+
+
+@dataclass(frozen=True)
+class Candidate:
+    result: SearchResult
+    verdict: str  # new | known | rejected
+    reason: str  # short, printable, stable — a skill reads it
+
+    @property
+    def video_id(self) -> str:
+        return self.result.video_id
+
+
+@dataclass(frozen=True)
+class SearchRun:
+    query: str
+    topic: str
+    provider: str | None
+    candidates: list[Candidate]
+    # (provider, why) for each provider that was tried and fell through, in
+    # order. The report names these: a silent fallback looks like a quota that
+    # never runs out.
+    fallbacks: list[tuple[str, str]] = field(default_factory=list)
+
+    def of(self, verdict: str) -> list[Candidate]:
+        return [candidate for candidate in self.candidates if candidate.verdict == verdict]
+
+    @property
+    def counts(self) -> dict[str, int]:
+        return {
+            "found": len(self.candidates),
+            KNOWN: len(self.of(KNOWN)),
+            REJECTED: len(self.of(REJECTED)),
+            NEW: len(self.of(NEW)),
+        }
+
+
+# -- note runs ---------------------------------------------------------------
+
+NOTED = "noted"
+SKIPPED = "skipped"
+FAILED = "failed"
+
+# Why a drain stopped early. Same vocabulary as discovery's, same purpose: a
+# run that stops for an unknown reason cannot be tuned.
+STOP_DONE = "done"
+STOP_MAX_COST = "max_cost"
+STOP_LIMIT = "limit"
+STOP_REPEATED_FAILURES = "repeated_failures"
+
+
+@dataclass(frozen=True)
+class NoteResult:
+    video_id: str
+    outcome: str
+    detail: str
+    tokens: int = 0
+    version: str | None = None
+
+
+@dataclass
+class NoteRun:
+    version: str
+    model: str
+    results: list[NoteResult] = field(default_factory=list)
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    elapsed_s: float = 0.0
+    stopped_because: str = STOP_DONE
+
+    def count(self, outcome: str) -> int:
+        return sum(1 for result in self.results if result.outcome == outcome)
+
+
+# -- answers -----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AnswerCitation:
+    """A citation inside an *answer*: which video, and how far in.
+
+    Not to be confused with :class:`NoteCitation`, which is a timestamp token
+    inside a note. Both were called `Citation` until one file defined each and
+    nothing could tell you which one a function returned.
+    """
+
+    video_id: str
+    seconds: int
+    raw: str
+
+
+@dataclass(frozen=True)
+class CitationScan:
+    """What the parser found, and what it could not read.
+
+    ``unparsed`` is the whole point. Three times in this project something was
+    dropped silently and looked like success — a hardcoded temperature, an
+    ASCII-only word class, and this parser. A count that says "104 shaped, 2
+    unparsed" turns the fourth occurrence into a visible line instead of an
+    absence nobody thinks to look for.
+    """
+
+    citations: list[AnswerCitation]
+    unparsed: list[str]
+
+    @property
+    def shaped(self) -> int:
+        return len(self.citations) + len(self.unparsed)
+
+
+@dataclass(frozen=True)
+class LoadedNote:
+    video_id: str
+    title: str
+    text: str
+
+
+@dataclass(frozen=True)
+class Opened:
+    """A transcript read for one question, and why it was read."""
+
+    video_id: str
+    why: str
+    text: str
+
+
+@dataclass
+class Answer:
+    question: str
+    text: str = ""
+    version: str = ""
+    model: str = ""
+    notes_loaded: int = 0
+    opened: list[tuple[str, str]] = field(default_factory=list)  # video_id, why
+    citations: list[AnswerCitation] = field(default_factory=list)
+    # Citation-shaped strings the parser could not read. Reported rather than
+    # discarded: a parser that drops most of its input must say so.
+    unparsed: list[str] = field(default_factory=list)
+    titles: dict[str, str] = field(default_factory=dict)
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float = 0.0
+    elapsed_s: float = 0.0
+    truncated: bool = False
+
+    @property
+    def escalated(self) -> bool:
+        return bool(self.opened)
+
+
+# -- timestamp snapping ------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TranscriptIndex:
+    """Transcript words in order, each with the start of the cue it came from.
+
+    ``freq`` is what makes matching safe: it is per-transcript, so "cache" is a
+    common word in a caching video and a rare one in a SQLite video, and the
+    anchors adapt without anyone maintaining a stop-word list.
+    """
+
+    words: tuple[str, ...]
+    times_ms: tuple[int, ...]
+    freq: dict[str, int]
+    positions: dict[str, tuple[int, ...]]
+
+    def __bool__(self) -> bool:
+        return bool(self.words)
+
+
+@dataclass(frozen=True)
+class NoteCitation:
+    """One timestamp token in a note, and where it sits in the text.
+
+    A note's citation, as opposed to :class:`AnswerCitation`, which is an
+    answer's. This one carries character offsets because it gets rewritten in
+    place; that one carries a video ID because it gets turned into a link.
+    """
+
+    start: int
+    end: int
+    raw: str
+    ms: int
+    parts: int
+    has_millis: bool
+
+
+@dataclass(frozen=True)
+class Change:
+    section: str
+    before: str
+    after: str
+    delta_ms: int
+    preview: str
+    # Which line of the note moved. Only used to recognise the same citation
+    # across passes, so a two-step move is reported as one net correction.
+    line: int = -1
+
+
+@dataclass
+class SnapResult:
+    video_id: str
+    changed: bool = False
+    snapped: list[Change] = field(default_factory=list)
+    left: list[tuple[str, str, str]] = field(default_factory=list)  # section, raw, reason
+    error: str | None = None
+
+    @property
+    def total(self) -> int:
+        return len(self.snapped) + len(self.left)
+
+
+# -- model calls -------------------------------------------------------------
+
+
+@dataclass
+class Usage:
+    """What a run cost. Requests are the scarce resource here, not dollars.
+
+    Here rather than in `llm.py` because four modules outside it read these
+    fields off `client.usage` and `reply.usage` to fill in their own reports.
+    Nobody outside constructs one, but reading a structure across a boundary is
+    still crossing it.
+    """
+
+    requests: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    def add(self, other: Usage) -> None:
+        self.requests += other.requests
+        self.input_tokens += other.input_tokens
+        self.output_tokens += other.output_tokens

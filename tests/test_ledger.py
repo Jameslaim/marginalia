@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from marginalia.contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES, VideoRow
 from marginalia.core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
@@ -26,12 +27,8 @@ from marginalia.core.ledger import (
     STATUS_PENDING,
     STATUS_REJECTED,
     STATUS_STORED,
-    VERDICT_MAYBE,
-    VERDICT_NO,
-    VERDICT_YES,
     Ledger,
     LedgerError,
-    VideoRow,
     skip_reason,
 )
 

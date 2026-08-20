@@ -14,8 +14,7 @@ from pathlib import Path
 import pytest
 
 from marginalia.cli import EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
-from marginalia.flow.discover import DiscoverRun, RoundReport
-from marginalia.brain.judge import Brief
+from marginalia.contracts import Brief, DiscoverRun, RoundReport
 from marginalia.llm import LlmConfigError
 
 BRIEF = Brief(
@@ -58,7 +57,7 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     config = tmp_path / "config.toml"
     config.write_text(
         f'[library]\npath = "{root.as_posix()}"\n\n'
-        '[llm]\napi_key = "k"\nmodel = "test-model"\n',
+        '[llm]\napi_key = "k"\nbase_url = "https://example.invalid/v1"\nmodel = "test-model"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("MARGINALIA_CONFIG", str(config))

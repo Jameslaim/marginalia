@@ -31,17 +31,14 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
+from ..contracts import Change, NoteCitation, SnapResult, TranscriptIndex
 from ..core.library import Library
 
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "Change",
-    "SnapResult",
-    "TranscriptIndex",
     "build_index",
     "parse_note_timestamps",
     "snap_text",
@@ -122,24 +119,6 @@ SECTION_VERBATIM = "Verbatim"
 
 
 # -- the transcript side -----------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TranscriptIndex:
-    """Transcript words in order, each with the start of the cue it came from.
-
-    ``freq`` is what makes matching safe: it is per-transcript, so "cache" is a
-    common word in a caching video and a rare one in a SQLite video, and the
-    anchors adapt without anyone maintaining a stop-word list.
-    """
-
-    words: tuple[str, ...]
-    times_ms: tuple[int, ...]
-    freq: dict[str, int]
-    positions: dict[str, tuple[int, ...]]
-
-    def __bool__(self) -> bool:
-        return bool(self.words)
 
 
 def build_index(transcript: str) -> TranscriptIndex:
@@ -246,20 +225,8 @@ def locate(
 # -- the note side -----------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Citation:
-    """One timestamp token in a note, and where it sits in the text."""
-
-    start: int
-    end: int
-    raw: str
-    ms: int
-    parts: int
-    has_millis: bool
-
-
-def parse_note_timestamps(text: str) -> list[Citation]:
-    out: list[Citation] = []
+def parse_note_timestamps(text: str) -> list[NoteCitation]:
+    out: list[NoteCitation] = []
     for match in _TS_RE.finditer(text):
         first, second, third, millis = match.groups()
         if third is None:
@@ -270,7 +237,7 @@ def parse_note_timestamps(text: str) -> list[Citation]:
             parts = 3
         ms = total * 1000 + (int(millis.ljust(3, "0")) if millis else 0)
         out.append(
-            Citation(
+            NoteCitation(
                 start=match.start(),
                 end=match.end(),
                 raw=match.group(0),
@@ -317,31 +284,6 @@ def anchor_text(line: str) -> tuple[str, bool]:
 
 
 # -- results -----------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Change:
-    section: str
-    before: str
-    after: str
-    delta_ms: int
-    preview: str
-    # Which line of the note moved. Only used to recognise the same citation
-    # across passes, so a two-step move is reported as one net correction.
-    line: int = -1
-
-
-@dataclass
-class SnapResult:
-    video_id: str
-    changed: bool = False
-    snapped: list[Change] = field(default_factory=list)
-    left: list[tuple[str, str, str]] = field(default_factory=list)  # section, raw, reason
-    error: str | None = None
-
-    @property
-    def total(self) -> int:
-        return len(self.snapped) + len(self.left)
 
 
 def snap_text(note: str, index: TranscriptIndex) -> tuple[str, list[Change], list[tuple[str, str, str]]]:

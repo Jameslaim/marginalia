@@ -789,11 +789,38 @@ boundary tests, and nothing else. `tests/test_boundaries.py` enforces every rule
 the ones this project has actually held held because a test enforced them, and the ones
 written down and left unchecked drifted.
 
-**One violation was found and left in place rather than refactored around:**
-`brain/judge.py` imports `VERDICT_YES` / `VERDICT_NO` / `VERDICT_MAYBE` from
-`core/ledger.py`, which pulls sqlite3 into any process that imports the judge. It is
-recorded as a named allowlist entry in the boundary test, with a test asserting the
-allowlist is exactly one item long.
+### A.1 — closing what A found
+
+Phase A left two allowlisted violations, each pinned by a test asserting its exact
+contents. A.1 closed both, and the pinning tests were deleted along with them — they
+existed to fail when the debt was paid.
+
+**`brain/` reached `core/ledger.py`** for `VERDICT_YES` / `VERDICT_NO` /
+`VERDICT_MAYBE`, which pulled sqlite3 into any process that imported the judge. The
+three strings now live in `contracts.py`. `brain/` has **no exemptions**.
+
+**`config.py` held `DEFAULT_LLM_MODEL` and `DEFAULT_LLM_BASE_URL`.** Deleted, and both
+keys are now required. The safety argument decided it: that default named the provider
+this project abandoned *because it stopped completing requests*, so a config missing
+the key silently reached a dead endpoint and failed three layers from the cause. There
+is also no provider-neutral model name — any default is a vendor chosen on the user's
+behalf. This is the one intentional behaviour change in A.1.
+
+It produced a second, unintentional one, which the hook tests caught immediately.
+`marg guard-write` fails **open** by design — a guard that cannot read its own input
+must not block every edit in the repository. It reached the library path through
+`load_config()`, so an incomplete `[llm]` block raised, the fail-open branch caught it,
+and **hard rule 2 silently switched off**: a guard that stops guarding while still
+looking present. The guard now reads `[library]` alone via `config.library_root()`,
+and two tests hold that shut. A rule that only holds when an unrelated section of the
+config is complete is not a rule.
+
+**The remaining fourteen boundary-crossing types moved too**, along with the vocabulary
+constants their fields take as values — leaving those behind would only have moved the
+import backwards. The `Citation` collision found by `test_no_shared_structure_is_defined_twice`
+was resolved first: `ask.py`'s became `AnswerCitation`, `enrich/timestamps.py`'s became
+`NoteCitation`. `Config` and its sub-configs stay in `config.py`; configuration is what
+a run is set up with, not data moving through it.
 
 ### Structural rules
 

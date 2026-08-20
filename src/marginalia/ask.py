@@ -29,10 +29,16 @@ from __future__ import annotations
 import logging
 import re
 import time
-from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .config import Config
+from .contracts import (
+    Answer,
+    AnswerCitation,
+    CitationScan,
+    LoadedNote,
+    Opened,
+)
 from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
 from .core.library import Library
@@ -41,10 +47,6 @@ from .llm import LlmClient, LlmError, Prompt, load_prompt
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "Answer",
-    "Citation",
-    "CitationScan",
-    "LoadedNote",
     "answer_question",
     "deep_link",
     "load_notes",
@@ -123,32 +125,6 @@ NO_TRANSCRIPTS = "(none — you have not asked for any)"
 # -- parsing -----------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class Citation:
-    video_id: str
-    seconds: int
-    raw: str
-
-
-@dataclass(frozen=True)
-class CitationScan:
-    """What the parser found, and what it could not read.
-
-    ``unparsed`` is the whole point. Three times in this project something was
-    dropped silently and looked like success — a hardcoded temperature, an
-    ASCII-only word class, and this parser. A count that says "104 shaped, 2
-    unparsed" turns the fourth occurrence into a visible line instead of an
-    absence nobody thinks to look for.
-    """
-
-    citations: list[Citation]
-    unparsed: list[str]
-
-    @property
-    def shaped(self) -> int:
-        return len(self.citations) + len(self.unparsed)
-
-
 def _seconds_of(match: re.Match[str]) -> int:
     first, second, third = match.group(1), match.group(2), match.group(3)
     if third is not None:
@@ -181,7 +157,7 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
     what `[-YTupW6YG1k 01:00-01:09, 02:28]` means.
     """
     flat = normalise_dashes(text)
-    citations: list[Citation] = []
+    citations: list[AnswerCitation] = []
     unparsed: list[str] = []
 
     for group in _GROUP_RE.finditer(flat):
@@ -202,7 +178,7 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
                 unparsed.append(" ".join(entry.split())[:80])
                 continue
             citations.append(
-                Citation(
+                AnswerCitation(
                     video_id=current,
                     seconds=_seconds_of(stamp),
                     raw=f"[{current} {stamp.group(0)}]",
@@ -214,7 +190,7 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
     return CitationScan(citations=citations, unparsed=unparsed)
 
 
-def parse_citations(text: str, known: Sequence[str] | None = None) -> list[Citation]:
+def parse_citations(text: str, known: Sequence[str] | None = None) -> list[AnswerCitation]:
     """Just the citations. See ``scan_citations`` for what was dropped."""
     return scan_citations(text, known).citations
 
@@ -257,7 +233,7 @@ def deep_link(video_id: str, seconds: int) -> str:
     return f"https://www.youtube.com/watch?v={video_id}&t={max(0, int(seconds))}s"
 
 
-def render_links(citations: Sequence[Citation], titles: dict[str, str]) -> list[str]:
+def render_links(citations: Sequence[AnswerCitation], titles: dict[str, str]) -> list[str]:
     """One line per distinct citation, ordered as the answer used them."""
     lines: list[str] = []
     seen: set[tuple[str, int]] = set()
@@ -273,13 +249,6 @@ def render_links(citations: Sequence[Citation], titles: dict[str, str]) -> list[
 
 
 # -- loading -----------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class LoadedNote:
-    video_id: str
-    title: str
-    text: str
 
 
 def load_notes(library: Library, ledger: Ledger | None = None) -> list[LoadedNote]:
@@ -351,40 +320,6 @@ def _transcripts_block(opened: Sequence[tuple[str, str]]) -> str:
 
 
 # -- the run -----------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Opened:
-    """A transcript read for one question, and why it was read."""
-
-    video_id: str
-    why: str
-    text: str
-
-
-@dataclass
-class Answer:
-    question: str
-    text: str = ""
-    version: str = ""
-    model: str = ""
-    notes_loaded: int = 0
-    opened: list[tuple[str, str]] = field(default_factory=list)  # video_id, why
-    citations: list[Citation] = field(default_factory=list)
-    # Citation-shaped strings the parser could not read. Reported rather than
-    # discarded: a parser that drops most of its input must say so.
-    unparsed: list[str] = field(default_factory=list)
-    titles: dict[str, str] = field(default_factory=dict)
-    requests: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cost_usd: float = 0.0
-    elapsed_s: float = 0.0
-    truncated: bool = False
-
-    @property
-    def escalated(self) -> bool:
-        return bool(self.opened)
 
 
 def answer_question(

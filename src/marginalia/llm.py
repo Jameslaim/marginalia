@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from .config import LlmConfig
+from .contracts import Usage
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +46,6 @@ __all__ = [
     "Prompt",
     "Reply",
     "RateLimiter",
-    "Usage",
     "load_prompt",
     "prompts_dir",
 ]
@@ -193,20 +193,6 @@ class RateLimiter:
 
 
 # -- the client -------------------------------------------------------------
-
-
-@dataclass
-class Usage:
-    """What a run cost. Requests are the scarce resource here, not dollars."""
-
-    requests: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-
-    def add(self, other: Usage) -> None:
-        self.requests += other.requests
-        self.input_tokens += other.input_tokens
-        self.output_tokens += other.output_tokens
 
 
 @dataclass(frozen=True)

@@ -15,7 +15,8 @@ from pathlib import Path
 import pytest
 
 from marginalia.cli import EXIT_OK, EXIT_USAGE, _duration, main
-from marginalia.core.ledger import STAGE_METADATA, VERDICT_NO, Ledger
+from marginalia.contracts import VERDICT_NO
+from marginalia.core.ledger import STAGE_METADATA, Ledger
 from marginalia.providers.base import SearchResult
 
 A = "dQw4w9WgXcQ"
@@ -62,7 +63,8 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     config = tmp_path / "config.toml"
     config.write_text(
         f'[library]\npath = "{root.as_posix()}"\n\n'
-        '[providers]\nsearch_order = ["fake_search"]\n',
+        '[providers]\nsearch_order = ["fake_search"]\n\n'
+        '[llm]\nbase_url = "https://example.invalid/v1"\nmodel = "test-model"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("MARGINALIA_CONFIG", str(config))

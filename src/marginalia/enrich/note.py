@@ -29,11 +29,20 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from ..config import Config
-from ..contracts import VideoRow
+from ..contracts import (
+    FAILED,
+    NOTED,
+    SKIPPED,
+    STOP_LIMIT,
+    STOP_MAX_COST,
+    STOP_REPEATED_FAILURES,
+    NoteResult,
+    NoteRun,
+    VideoRow,
+)
 from ..core.ledger import STATUS_STORED, Ledger
 from ..core.library import Library, format_duration
 from ..llm import LlmClient, LlmConfigError, LlmError, Prompt, load_prompt
@@ -41,8 +50,6 @@ from ..llm import LlmClient, LlmConfigError, LlmError, Prompt, load_prompt
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "NoteRun",
-    "NoteResult",
     "NoteInvalid",
     "REQUIRED_SECTIONS",
     "missing_sections",
@@ -65,17 +72,6 @@ REQUIRED_SECTIONS: tuple[str, ...] = (
     "Who's talking, what they want",
     "Verbatim",
 )
-
-NOTED = "noted"
-SKIPPED = "skipped"
-FAILED = "failed"
-
-# Why a drain stopped early. Same vocabulary as discovery's, same purpose: a
-# run that stops for an unknown reason cannot be tuned.
-STOP_DONE = "done"
-STOP_MAX_COST = "max_cost"
-STOP_LIMIT = "limit"
-STOP_REPEATED_FAILURES = "repeated_failures"
 
 # Consecutive failures before the drain gives up. Observed, not hypothetical: a
 # run against an unreachable endpoint failed all thirty-six videos, four
@@ -187,31 +183,6 @@ def _stamp(start_ms: object) -> str:
 
 
 # -- results ----------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class NoteResult:
-    video_id: str
-    outcome: str
-    detail: str
-    tokens: int = 0
-    version: str | None = None
-
-
-@dataclass
-class NoteRun:
-    version: str
-    model: str
-    results: list[NoteResult] = field(default_factory=list)
-    requests: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    cost_usd: float = 0.0
-    elapsed_s: float = 0.0
-    stopped_because: str = STOP_DONE
-
-    def count(self, outcome: str) -> int:
-        return sum(1 for result in self.results if result.outcome == outcome)
 
 
 # -- selection ---------------------------------------------------------------

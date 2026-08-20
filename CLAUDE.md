@@ -57,6 +57,15 @@ not drift.
    provider-specific parameter; each is something some future provider will lack.
    Prompts stay model-agnostic — a test asserts none of them names a model family.
 
+   **`llm.base_url` and `llm.model` are required and have no default.** `config.py`
+   held one of each until A.1, which made this rule literally false and — worse —
+   meant a config missing the key silently reached the provider this project
+   abandoned for not completing requests. There is no provider-neutral model name:
+   any default is a vendor chosen on the user's behalf, silently. A missing key now
+   names itself, its section, and the file. The `guard-write` hook deliberately does
+   *not* go through `load_config()` for this reason: it reads `[library]` alone, so
+   an incomplete `[llm]` block cannot switch off hard rule 2 through the fail-open path.
+
    **`_send` may name only `model`, `messages`, `max_tokens` and `extra`.** Everything
    else a provider wants comes from `[llm] extra` or `[llm.tasks.<name>] extra`, merged
    in and passed through without `llm.py` knowing what any of it means. This is not
@@ -81,10 +90,17 @@ not drift.
 10. **Every structure crossing a module boundary is defined in `contracts.py`. No bare
     dicts across boundaries.** A type defined where it is produced makes `flow/` import
     `brain/` to name a verdict and `brain/` import `providers/` to name a search result —
-    each import individually reasonable, the graph as a whole cyclic. Protocols and
-    exception types are the exception and stay put: `TranscriptProvider`, `SearchProvider`,
-    `PermanentError` and `TransientError` remain in `providers/base.py`, because a
-    Protocol is the shape of an implementation rather than a structure in flight.
+    each import individually reasonable, the graph as a whole cyclic. **Shared vocabulary
+    counts**: the `VERDICT_*`, `NEW`/`KNOWN`/`REJECTED`, `NOTED`/`SKIPPED`/`FAILED` and
+    `STOP_*` strings are the values those structures' fields take, and leaving them
+    behind would only move the import backwards.
+
+    Two things stay put. **Protocols and exception types**: `TranscriptProvider`,
+    `SearchProvider`, `PermanentError` and `TransientError` remain in
+    `providers/base.py`, because a Protocol is the shape of an implementation rather
+    than a structure in flight. **Configuration**: `Config` and its sub-configs stay in
+    `config.py` — configuration is what a run is set up with, not data moving through
+    it, and every module reading it is reading the same single object by design.
 
 ## Structure
 

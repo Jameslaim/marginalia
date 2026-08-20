@@ -17,13 +17,13 @@ from pathlib import Path
 import pytest
 from conftest import make_llm_config
 
+from marginalia.contracts import Usage
 from marginalia.llm import (
     LlmClient,
     LlmConfigError,
     LlmError,
     LlmUnavailable,
     RateLimiter,
-    Usage,
     batched,
     load_prompt,
     prompts_dir,

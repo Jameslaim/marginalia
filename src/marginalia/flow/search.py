@@ -28,16 +28,23 @@ misbehaves in M2b is diagnosable only from what was actually recorded.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Sequence
 
 from ..config import Config
+from ..contracts import (
+    KNOWN,
+    NEW,
+    REJECTED,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    Candidate,
+    SearchResult,
+    SearchRun,
+)
 from ..core.ledger import (
     KNOWN_STATUSES,
     STAGE_SEARCH,
     STATUS_DUPLICATE,
-    VERDICT_MAYBE,
-    VERDICT_NO,
     Ledger,
     normalise_topic,
 )
@@ -52,47 +59,7 @@ from ..providers import (
 
 log = logging.getLogger(__name__)
 
-__all__ = ["Candidate", "SearchRun", "run_search", "NEW", "KNOWN", "REJECTED"]
-
-# What the report prints in its first column, and what `--json` carries.
-NEW = "new"
-KNOWN = "known"
-REJECTED = "rejected"
-
-
-@dataclass(frozen=True)
-class Candidate:
-    result: SearchResult
-    verdict: str  # new | known | rejected
-    reason: str  # short, printable, stable — a skill reads it
-
-    @property
-    def video_id(self) -> str:
-        return self.result.video_id
-
-
-@dataclass(frozen=True)
-class SearchRun:
-    query: str
-    topic: str
-    provider: str | None
-    candidates: list[Candidate]
-    # (provider, why) for each provider that was tried and fell through, in
-    # order. The report names these: a silent fallback looks like a quota that
-    # never runs out.
-    fallbacks: list[tuple[str, str]] = field(default_factory=list)
-
-    def of(self, verdict: str) -> list[Candidate]:
-        return [candidate for candidate in self.candidates if candidate.verdict == verdict]
-
-    @property
-    def counts(self) -> dict[str, int]:
-        return {
-            "found": len(self.candidates),
-            KNOWN: len(self.of(KNOWN)),
-            REJECTED: len(self.of(REJECTED)),
-            NEW: len(self.of(NEW)),
-        }
+__all__ = ["run_search"]
 
 
 def run_search(

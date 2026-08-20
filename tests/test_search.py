@@ -18,14 +18,8 @@ import pytest
 from conftest import make_config
 
 from marginalia.config import Config
-from marginalia.core.ledger import (
-    STAGE_METADATA,
-    STAGE_SEARCH,
-    VERDICT_MAYBE,
-    VERDICT_NO,
-    VERDICT_YES,
-    Ledger,
-)
+from marginalia.contracts import KNOWN, NEW, REJECTED, VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
+from marginalia.core.ledger import STAGE_METADATA, STAGE_SEARCH, Ledger
 from marginalia.providers.base import (
     PermanentError,
     ProviderUnavailable,
@@ -33,7 +27,7 @@ from marginalia.providers.base import (
     SearchResult,
     TransientError,
 )
-from marginalia.flow.search import KNOWN, NEW, REJECTED, run_search
+from marginalia.flow.search import run_search
 
 TOPIC = "prompt caching"
 

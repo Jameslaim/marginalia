@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from marginalia.cli import EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
-from marginalia.enrich.note import FAILED, NOTED, SKIPPED, NoteResult, NoteRun
+from marginalia.contracts import FAILED, NOTED, SKIPPED, NoteResult, NoteRun
 
 # The distinctive strings the leak tests look for.
 SECRET_NOTE = "## Claims\nthe speaker calls quadratic growth exponential twice\n"
@@ -40,7 +40,7 @@ def configured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     config = tmp_path / "config.toml"
     config.write_text(
         f'[library]\npath = "{root.as_posix()}"\n\n'
-        '[llm]\napi_key = "k"\nmodel = "test-model"\n',
+        '[llm]\napi_key = "k"\nbase_url = "https://example.invalid/v1"\nmodel = "test-model"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("MARGINALIA_CONFIG", str(config))

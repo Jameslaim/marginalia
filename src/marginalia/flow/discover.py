@@ -34,16 +34,22 @@ from typing import Sequence
 
 from ..brain.judge import Judge, opening_words
 from ..config import Config
-from ..contracts import DiscoverRun, RoundReport, SearchResult, TranscriptResult
+from ..contracts import (
+    NEW,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
+    DiscoverRun,
+    RoundReport,
+    SearchResult,
+    TranscriptResult,
+)
 from ..core.ids import extract_video_id
 from ..core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
     STAGE_METADATA,
     STAGE_OPENING,
-    VERDICT_MAYBE,
-    VERDICT_NO,
-    VERDICT_YES,
     Ledger,
     normalise_topic,
 )
@@ -51,7 +57,7 @@ from ..core.library import Library
 from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
 from ..providers.base import TranscriptProvider
-from .search import NEW, run_search
+from .search import run_search
 
 log = logging.getLogger(__name__)
 

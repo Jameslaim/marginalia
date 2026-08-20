@@ -28,6 +28,7 @@ __all__ = [
     "NoteConfig",
     "AskConfig",
     "load_config",
+    "library_root",
     "example_text",
 ]
 
@@ -45,9 +46,13 @@ API_KEY_ENV = "YOUTUBE_API_KEY"
 # variable NVIDIA_API_KEY would bake today's vendor into tomorrow's setup.
 LLM_API_KEY_ENV = "MARGINALIA_LLM_API_KEY"
 
-# Every default here describes *a* provider, never a particular one.
-DEFAULT_LLM_BASE_URL = "https://integrate.api.nvidia.com/v1"
-DEFAULT_LLM_MODEL = "z-ai/glm-5.2"
+# `base_url` and `model` deliberately have no default. There was one, and it
+# named the provider this project abandoned because it stopped completing
+# requests — so a user whose config lacked the key got a dead endpoint and a
+# failure that pointed nowhere near the cause. There is also no such thing as a
+# provider-neutral model name: any default here is a vendor choice made on the
+# user's behalf, silently. Both keys are now required, and rule 7 — `llm.py` is
+# the only place a model is named — is literally true.
 DEFAULT_REQUESTS_PER_MINUTE = 40
 DEFAULT_JUDGE_BATCH_SIZE = 10
 # Generous on purpose: a free tier queues, and an request that waits four
@@ -96,6 +101,12 @@ path = "{DEFAULT_LIBRARY_PATH}"
 [providers]
 transcript_order = ["ytdlp"]
 search_order = ["youtube_api", "ytdlp_search"]
+
+# Required — both, with no default. Fill these in before running anything that
+# calls a model. See config.example.toml for a worked example.
+[llm]
+# base_url = "https://..."
+# model = "..."
 """
 
 
@@ -264,6 +275,28 @@ def load_config() -> Config:
     )
 
 
+def library_root() -> Path:
+    """The library path alone, validating nothing else.
+
+    `marg guard-write` needs this and only this. Routing it through
+    `load_config()` would make the write guard depend on the `[llm]` section
+    being complete — and because the guard deliberately fails *open*, an
+    incomplete `[llm]` block would silently switch off hard rule 2. A guard that
+    stops guarding when an unrelated key is missing is worse than no guard,
+    because it still looks present.
+
+    Found by the hook tests the moment `base_url` and `model` became required.
+    """
+    chosen = next((path for path in _candidates() if path.is_file()), None)
+    if chosen is None:
+        raise ConfigError("no config file found; run any other `marg` command to create one")
+    try:
+        data = tomllib.loads(chosen.read_text(encoding="utf-8-sig"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise ConfigError(f"could not read config at {chosen}: {exc}") from exc
+    return _library_path(data, chosen)
+
+
 def _candidates() -> list[Path]:
     override = os.environ.get("MARGINALIA_CONFIG")
     if override:
@@ -324,9 +357,9 @@ def _llm(data: dict, config_path: Path) -> LlmConfig:
 
     return LlmConfig(
         provider=_string(section, "provider", "unnamed", config_path, "llm"),
-        base_url=_string(section, "base_url", DEFAULT_LLM_BASE_URL, config_path, "llm"),
+        base_url=_required_string(section, "base_url", config_path, "llm"),
         api_key=key or None,
-        model=_string(section, "model", DEFAULT_LLM_MODEL, config_path, "llm"),
+        model=_required_string(section, "model", config_path, "llm"),
         requests_per_minute=_positive(
             limits, "requests_per_minute", DEFAULT_REQUESTS_PER_MINUTE, config_path, "llm.limits"
         ),
@@ -446,6 +479,28 @@ def _number(section: dict, key: str, default: float, config_path: Path, where: s
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw < 0:
         raise ConfigError(f"{where}.{key} must be a non-negative number in {config_path}")
     return float(raw)
+
+
+def _required_string(section: dict, key: str, config_path: Path, where: str) -> str:
+    """A key with no default: absent is an error, and the error says what to do.
+
+    The message names the key, the section it belongs in, and the file — because
+    the alternative failure is a request to a provider the user never chose,
+    surfacing three layers away as a connection error or an unknown-model 404.
+    """
+    raw = section.get(key)
+    if raw is None:
+        raise ConfigError(
+            f"{where}.{key} is required and missing from {config_path}\n"
+            f"  add it under [{where}]:\n"
+            f'      {key} = "..."\n'
+            f"  {where}.base_url and {where}.model have no default: there is no "
+            f"provider-neutral value for either, and guessing one means calling a "
+            f"model you did not choose. See config.example.toml."
+        )
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(f"{where}.{key} must be a non-empty string in {config_path}")
+    return raw.strip()
 
 
 def _string(section: dict, key: str, default: str, config_path: Path, where: str) -> str:

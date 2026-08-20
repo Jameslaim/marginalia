@@ -34,8 +34,20 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from . import __version__
-from .config import Config, ConfigError, load_config
-from .contracts import DiscoverRun, TranscriptResult, VideoRow
+from .config import Config, ConfigError, library_root, load_config
+from .contracts import (
+    FAILED,
+    KNOWN,
+    NEW,
+    NOTED,
+    REJECTED,
+    SKIPPED,
+    Candidate,
+    DiscoverRun,
+    SearchRun,
+    TranscriptResult,
+    VideoRow,
+)
 from .core.ids import extract_video_id
 from .flow.discover import discover
 from .llm import LlmClient, LlmError
@@ -47,12 +59,12 @@ from .core.ledger import (
     skip_reason,
 )
 from .core.library import Library, format_duration
-from .enrich.note import FAILED, NOTED, SKIPPED, note_version, write_notes
+from .enrich.note import note_version, write_notes
 from .ask import answer_question, deep_link, render_links
 from .enrich.timestamps import snap_library
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider
-from .flow.search import KNOWN, NEW, REJECTED, Candidate, SearchRun, run_search
+from .flow.search import run_search
 
 log = logging.getLogger("marginalia")
 
@@ -632,7 +644,7 @@ def _cmd_guard_write(args: argparse.Namespace) -> int:
         target = _hook_target(event)
         if target is None:
             return EXIT_OK
-        root = load_config().library_path
+        root = library_root()
     except Exception as exc:  # noqa: BLE001 - see the fail-open note above
         print(f"marg guard-write: could not evaluate the hook input: {exc}", file=sys.stderr)
         return EXIT_OK

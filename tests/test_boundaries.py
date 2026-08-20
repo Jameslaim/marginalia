@@ -7,15 +7,18 @@ the source with `ast` rather than importing it — an import-time check can only
 see what a module happened to import, while an AST scan sees every import
 statement including the lazy ones inside functions.
 
-Two of these encode a violation that already exists. Where that happens the
-allowlist is a named constant with the reason beside it and a test asserting the
-allowlist is exactly what it says — so the exception stays one line long and
+There are no allowlisted violations. There were two — `brain/judge.py`
+reaching `core/ledger.py` for the verdict words, and `config.py` holding a
+default model name — and both are closed rather than documented. Where an
+exemption is genuinely needed it should be a named constant with the reason
+beside it and a test pinning its exact contents, so it stays one line long and
 cannot quietly grow a second entry.
 """
 
 from __future__ import annotations
 
 import ast
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -137,12 +140,12 @@ _MODEL_FAMILIES = (
     "moonshot",
 )
 
-# `config.py` holds DEFAULT_LLM_BASE_URL and DEFAULT_LLM_MODEL, so a model name
-# and a URL are literally in its source. That is not drift: rule 7 is about
-# where a model is *chosen*, and config is where the user chooses it — the whole
-# point being that a swap edits config.toml and nothing else. `llm.py` reads
-# them and never hardcodes an alternative.
-_MAY_NAME_A_MODEL = frozenset({"llm.py", "config.py"})
+# One file. `config.py` used to be here too, because it held
+# DEFAULT_LLM_BASE_URL and DEFAULT_LLM_MODEL — a defensible exception that was
+# still an exception, and the default it protected named a provider that had
+# stopped completing requests. Both keys are required now, so rule 7 reads
+# literally: `llm.py` is the only place a model is named.
+_MAY_NAME_A_MODEL = frozenset({"llm.py"})
 
 
 def _code_only(source: str) -> str:
@@ -181,13 +184,14 @@ def test_only_llm_names_a_model(relative: str) -> None:
 
 
 @pytest.mark.parametrize("relative", _module_paths())
-def test_only_config_supplies_a_base_url(relative: str) -> None:
+def test_no_module_binds_a_base_url_to_a_literal(relative: str) -> None:
     """The other half of rule 7: where a request is *sent* is as much a provider
     choice as which model answers it.
 
     Reading `config.llm.base_url` — cli.py does, to name the endpoint in an
-    error — is fine and is the point. What must not exist elsewhere is a
-    `base_url` bound to a literal, because that is a provider chosen in code.
+    error — is fine and is the point. What must not exist anywhere, `config.py`
+    now included, is a `base_url` bound to a literal: that is a provider chosen
+    in code rather than in the file the user edits.
     """
     if relative in _MAY_NAME_A_MODEL:
         return
@@ -207,10 +211,10 @@ def test_only_config_supplies_a_base_url(relative: str) -> None:
             )
 
 
-def test_the_model_name_allowlist_is_exactly_two_files() -> None:
-    """If a third file starts naming a model, that is the drift rule 7 exists to
-    catch, and it should fail here rather than pass because the list grew."""
-    assert _MAY_NAME_A_MODEL == {"llm.py", "config.py"}
+def test_the_model_name_allowlist_is_one_file() -> None:
+    """If a second file starts naming a model, that is the drift rule 7 exists
+    to catch, and it should fail here rather than pass because the list grew."""
+    assert _MAY_NAME_A_MODEL == {"llm.py"}
 
 
 # -- rule: only core/library.py builds a library path ------------------------
@@ -277,15 +281,6 @@ _INFRASTRUCTURE = (
     "marginalia.enrich",
 )
 
-# The one violation that exists today, recorded rather than refactored around.
-# `brain/judge.py` imports VERDICT_YES / VERDICT_NO / VERDICT_MAYBE from
-# `core/ledger.py`. They are three string constants and importing them reaches
-# nothing at call time — but the import pulls the whole ledger module, sqlite3
-# included, into any process that imports the judge, which is exactly the
-# coupling this rule prevents. Moving them is a design change; Phase A is a pure
-# move, so it is recorded here instead.
-_KNOWN_BRAIN_VIOLATIONS = frozenset({("brain/judge.py", "marginalia.core")})
-
 
 def _brain_modules() -> list[str]:
     return [r for r in _module_paths() if r.startswith("brain/")]
@@ -299,15 +294,21 @@ def test_brain_performs_no_infrastructure_io(relative: str) -> None:
     `planner.py` arrive here later, and the value of a reasoning layer is that
     it can be tested without a machine — no database, no disk, no network. That
     property is worth exactly as much as it is enforced.
+
+    **No allowlist.** There was one: `judge.py` reached `core/ledger.py` for the
+    three VERDICT_* strings, which pulled sqlite3 into every process that
+    imported the judge. The constants now live in `contracts.py`, where the
+    vocabulary brain, flow and core all speak belongs. Nothing here is exempt,
+    and nothing here should become exempt — an allowlist on this rule is the
+    rule ending.
     """
     offences = set()
     for name in _imports(SRC / relative):
         for forbidden in _INFRASTRUCTURE:
             if name == forbidden or name.startswith(forbidden + "."):
                 offences.add((relative, forbidden))
-    unexpected = offences - _KNOWN_BRAIN_VIOLATIONS
-    assert not unexpected, (
-        f"{relative} reaches infrastructure: {sorted(unexpected)}. brain/ may import "
+    assert not offences, (
+        f"{relative} reaches infrastructure: {sorted(offences)}. brain/ may import "
         f"llm and contracts, and nothing else that touches the outside world."
     )
 
@@ -318,13 +319,6 @@ def test_brain_may_import_llm_and_contracts() -> None:
     names = _imports(SRC / "brain" / "judge.py")
     assert "marginalia.llm" in names
     assert "marginalia.contracts" in names
-
-
-def test_the_known_brain_violation_is_exactly_one() -> None:
-    """A finding, pinned. When the VERDICT_* constants move — to `contracts.py`
-    or wherever they end up — this test fails and the allowlist gets deleted.
-    That failure is the point: it is the reminder the debt was paid."""
-    assert _KNOWN_BRAIN_VIOLATIONS == {("brain/judge.py", "marginalia.core")}
 
 
 # -- rule: no bare dicts across a boundary -----------------------------------
@@ -340,25 +334,75 @@ def test_every_shared_structure_is_in_contracts() -> None:
     from marginalia import contracts
 
     expected = {
+        # verdict vocabulary
+        "VERDICT_YES",
+        "VERDICT_NO",
+        "VERDICT_MAYBE",
+        # transcripts and search
         "TranscriptLine",
         "TranscriptResult",
         "SearchResult",
+        # judgement
         "Brief",
         "MetadataVerdict",
         "OpeningVerdict",
+        # ledger rows
         "VideoRow",
+        # discovery runs
         "RoundReport",
         "DiscoverRun",
+        # search runs
+        "NEW",
+        "KNOWN",
+        "REJECTED",
+        "Candidate",
+        "SearchRun",
+        # note runs
+        "NOTED",
+        "SKIPPED",
+        "FAILED",
+        "STOP_DONE",
+        "STOP_MAX_COST",
+        "STOP_LIMIT",
+        "STOP_REPEATED_FAILURES",
+        "NoteResult",
+        "NoteRun",
+        # answers
+        "AnswerCitation",
+        "CitationScan",
+        "LoadedNote",
+        "Opened",
+        "Answer",
+        # timestamp snapping
+        "TranscriptIndex",
+        "NoteCitation",
+        "Change",
+        "SnapResult",
+        # model calls
+        "Usage",
     }
     assert set(contracts.__all__) == expected
     for name in expected:
         assert hasattr(contracts, name)
 
 
+def test_the_two_citation_types_are_distinguishable() -> None:
+    """They were both called `Citation`, in two files, and nothing said which
+    one a function returned. Names now carry the difference, and the fields
+    confirm it is a real one rather than a naming accident."""
+    from marginalia.contracts import AnswerCitation, NoteCitation
+
+    answer = {f.name for f in fields(AnswerCitation)}
+    note = {f.name for f in fields(NoteCitation)}
+    assert answer != note
+    assert "video_id" in answer and "video_id" not in note
+    assert "start" in note and "start" not in answer
+
+
 def test_no_shared_structure_is_defined_twice() -> None:
     """A type in `contracts.py` must not also be class-defined elsewhere — that
-    is how two `Citation`s happen, and it is invisible until something compares
-    them with `isinstance`."""
+    is how two `Citation`s happened here, and it was invisible until something
+    compared them with `isinstance`."""
     from marginalia import contracts
 
     shared = set(contracts.__all__)

@@ -18,7 +18,7 @@ import logging
 import pytest
 
 from marginalia.brain.judge import parse_batch, parse_opening, parse_queries
-from marginalia.core.ledger import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
+from marginalia.contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
 
 CLEAN = """\
 1: YES - covers cache expiry and shows configuration

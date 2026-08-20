@@ -164,6 +164,43 @@ def test_malformed_json_is_let_through(
     assert "guard-write" in capsys.readouterr().err
 
 
+# -- the guard does not depend on the model section -------------------------
+
+
+def test_the_guard_still_blocks_when_the_llm_section_is_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A regression, caught the moment `llm.base_url` and `llm.model` became
+    required and nearly shipped.
+
+    The guard fails *open* by design: a guard that cannot read its own input
+    must not block every edit in the repository. Routing it through
+    `load_config()` meant an incomplete `[llm]` block raised, the fail-open
+    branch caught it, and hard rule 2 silently switched off — a guard that stops
+    guarding while still looking present. It reads only `[library]` now.
+    """
+    root = tmp_path / "library"
+    config = tmp_path / "config.toml"
+    config.write_text(
+        f'[library]\npath = "{root.as_posix()}"\n\n[llm]\nprovider = "someone"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MARGINALIA_CONFIG", str(config))
+
+    assert guard(write_event(root / "videos" / "abc" / "note.md"), monkeypatch) == EXIT_BLOCKED
+
+
+def test_the_guard_still_allows_when_the_llm_section_is_incomplete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half: it must not start blocking everything either."""
+    root = tmp_path / "library"
+    config = tmp_path / "config.toml"
+    config.write_text(f'[library]\npath = "{root.as_posix()}"\n', encoding="utf-8")
+    monkeypatch.setenv("MARGINALIA_CONFIG", str(config))
+
+    assert guard(write_event(tmp_path / "somewhere" / "else.py"), monkeypatch) == EXIT_OK
+
 # -- the wiring the hook depends on ----------------------------------------
 
 

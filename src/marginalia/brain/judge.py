@@ -23,8 +23,15 @@ import logging
 import re
 from typing import Sequence
 
-from ..contracts import Brief, MetadataVerdict, OpeningVerdict, SearchResult
-from ..core.ledger import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
+from ..contracts import (
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
+    Brief,
+    MetadataVerdict,
+    OpeningVerdict,
+    SearchResult,
+)
 from ..llm import LlmClient, Prompt, Reply, batched, load_prompt
 
 log = logging.getLogger(__name__)

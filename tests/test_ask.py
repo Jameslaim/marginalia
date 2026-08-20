@@ -13,7 +13,6 @@ from pathlib import Path
 import pytest
 
 from marginalia.ask import (
-    Citation,
     answer_question,
     deep_link,
     load_notes,
@@ -23,6 +22,7 @@ from marginalia.ask import (
     render_links,
     scan_citations,
 )
+from marginalia.contracts import AnswerCitation
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient
 
@@ -98,7 +98,10 @@ def test_deep_link_seconds_match_the_cited_timestamp():
 
 
 def test_rendered_links_are_deduplicated_and_titled():
-    citations = [Citation(A, 571, f"[{A} 09:31]"), Citation(A, 571, f"[{A} 09:31]")]
+    citations = [
+        AnswerCitation(A, 571, f"[{A} 09:31]"),
+        AnswerCitation(A, 571, f"[{A} 09:31]"),
+    ]
     lines = render_links(citations, {A: "A title"})
     assert len(lines) == 1
     assert "A title" in lines[0] and f"t=571s" in lines[0]

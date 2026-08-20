@@ -23,13 +23,9 @@ from conftest import make_config, make_note_config
 from marginalia.core.ledger import Ledger, STATUS_NEEDS_ASR, STATUS_STORED
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient, LlmError
+from marginalia.contracts import FAILED, NOTED, SKIPPED, STOP_MAX_COST, STOP_REPEATED_FAILURES
 from marginalia.enrich.note import (
-    FAILED,
-    NOTED,
     REQUIRED_SECTIONS,
-    SKIPPED,
-    STOP_MAX_COST,
-    STOP_REPEATED_FAILURES,
     NoteInvalid,
     missing_sections,
     note_header,

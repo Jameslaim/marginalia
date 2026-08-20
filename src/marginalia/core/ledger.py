@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 
-from ..contracts import VideoRow
+from ..contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES, VideoRow
 
 log = logging.getLogger(__name__)
 
@@ -49,9 +49,6 @@ __all__ = [
     "STAGE_METADATA",
     "STAGE_OPENING",
     "STAGE_NOTE",
-    "VERDICT_YES",
-    "VERDICT_NO",
-    "VERDICT_MAYBE",
     "KNOWN_STATUSES",
 ]
 
@@ -74,10 +71,6 @@ STAGE_OPENING = "opening"
 STAGE_NOTE = "note"
 _STAGES = frozenset({STAGE_SEARCH, STAGE_METADATA, STAGE_OPENING, STAGE_NOTE})
 
-# Three-way on purpose: forcing yes/no on thin evidence makes the judge guess.
-VERDICT_YES = "yes"
-VERDICT_NO = "no"
-VERDICT_MAYBE = "maybe"
 _VERDICTS = frozenset({VERDICT_YES, VERDICT_NO, VERDICT_MAYBE})
 
 # Gate 1: statuses meaning "we already have this video's content". Not
