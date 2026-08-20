@@ -93,9 +93,10 @@ def test_the_report_has_one_line_per_round_then_a_summary(stubbed, capsys) -> No
     main(["discover", "prompt caching"])
     lines = capsys.readouterr().out.strip().splitlines()
 
-    assert len(lines) == 4
+    assert len(lines) == 5
     assert lines[1].startswith("round 1:  5 queries, 63 candidates, 8 known, 41 no, 14 maybe")
     assert lines[1].endswith("9 stored")
+    assert lines[4] == "judge-full: 10 judged, 10 parsed, 0 unparsed"
     assert lines[3] == (
         "run:      2 stored, 66 judged, 2 rounds, 24 requests, stopped: no_new_videos"
     )
@@ -114,7 +115,9 @@ def test_a_dry_run_says_would_store(configured, monkeypatch, capsys) -> None:
     )
     main(["discover", "prompt caching", "--dry-run"])
 
-    summary = capsys.readouterr().out.strip().splitlines()[-1]
+    summary = next(
+        line for line in capsys.readouterr().out.splitlines() if line.startswith("run:")
+    )
     assert "would store" in summary
     assert "stopped: dry_run" in summary
 

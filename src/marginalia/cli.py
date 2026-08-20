@@ -273,18 +273,25 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             f"{report.verdict_no} no, {report.verdict_maybe} maybe "
             f"→ {report.stored} stored"
         )
-        # Never silent. A round where every fetch failed otherwise reads
-        # exactly like a round where the judge rejected everything — observed
-        # in a real run, where 13 transient fetch failures left no trace in
-        # the report at all.
-        if report.failed:
-            line += f" ({report.failed} fetch failed)"
-        # Since B2 a stage-2 rejection keeps its transcript, so these videos are
-        # neither "stored" nor absent — they are on disk, unnoted, and available
-        # to the next topic for free. Naming them keeps the round's arithmetic
-        # closeable: candidates in, and every one of them accounted for.
-        if report.flipped_to_no:
-            line += f" ({report.flipped_to_no} kept on disk, declined here)"
+        # Never silent, and never conflated. A round where every fetch failed
+        # otherwise reads exactly like a round where the judge rejected
+        # everything — observed in a real run, where 13 transient fetch
+        # failures left no trace in the report at all.
+        #
+        # Each of these is a different thing that happened to a candidate, and
+        # until B3 three of them shared two counters. B5's planner reads these
+        # numbers; a sum of three causes cannot be planned on.
+        notes = [
+            (report.failed, "fetch failed"),
+            (report.no_captions, "no captions, sent to ASR"),
+            (report.already_held, "already on disk"),
+            (report.flipped_to_no, "kept on disk, declined here"),
+            (report.degraded, "degraded evidence, not noted"),
+            (report.unparsed, "broke the reply format"),
+        ]
+        detail = ", ".join(f"{count} {label}" for count, label in notes if count)
+        if detail:
+            line += f" ({detail})"
         if report.rejected_before:
             line += f", {report.rejected_before} previously rejected"
         lines.append(line)
@@ -294,6 +301,16 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         f"{len(run.rounds)} rounds, {run.requests} requests, "
         f"stopped: {run.stopped_because}"
     )
+    # The same shape citation parsing reports, for the same reason: a parser
+    # that silently drops what it cannot read is how `/ask` came to report 2
+    # citations out of 104. Printed even at zero — "0 unparsed" is the line
+    # that makes the count trustworthy on the day it is not zero.
+    read = sum(report.judged_here for report in run.rounds)
+    unparsed = sum(report.unparsed for report in run.rounds)
+    if read:
+        lines.append(
+            f"judge-full: {read} judged, {read - unparsed} parsed, {unparsed} unparsed"
+        )
     return lines
 
 
@@ -332,6 +349,10 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "flipped_to_no": report.flipped_to_no,
                 "stored": report.stored,
                 "failed": report.failed,
+                "already_held": report.already_held,
+                "no_captions": report.no_captions,
+                "degraded": report.degraded,
+                "unparsed": report.unparsed,
             }
             for report in run.rounds
         ],

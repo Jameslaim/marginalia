@@ -32,9 +32,10 @@ import uuid
 from datetime import datetime, timezone
 from typing import Sequence
 
-from ..brain.judge import Judge, opening_words
+from ..brain.judge import FULL_PROMPT, Judge
 from ..config import Config
 from ..contracts import (
+    EVIDENCE_DEGRADED,
     NEW,
     VERDICT_MAYBE,
     VERDICT_NO,
@@ -48,12 +49,12 @@ from ..core.ids import extract_video_id
 from ..core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
+    STAGE_FULL,
     STAGE_METADATA,
-    STAGE_OPENING,
     Ledger,
     normalise_topic,
 )
-from ..core.library import Library
+from ..core.library import Library, format_timestamp
 from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
 from ..providers.base import TranscriptProvider
@@ -328,7 +329,7 @@ def _judge_round(
                 "discover: %s already has a transcript; not re-fetching",
                 candidate.video_id,
             )
-            report.known += 1
+            report.already_held += 1
             continue
 
         # YouTube already told us there is no caption track, in the same
@@ -358,7 +359,7 @@ def _judge_round(
             # that rule 6 watches for cannot be observed by anyone.
             ledger.mark_pending(candidate.video_id)
             ledger.mark_needs_asr(candidate.video_id)
-            report.failed += 1
+            report.no_captions += 1
             continue
 
         _pace(config, fetched_any)
@@ -375,15 +376,45 @@ def _judge_round(
             if _overspent(config, client):
                 run.stopped_because = STOP_MAX_COST
                 return concepts
-            opening = judge.judge_opening(
+            # The whole transcript, not the first thousand words. An opening
+            # cannot distinguish a video that delivers from one that promises
+            # well and never arrives — the two are identical for a thousand
+            # words, and padding is exactly what stage 2 exists to catch.
+            #
+            # Built from the lines in hand rather than read back from disk.
+            # `brain/` cannot reach the filesystem, so "the judge never reads a
+            # stored transcript into a report" is structural here, not careful.
+            judgement = judge.judge_full(
                 run.brief,
                 candidate,
-                opening=opening_words([line.text for line in fetched.lines]),
+                transcript=_transcript_text(fetched),
                 chapters=[chapter.get("title", "") for chapter in fetched.chapters][:12],
+                duration_s=fetched.duration_s or candidate.duration_s,
             )
-            _log(ledger, run, candidate.video_id, STAGE_OPENING, opening.verdict, opening.reason)
-            concepts.extend(opening.concepts)
-            if opening.verdict == VERDICT_NO:
+            _log(
+                ledger,
+                run,
+                candidate.video_id,
+                STAGE_FULL,
+                judgement.verdict,
+                judgement.reason,
+                evidence=judgement.evidence,
+                prompt_version=judge.prompt(FULL_PROMPT).version,
+            )
+            concepts.extend(judgement.concepts)
+            if not judgement.parsed:
+                report.unparsed += 1
+            if judgement.evidence == EVIDENCE_DEGRADED:
+                # Kept, stored, and deliberately not noted. The transcript is
+                # worth keeping — it is the thing ASR would replace — but a
+                # note written from text the judge could not read would be
+                # loaded by `/ask` with no way to know it was noise.
+                report.degraded += 1
+                log.info(
+                    "discover: %s kept on degraded evidence; no note will be written",
+                    candidate.video_id,
+                )
+            if judgement.verdict == VERDICT_NO:
                 report.flipped_to_no += 1
                 # Keep the bytes. Acquisition is the one step this project
                 # calls fragile, and it is fragile in a measured way — thirteen
@@ -466,6 +497,24 @@ def _store(
     )
 
 
+def _transcript_text(result: TranscriptResult) -> str:
+    """The transcript as timestamped lines, for stage 2 to read.
+
+    Timestamps included because the judge is asked to name *where* the value is,
+    and a range it cannot see is a range it will invent. The format matches what
+    `library.write_transcript` puts on disk, so the judge reads the same shape a
+    person opening the file would.
+
+    Built from the lines already in memory. Reading the stored file back would
+    work and is deliberately not done: it would create a path from disk to a
+    model prompt inside `flow/`, and the one rule about transcripts is that they
+    do not travel.
+    """
+    return "\n".join(
+        f"[{format_timestamp(line.start_ms)}] {line.text}" for line in result.lines
+    )
+
+
 def _overspent(config: Config, client: LlmClient) -> bool:
     """Money, not call count, is the real ceiling under per-token billing.
 
@@ -498,7 +547,15 @@ def _pace(config: Config, already_fetched: bool) -> None:
 
 
 def _log(
-    ledger: Ledger, run: DiscoverRun, video_id: str, stage: str, verdict: str, reason: str
+    ledger: Ledger,
+    run: DiscoverRun,
+    video_id: str,
+    stage: str,
+    verdict: str,
+    reason: str,
+    *,
+    evidence: str | None = None,
+    prompt_version: str | None = None,
 ) -> None:
     """Every verdict at every stage, unless this is a dry run.
 
@@ -513,6 +570,8 @@ def _log(
         stage=stage,
         verdict=verdict,
         reason=reason,
+        evidence=evidence,
+        prompt_version=prompt_version,
         run_id=run.run_id,
         model=run.model,
     )

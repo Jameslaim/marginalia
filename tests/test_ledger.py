@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from marginalia.contracts import (
+    EVIDENCE_CLEAR,
+    EVIDENCE_DEGRADED,
     STATUS_DUPLICATE,
     STATUS_FAILED,
     STATUS_HAS_TRANSCRIPT,
@@ -30,6 +32,7 @@ from marginalia.contracts import (
 from marginalia.core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
+    STAGE_FULL,
     STAGE_METADATA,
     STAGE_NOTE,
     STAGE_OPENING,
@@ -1008,3 +1011,119 @@ def test_the_note_count_separates_unwanted_from_missing(ledger: Ledger) -> None:
     assert counts["has_transcript"] == 2
     assert counts["missing"] == 1
     assert counts["unwanted"] == 1
+
+
+# -- B3: degraded evidence is never noted -----------------------------------
+
+
+def test_degraded_evidence_is_never_noted() -> None:
+    """A note written from text the judge could not read is worse than no note.
+    `/ask` loads it and has no way to know the transcript behind it was noise —
+    a confident wrong answer, which is the failure a library exists to avoid."""
+    declined = DecisionRow(
+        video_id=VIDEO_ID,
+        topic="prompt caching",
+        stage=STAGE_FULL,
+        verdict=VERDICT_YES,
+        reason="captions unreadable throughout",
+        decided_at="2026-01-01T00:00:00+00:00",
+        evidence=EVIDENCE_DEGRADED,
+    )
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [declined]) is False
+
+
+def test_degraded_beats_an_acceptance_elsewhere() -> None:
+    """Unlike a rejection, this is not a claim about relevance that another
+    topic can overturn. It is a claim about the transcript, and the transcript
+    is the same for every topic that ever looks at this video."""
+    degraded = DecisionRow(
+        VIDEO_ID, "prompt caching", STAGE_FULL, VERDICT_YES, None,
+        "2026-01-01T00:00:00+00:00", evidence=EVIDENCE_DEGRADED,
+    )
+    accepted = DecisionRow(
+        VIDEO_ID, "redis", STAGE_FULL, VERDICT_YES, None,
+        "2026-02-01T00:00:00+00:00", evidence=EVIDENCE_CLEAR,
+    )
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [accepted, degraded]) is False
+
+
+def test_a_clear_keep_is_still_noted() -> None:
+    accepted = DecisionRow(
+        VIDEO_ID, "prompt caching", STAGE_FULL, VERDICT_YES, None,
+        "2026-01-01T00:00:00+00:00", evidence=EVIDENCE_CLEAR,
+    )
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [accepted]) is True
+
+
+def test_an_old_opening_verdict_still_counts_as_stage_two() -> None:
+    """B3 renamed the stage. Rows written before it say `opening`, and nothing
+    migrated them — what they say about themselves is true. Anything asking
+    "was this declined after being read?" has to ask about both names, or B3
+    would silently un-reject everything B2 rejected."""
+    old = DecisionRow(
+        VIDEO_ID, "prompt caching", STAGE_OPENING, VERDICT_NO, None,
+        "2026-01-01T00:00:00+00:00",
+    )
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [old]) is False
+
+
+def test_the_ledger_refuses_an_evidence_value_it_does_not_know(ledger: Ledger) -> None:
+    ledger.mark_pending(VIDEO_ID)
+    with pytest.raises(ValueError, match="unknown evidence"):
+        ledger.log_decision(
+            VIDEO_ID, "prompt caching", stage=STAGE_FULL, verdict=VERDICT_YES, evidence="MAYBE"
+        )
+
+
+def test_evidence_and_prompt_version_round_trip(ledger: Ledger) -> None:
+    """B1 created the columns; B3 is the first thing to fill them. Between them
+    they answer the two questions a surprising verdict raises — how good was the
+    evidence, and which prompt read it — and neither is reconstructible later."""
+    ledger.mark_pending(VIDEO_ID)
+    ledger.log_decision(
+        VIDEO_ID,
+        "prompt caching",
+        stage=STAGE_FULL,
+        verdict=VERDICT_YES,
+        reason="captions unreadable",
+        evidence=EVIDENCE_DEGRADED,
+        prompt_version="1",
+    )
+
+    stored = ledger.decisions_for(VIDEO_ID)[0]
+    assert stored.evidence == EVIDENCE_DEGRADED
+    assert stored.prompt_version == "1"
+    assert stored.stage == STAGE_FULL
+
+
+def test_a_degraded_video_is_not_offered_to_the_note_worker(ledger: Ledger) -> None:
+    ledger.mark_pending(VIDEO_ID)
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
+    ledger.log_decision(
+        VIDEO_ID,
+        "prompt caching",
+        stage=STAGE_FULL,
+        verdict=VERDICT_YES,
+        reason="transcript is unreadable",
+        evidence=EVIDENCE_DEGRADED,
+    )
+
+    assert ledger.videos_needing_note(version="1") == []
+    assert ledger.note_counts(version="1")["unwanted"] == 1
+
+
+def test_degraded_evidence_beats_an_existing_note() -> None:
+    """The one place `noted_at` does not win.
+
+    That override exists so `--regenerate --all` can reach every note that
+    exists. But regenerating from a transcript now known to be garbled spends a
+    model call to produce the same bad note again, more expensively. The stale
+    note stays on disk and simply stops being refreshed; removing it is a real
+    question and belongs to whatever phase owns deletion."""
+    degraded = DecisionRow(
+        VIDEO_ID, "sqlite wal mode", STAGE_FULL, VERDICT_YES, "transcript is garbled",
+        "2026-01-01T00:00:00+00:00", evidence=EVIDENCE_DEGRADED,
+    )
+    noted = row(STATUS_HAS_TRANSCRIPT, noted_at="2026-01-01T00:00:00+00:00")
+
+    assert wanted_for_a_note(noted, [degraded]) is False

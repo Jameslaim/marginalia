@@ -905,6 +905,50 @@ yt-dlp reads auto-captions and the API does not count them. The mechanism is bui
 tested; `[discover] trust_caption_hint` gates it and ships false. Turning it on today
 would route most of a run into `needs_asr`, whose worker is M4 and does not exist.
 
+
+### B3 — judging on the whole transcript
+
+Stage 2 read roughly the first thousand words. That cannot detect padding: a video that
+opens well and never pays it off is identical, for a thousand words, to one that
+delivers. It now reads everything.
+
+**Thinking off, deliberately.** `[llm.tasks.judge_full]` runs at
+`reasoning_effort = "none"` with `temperature = 0`. With the complete evidence in hand
+the model is reading and deciding rather than inferring beyond what it was given, and a
+constrained five-line classification has nothing to reason its way toward. Two
+consequences, both wanted: `temperature = 0` becomes available, so the same transcript
+tends toward the same verdict; and the runaway-reasoning failure that returned an empty
+note after spending 32,768 tokens thinking becomes structurally impossible.
+
+Measured on the longest transcript in the library — 14,341 words, 40,825 input tokens —
+`finish_reason` was `stop`, 132 output tokens, 11.3s, $0.0058. Across ten real videos:
+2.5s and 0.09¢ each.
+
+**The parser enforces the contract.** Four rules, all guarantees rather than requests,
+and every violation resolves toward keeping. The one that matters most is not the one
+originally written down: "a NO must carry EVIDENCE: CLEAR" catches only a judge honest
+enough to *label* its evidence as degraded. The failure that actually occurred was a
+judge that said `NO` + `CLEAR` with the reason *"the transcript is garbled and contains
+no substantive content"* — the mislabelled version, which is the one that costs a video.
+So the rule is checked against the reason as well as the label.
+
+**Re-judging ten previously-kept videos, three flipped to NO — and all three old
+verdicts were factually wrong.** They claimed concrete cost numbers and worked examples;
+the transcripts contain zero dollar amounts and zero code between them. Two of the three
+were under a thousand words, so the *old* judge had read them in full as well: the
+change that caught this was not more evidence but the instruction to use only the
+evidence supplied. The old judge was filling in what a video with that title usually
+contains.
+
+**Stage 1 gained chapters and the untrusted-data rule.** B2 delivered chapters without
+teaching the judge what they are; now it knows they are the author's own outline, which
+is better evidence than a description blurb — and that a description is editable by any
+uploader in ten seconds, which makes stage 1 the *more* exposed surface, not the less.
+
+**Counters separated** before B5's planner reads them. `failed` means a fetch failed and
+nothing else; `no_captions`, `already_held`, `degraded` and `unparsed` each got their
+own.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

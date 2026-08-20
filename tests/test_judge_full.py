@@ -1,0 +1,314 @@
+"""Stage 2's parser, and the contract it enforces.
+
+The five-line format is a guarantee, not a request. Every rule here exists
+because a reply that breaks it is *usable-looking* — it parses into something,
+and that something is wrong in a direction nobody notices. `/ask` once reported
+2 citations out of 104 for exactly this reason: a parser that silently drops
+what it cannot read looks like a system with nothing to read.
+
+So a violation is a parse failure — counted, logged, surfaced — and every
+resolution points at keeping the video, because a parser bug that resolves to NO
+deletes videos from a library nobody will ever know were missing.
+"""
+
+from __future__ import annotations
+
+import logging
+
+import pytest
+
+from marginalia.brain.judge import parse_full
+from marginalia.contracts import (
+    EVIDENCE_CLEAR,
+    EVIDENCE_DEGRADED,
+    RELEVANT_UNAVAILABLE,
+    VERDICT_NO,
+    VERDICT_YES,
+)
+
+VIDEO = "dQw4w9WgXcQ"
+
+
+def reply(**overrides: str) -> str:
+    lines = {
+        "VERDICT": "YES",
+        "EVIDENCE": "CLEAR",
+        "REASON": "The transcript walks through cache_control breakpoints and the five-minute TTL.",
+        "RELEVANT": "00:04:20-00:09:15",
+        "UNEXPLAINED": "kv cache eviction",
+    }
+    lines.update(overrides)
+    return "\n".join(f"{label}: {body}" for label, body in lines.items())
+
+
+# -- the well-formed case ---------------------------------------------------
+
+
+def test_a_clean_reply_parses_into_every_field() -> None:
+    verdict = parse_full(reply(RELEVANT="00:04:20-00:09:15; 00:22:00-00:24:30"), VIDEO)
+
+    assert verdict.parsed is True
+    assert verdict.problem == ""
+    assert verdict.video_id == VIDEO
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_CLEAR
+    assert verdict.relevant == ["00:04:20-00:09:15", "00:22:00-00:24:30"]
+    assert verdict.concepts == ["kv cache eviction"]
+
+
+def test_a_clean_no_parses() -> None:
+    verdict = parse_full(
+        reply(VERDICT="NO", REASON="Ninety minutes of vendor pricing with no mechanism described.",
+              RELEVANT="NONE", UNEXPLAINED="NONE"),
+        VIDEO,
+    )
+
+    assert verdict.parsed is True
+    assert verdict.verdict == VERDICT_NO
+    assert verdict.relevant == []
+    assert verdict.concepts == []
+
+
+@pytest.mark.parametrize(
+    "body,expected",
+    [
+        ("00:04:20-00:09:15", ["00:04:20-00:09:15"]),
+        ("4:20-9:15", ["4:20-9:15"]),
+        ("00:04:20 - 00:09:15", ["00:04:20-00:09:15"]),
+        ("00:04:20–00:09:15", ["00:04:20-00:09:15"]),
+        ("00:00:00-00:01:00, 00:05:00-00:06:00", ["00:00:00-00:01:00", "00:05:00-00:06:00"]),
+    ],
+)
+def test_the_shapes_a_model_reaches_for(body: str, expected: list[str]) -> None:
+    """A comma where the format said semicolon, an en dash, a missing hour
+    field. None of these is a broken judgement, and refusing them would throw
+    away a good verdict over punctuation."""
+    assert parse_full(reply(RELEVANT=body), VIDEO).relevant == expected
+
+
+def test_maybe_resolves_to_keeping() -> None:
+    """There is no stage 3. A MAYBE has nowhere to route to, so it resolves the
+    way the asymmetry points."""
+    assert parse_full(reply(VERDICT="MAYBE"), VIDEO).verdict == VERDICT_YES
+
+
+def test_unavailable_is_not_the_same_absence_as_none() -> None:
+    """NONE means nothing worth pointing at. UNAVAILABLE means there is, and the
+    clock cannot be trusted. Collapsing them would make a video with unusable
+    captions look like a video with nothing in it."""
+    unavailable = parse_full(reply(RELEVANT="UNAVAILABLE"), VIDEO)
+    none = parse_full(reply(RELEVANT="NONE", VERDICT="NO"), VIDEO)
+
+    assert unavailable.relevant == [RELEVANT_UNAVAILABLE]
+    assert unavailable.timestamps_unavailable is True
+    assert none.relevant == []
+    assert none.timestamps_unavailable is False
+
+
+def test_unexplained_is_capped_at_five() -> None:
+    verdict = parse_full(reply(UNEXPLAINED="one, two, three, four, five, six, seven"), VIDEO)
+    assert len(verdict.concepts) == 5
+
+
+# -- rule: NO must carry CLEAR ----------------------------------------------
+
+
+def test_a_no_on_degraded_evidence_is_a_violation() -> None:
+    """You cannot confidently reject evidence you could not read. NO is
+    permanent — Gate 2 treats every past NO as final — so a rejection resting on
+    captions the judge admits it could not read is a claim about captions
+    wearing the costume of a claim about content."""
+    verdict = parse_full(
+        reply(VERDICT="NO", EVIDENCE="DEGRADED",
+              REASON="The transcript is largely unintelligible so relevance could not be checked.",
+              RELEVANT="UNAVAILABLE"),
+        VIDEO,
+    )
+
+    assert verdict.parsed is False
+    assert "rejected on degraded evidence" in verdict.problem
+
+
+def test_a_no_on_degraded_evidence_keeps_the_video() -> None:
+    """And honours the DEGRADED claim. The model said it could not read the
+    transcript; believing that costs a note, which is cheap and reversible.
+    Overriding it to CLEAR would write a note from text known to be noise."""
+    verdict = parse_full(
+        reply(VERDICT="NO", EVIDENCE="DEGRADED",
+              REASON="Captions are machine-translated noise throughout.",
+              RELEVANT="UNAVAILABLE"),
+        VIDEO,
+    )
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_DEGRADED
+
+
+# -- rule: DEGRADED is about evidence, not uncertainty ----------------------
+
+
+def test_degraded_must_blame_the_evidence() -> None:
+    """Ordinary uncertainty about a readable video is a judgement stage 2 is
+    equipped to make, and its answer is YES. A DEGRADED that talks about
+    relevance is that judgement, declining to be made."""
+    verdict = parse_full(
+        reply(EVIDENCE="DEGRADED", REASON="It is hard to say whether this really matches the brief."),
+        VIDEO,
+    )
+
+    assert verdict.parsed is False
+    assert "degraded without naming an evidence problem" in verdict.problem
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "The transcript is unreadable for most of the runtime.",
+        "Captions are auto-translated and largely gibberish.",
+        "Audio quality prevented any reliable reading of the content.",
+        "The stored text is truncated after ninety seconds.",
+    ],
+)
+def test_a_real_evidence_problem_passes(reason: str) -> None:
+    verdict = parse_full(reply(EVIDENCE="DEGRADED", REASON=reason, RELEVANT="UNAVAILABLE"), VIDEO)
+
+    assert verdict.parsed is True, verdict.problem
+    assert verdict.evidence == EVIDENCE_DEGRADED
+
+
+# -- rule: CLEAR + YES must name where the value is -------------------------
+
+
+def test_keeping_on_clear_evidence_without_a_range_is_a_violation() -> None:
+    """Keeping a video while pointing at nothing in it is the shape of a
+    judgement that did not happen."""
+    verdict = parse_full(reply(RELEVANT="NONE"), VIDEO)
+
+    assert verdict.parsed is False
+    assert "named no relevant range" in verdict.problem
+    assert verdict.verdict == VERDICT_YES
+
+
+def test_unavailable_satisfies_the_rule() -> None:
+    """That is what UNAVAILABLE is for: value is there, the clock is not."""
+    assert parse_full(reply(RELEVANT="UNAVAILABLE"), VIDEO).parsed is True
+
+
+def test_a_degraded_keep_needs_no_range() -> None:
+    """The rule is CLEAR + YES. A judge that could not read the transcript
+    cannot be asked to point into it."""
+    verdict = parse_full(
+        reply(EVIDENCE="DEGRADED", RELEVANT="NONE",
+              REASON="The transcript is empty apart from music cues."),
+        VIDEO,
+    )
+    assert verdict.parsed is True, verdict.problem
+
+
+def test_a_no_needs_no_range() -> None:
+    verdict = parse_full(
+        reply(VERDICT="NO", RELEVANT="NONE", REASON="Entirely about a different subject."), VIDEO
+    )
+    assert verdict.parsed is True, verdict.problem
+
+
+# -- rule: exactly five lines, nothing else ---------------------------------
+
+
+def test_a_preamble_is_a_violation() -> None:
+    verdict = parse_full("Here is my assessment:\n\n" + reply(), VIDEO)
+
+    assert verdict.parsed is False
+    assert "outside the format" in verdict.problem
+
+
+def test_trailing_commentary_is_a_violation() -> None:
+    verdict = parse_full(reply() + "\n\nHope that helps!", VIDEO)
+
+    assert verdict.parsed is False
+    assert "outside the format" in verdict.problem
+
+
+def test_shown_reasoning_is_a_violation() -> None:
+    body = "Let me work through the brief step by step.\nFirst, the exclusions.\n" + reply()
+    assert parse_full(body, VIDEO).parsed is False
+
+
+@pytest.mark.parametrize("missing", ["VERDICT", "EVIDENCE", "REASON", "RELEVANT", "UNEXPLAINED"])
+def test_every_missing_line_is_a_violation(missing: str) -> None:
+    """"Always emit all five lines" is the rule a parser cannot recover from
+    being broken: a missing line and a broken line are indistinguishable, which
+    is precisely how a silent drop happens."""
+    lines = [line for line in reply().splitlines() if not line.startswith(missing)]
+    verdict = parse_full("\n".join(lines), VIDEO)
+
+    assert verdict.parsed is False
+    assert missing in verdict.problem
+
+
+def test_a_blank_line_between_fields_is_not_a_violation() -> None:
+    """Formatting, not content. Refusing this would fail good judgements over
+    whitespace."""
+    assert parse_full(reply().replace("\n", "\n\n"), VIDEO).parsed is True
+
+
+def test_markdown_bold_around_labels_survives() -> None:
+    body = "\n".join(f"**{line.split(':', 1)[0]}:**{line.split(':', 1)[1]}"
+                     for line in reply().splitlines())
+    assert parse_full(body, VIDEO).parsed is True
+
+
+# -- total failure ----------------------------------------------------------
+
+
+def test_an_unreadable_reply_keeps_the_video() -> None:
+    verdict = parse_full("I'm sorry, I can't help with that.", VIDEO)
+
+    assert verdict.parsed is False
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_CLEAR
+
+
+def test_an_empty_reply_keeps_the_video() -> None:
+    """The shape a reasoning model returns when it spends its whole budget
+    thinking. It must never read as a rejection."""
+    verdict = parse_full("", VIDEO)
+
+    assert verdict.parsed is False
+    assert verdict.verdict == VERDICT_YES
+
+
+def test_an_unreadable_reply_is_not_marked_degraded() -> None:
+    """A judge that malfunctioned says nothing about the transcript. Marking it
+    DEGRADED would suppress the note over a *parser* problem, and the transcript
+    might be perfect."""
+    assert parse_full("garbage", VIDEO).evidence == EVIDENCE_CLEAR
+
+
+# -- the reply is surfaced, never swallowed ---------------------------------
+
+
+def test_a_violation_is_logged_with_the_reason(caplog) -> None:
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        parse_full(reply(RELEVANT="NONE"), VIDEO)
+
+    assert any(VIDEO in record.getMessage() for record in caplog.records)
+
+
+def test_the_raw_reply_goes_to_debug_and_not_higher(caplog) -> None:
+    """The raw text is the only way to diagnose a format the parser cannot read,
+    and it may contain transcript fragments the model quoted back. DEBUG is
+    where it belongs: available on request, never in the report."""
+    broken = "VERDICT: YES\nand then some free text nobody asked for"
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia.brain.judge"):
+        parse_full(broken, VIDEO)
+    assert any(record.levelno == logging.DEBUG for record in caplog.records)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="marginalia.brain.judge"):
+        parse_full(broken, VIDEO)
+    assert all(
+        "free text nobody asked for" not in (record.getMessage())
+        for record in caplog.records
+    )

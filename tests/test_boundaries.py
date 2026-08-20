@@ -345,6 +345,8 @@ def test_every_shared_structure_is_in_contracts() -> None:
         # judgement evidence
         "EVIDENCE_CLEAR",
         "EVIDENCE_DEGRADED",
+        "RELEVANT_NONE",
+        "RELEVANT_UNAVAILABLE",
         # query provenance
         "ORIGIN_BRIEF",
         "ORIGIN_TERRITORY",
@@ -362,6 +364,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "Brief",
         "MetadataVerdict",
         "OpeningVerdict",
+        "FullVerdict",
         # ledger rows
         "VideoRow",
         # discovery runs

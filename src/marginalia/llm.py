@@ -201,6 +201,14 @@ class Reply:
     model: str
     usage: Usage
     latency_s: float
+    # Why the model stopped. `"stop"` is a completed answer; `"length"` means
+    # the ceiling was hit and what came back is a fragment — which on a
+    # reasoning model is routinely an *empty* fragment, because the budget went
+    # to thinking and none was left to answer with. That failure cost eighteen
+    # minutes to diagnose on the note run, from a reply that looked merely
+    # disappointing rather than truncated. Recorded so a convergence check can
+    # ask instead of guess. `None` when a provider does not report it.
+    finish_reason: str | None = None
 
 
 # Retry only what a retry can fix. Everything else is the user's to fix, and
@@ -284,13 +292,25 @@ class LlmClient:
             reply = self._to_reply(response, time.monotonic() - started)
             self.usage.add(reply.usage)
             log.info(
-                "llm: %s replied in %.1fs (in=%d out=%d, %d requests so far)",
+                "llm: %s replied in %.1fs (in=%d out=%d, finish=%s, %d requests so far)",
                 reply.model,
                 reply.latency_s,
                 reply.usage.input_tokens,
                 reply.usage.output_tokens,
+                reply.finish_reason or "unreported",
                 self.usage.requests,
             )
+            if reply.finish_reason == "length":
+                # Loud, because the symptom is silence. A truncated reply from a
+                # reasoning model is often empty, and an empty reply reads as a
+                # bad answer rather than as no answer at all.
+                log.warning(
+                    "llm: %s hit the token ceiling (%d out, %d chars back) — "
+                    "the reply is a fragment, not an answer",
+                    reply.model,
+                    reply.usage.output_tokens,
+                    len(reply.text),
+                )
             return reply
 
         raise LlmError(f"model call failed after {self._max_attempts} attempts: {last}")
@@ -350,6 +370,8 @@ class LlmClient:
         except (AttributeError, IndexError, TypeError) as exc:
             raise LlmError(f"unreadable response from {self.config.model}") from exc
 
+        finish_reason = getattr(choice, "finish_reason", None)
+
         usage = getattr(response, "usage", None)
         return Reply(
             text=text.strip(),
@@ -360,6 +382,7 @@ class LlmClient:
                 output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
             ),
             latency_s=latency_s,
+            finish_reason=str(finish_reason) if finish_reason else None,
         )
 
     def _classify(self, exc: Exception) -> LlmError:

@@ -33,6 +33,8 @@ from types import TracebackType
 from typing import Sequence
 
 from ..contracts import (
+    EVIDENCE_CLEAR,
+    EVIDENCE_DEGRADED,
     STATUS_DUPLICATE,
     STATUS_FAILED,
     STATUS_HAS_TRANSCRIPT,
@@ -63,6 +65,7 @@ __all__ = [
     "STAGE_SEARCH",
     "STAGE_METADATA",
     "STAGE_OPENING",
+    "STAGE_FULL",
     "STAGE_NOTE",
 ]
 
@@ -75,8 +78,23 @@ FAIL_TRANSIENT = "transient"
 STAGE_SEARCH = "search"
 STAGE_METADATA = "metadata"
 STAGE_OPENING = "opening"
+# B3. Stage 2 reads the whole transcript now, so its verdicts are recorded
+# under a different name — the old ones were decided from roughly the first
+# thousand words, and calling both `opening` would make the log claim evidence
+# that was never read. Old rows keep their name; nothing is migrated, because
+# what they say about themselves is true.
+STAGE_FULL = "full"
 STAGE_NOTE = "note"
-_STAGES = frozenset({STAGE_SEARCH, STAGE_METADATA, STAGE_OPENING, STAGE_NOTE})
+_STAGES = frozenset(
+    {STAGE_SEARCH, STAGE_METADATA, STAGE_OPENING, STAGE_FULL, STAGE_NOTE}
+)
+
+# Both names for stage 2 — the per-video judgement that reads the transcript.
+# Anything asking "was this video declined after being read?" must ask about
+# both, or B3 would silently un-reject everything B2 rejected.
+_STAGE_TWO = frozenset({STAGE_OPENING, STAGE_FULL})
+
+_EVIDENCE = frozenset({EVIDENCE_CLEAR, EVIDENCE_DEGRADED})
 
 _VERDICTS = frozenset({VERDICT_YES, VERDICT_NO, VERDICT_MAYBE})
 
@@ -435,18 +453,45 @@ def wanted_for_a_note(row: VideoRow, decisions: Sequence[DecisionRow]) -> bool:
         brief — the user simply asked for this video. A rule keyed on verdicts
         must not exclude the one path that never produces any.
 
+    Since B3 there is a fourth answer that overrides all three: **degraded
+    evidence is never noted**. That is not a judgement about relevance that a
+    later topic might overturn — it is a statement that the transcript could
+    not be read, and the transcript does not change between topics.
+
     Pure, and takes the decisions rather than fetching them, for the same reason
     `skip_reason` takes ``transcript_present``: policy is testable without a
     database and the ledger owns the queries.
     """
+    # B3, and it goes first — ahead of every other answer including an existing
+    # note. Evidence the judge could not read cannot produce a note worth
+    # having: `/ask` loads notes and has no way to know the text behind one was
+    # noise, so the failure mode is a confident wrong answer, which is the thing
+    # a library exists to not do.
+    #
+    # Ahead of ``noted_at`` deliberately. That override exists so regeneration
+    # can reach every note that exists — but regenerating a note from a
+    # transcript now known to be garbled spends a model call to produce the same
+    # bad note again, more expensively. The stale note stays on disk; it simply
+    # stops being refreshed. Removing it is a real question and belongs to
+    # whatever phase owns deletion.
+    #
+    # Unlike a rejection, this is not a claim about relevance that another topic
+    # might overturn. It is a claim about the transcript, and the transcript is
+    # the same for every topic that ever looks at this video.
+    if any(
+        decision.stage in _STAGE_TWO and decision.evidence == EVIDENCE_DEGRADED
+        for decision in decisions
+    ):
+        return False
+
     if row.noted_at is not None:
         return True
 
     declined = False
     for decision in decisions:
-        if decision.stage == STAGE_OPENING and decision.verdict == VERDICT_NO:
+        if decision.stage in _STAGE_TWO and decision.verdict == VERDICT_NO:
             declined = True
-        elif decision.stage == STAGE_OPENING and decision.verdict in _KEPT:
+        elif decision.stage in _STAGE_TWO and decision.verdict in _KEPT:
             return True
         elif decision.stage == STAGE_METADATA and decision.verdict == VERDICT_YES:
             return True
@@ -757,7 +802,7 @@ class Ledger:
     # query would fill the ledger with videos nobody ever decided to fetch,
     # and would say "in flight" about work that never started.
 
-    def log_decision(
+    def log_decision(  # noqa: PLR0913 - one row, one argument each
         self,
         video_id: str,
         topic: str,
@@ -767,17 +812,30 @@ class Ledger:
         reason: str | None = None,
         run_id: str | None = None,
         model: str | None = None,
+        evidence: str | None = None,
+        prompt_version: str | None = None,
     ) -> DecisionRow:
         """Record one verdict. ``topic`` is normalised on the way in.
 
         ``model`` is recorded because the provider is temporary. When it
         changes and judging quality shifts, the only way to work out why is to
         know which model produced which verdict.
+
+        ``evidence`` and ``prompt_version`` are B1 columns that B3 finally
+        fills. Between them they answer *how good was the evidence, and which
+        prompt read it?* — the two questions a surprising verdict raises, and
+        neither is reconstructible afterwards. `DEGRADED` also suppresses the
+        note, which makes it the one field here that changes what happens next
+        rather than only explaining it.
         """
         if stage not in _STAGES:
             raise ValueError(f"unknown stage {stage!r}; expected one of {sorted(_STAGES)}")
         if verdict not in _VERDICTS:
             raise ValueError(f"unknown verdict {verdict!r}; expected one of {sorted(_VERDICTS)}")
+        if evidence is not None and evidence not in _EVIDENCE:
+            raise ValueError(
+                f"unknown evidence {evidence!r}; expected one of {sorted(_EVIDENCE)}"
+            )
 
         row = DecisionRow(
             video_id=video_id,
@@ -788,13 +846,16 @@ class Ledger:
             decided_at=_utcnow(),
             run_id=run_id,
             model=model,
+            evidence=evidence,
+            prompt_version=prompt_version,
         )
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO decisions
-                    (video_id, topic, stage, verdict, reason, decided_at, run_id, model)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (video_id, topic, stage, verdict, reason, decided_at, run_id,
+                     model, evidence, prompt_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row.video_id,
@@ -805,6 +866,8 @@ class Ledger:
                     row.decided_at,
                     row.run_id,
                     row.model,
+                    row.evidence,
+                    row.prompt_version,
                 ),
             )
         log.info("decision: %s %s/%s for %r", video_id, stage, verdict, row.topic)

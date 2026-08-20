@@ -140,6 +140,32 @@ not drift.
     has always followed: a judgement made for one brief says nothing about a video the
     user has now handed over directly.
 
+13. **Stage 2 reads the whole transcript, and its output format is enforced in code.**
+    An opening cannot tell a video that delivers from one that opens well and never
+    arrives — for a thousand words they are the same video, and padding is the thing
+    stage 2 exists to catch.
+
+    The five-line reply is a **guarantee, not a request**. A NO may not rest on evidence
+    the judge says it could not read; a DEGRADED must name the damage; a clear keep must
+    say where the value is; and there must be five lines and nothing else. A violation
+    is a parse failure — counted, logged, surfaced — and **every resolution keeps the
+    video**, because a parser bug that resolves to NO deletes videos nobody will ever
+    know were missing. Prose alone does not hold: a real model returned *"the transcript
+    is garbled and contains no substantive content"* with verdict NO and evidence CLEAR,
+    and only the code caught it.
+
+    **`EVIDENCE: DEGRADED` suppresses the note**, and that is its point. A note written
+    from unreadable text is worse than no note, because `/ask` loads it and cannot tell.
+    It overrides even `noted_at` — regenerating a note from a transcript now known to be
+    garbled spends a model call to make the same bad note again.
+
+14. **Every outcome gets its own counter.** A caption skip is not a fetch failure, a
+    disk hit is not a Gate 1 hit, and degraded evidence is neither. Three meanings in
+    two buckets is how a round where nothing went wrong reports failures — and the
+    planner that reads these numbers cannot plan on a sum of causes. The rule already
+    had a precedent: thirteen transient fetch failures once left no trace in a report
+    at all.
+
 ## Structure
 
 ```

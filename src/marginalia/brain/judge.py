@@ -24,10 +24,14 @@ import re
 from typing import Sequence
 
 from ..contracts import (
+    EVIDENCE_CLEAR,
+    EVIDENCE_DEGRADED,
+    RELEVANT_UNAVAILABLE,
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
     Brief,
+    FullVerdict,
     MetadataVerdict,
     OpeningVerdict,
     SearchResult,
@@ -37,11 +41,10 @@ from ..llm import LlmClient, Prompt, Reply, batched, load_prompt
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "Brief",
-    "MetadataVerdict",
-    "OpeningVerdict",
+    "FULL_PROMPT",
     "Judge",
     "parse_batch",
+    "parse_full",
     "parse_opening",
     "parse_queries",
 ]
@@ -69,6 +72,12 @@ _LABEL_RE = re.compile(r"^\s*\**\s*(VERDICT|REASON|CONCEPTS)\s*\**\s*[:\-]\s*(.*
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s*")
 
 _MAX_REASON = 120
+
+# Stage 2 gets more room than stage 1. The prompt asks for one specific
+# sentence naming what the transcript established, and 120 characters cannot
+# hold one — the reason is the only durable account of why a video is or is
+# not in the library, read months later from the decision log.
+_FULL_REASON = 400
 
 _OPENING_WORDS = 1000
 
@@ -165,6 +174,249 @@ def parse_opening(text: str) -> tuple[str, str, list[str], bool]:
     return verdict, reason or "no reason given", concepts, True
 
 
+# -- stage 2, whole transcript ----------------------------------------------
+
+_FULL_LABEL_RE = re.compile(
+    r"^\s*\**\s*(VERDICT|EVIDENCE|REASON|RELEVANT|UNEXPLAINED)\s*\**\s*[:\-]\s*(.*)$",
+    re.IGNORECASE,
+)
+
+# `00:04:20-00:09:15`, and the shapes a model reaches for anyway: `4:20-9:15`,
+# an en dash, spaces around the dash, a trailing comma instead of a semicolon.
+_RANGE_RE = re.compile(
+    r"(\d{1,2}:\d{2}(?::\d{2})?)\s*[-–—]\s*(\d{1,2}:\d{2}(?::\d{2})?)"
+)
+
+_FULL_LINES = ("VERDICT", "EVIDENCE", "REASON", "RELEVANT", "UNEXPLAINED")
+
+# Words that say the evidence was *broken*, as opposed to merely mentioning it.
+#
+# The distinction is the whole rule and it took a real failure to find. The
+# first version of this list included "transcript", which fires on almost every
+# honest rejection — "the transcript only describes X conceptually" is a NO
+# about content that happens to name its source. What matters is not whether
+# the reason mentions the transcript but whether it says the transcript could
+# not be read.
+_DAMAGE_WORDS = (
+    "garbled",
+    "unintelligible",
+    "illegible",
+    "unreadable",
+    "corrupt",
+    "truncated",
+    "gibberish",
+    "nonsens",
+    "incomprehensib",
+    "mistranscri",
+    "machine transl",
+    "machine-transl",
+    "auto-transl",
+    "auto transl",
+    "quality",
+    "noise",
+    "not legible",
+    "could not be read",
+    "cannot be read",
+    "could not read",
+    "no usable",
+    "empty",
+    "blank",
+)
+
+_MAX_UNEXPLAINED = 5
+
+# In a subdirectory because judging is about to grow more prompts, and a flat
+# `prompts/` where `judge_full.md` and `write_note.md` sit side by side stops
+# saying which belong to the same decision.
+FULL_PROMPT = "judge/full"
+
+
+def _blames_damaged_evidence(reason: str) -> bool:
+    """Does this reason say the evidence could not be read?
+
+    A **proxy**. "DEGRADED is only for evidence quality, never ordinary
+    uncertainty about relevance" is a rule about intent, and intent is not
+    mechanically checkable from five lines. What is checkable is whether the
+    reason claims damage — and the prompt requires it to, in as many words.
+
+    Used in both directions, which is the point:
+
+    * ``DEGRADED`` without a damage claim is DEGRADED standing in for "I am not
+      sure", which is a judgement declining to be made.
+    * ``NO`` **with** a damage claim is a rejection resting on evidence the
+      judge has just said it could not read. That is the same violation as
+      NO + DEGRADED, arriving through a mislabelled EVIDENCE line instead of an
+      honest one — and it is the shape a real model produced: *"the transcript
+      is garbled and contains no substantive content"*, verdict NO, evidence
+      CLEAR. Catching only the honest version would enforce nothing, because
+      the honest version is not the one that costs a video.
+
+    A false positive costs a log line, a counter increment and one kept video.
+    A false negative costs a video permanently, on evidence nobody could read.
+    The proxy is tuned toward the first.
+    """
+    lowered = reason.lower()
+    return any(word in lowered for word in _DAMAGE_WORDS)
+
+
+def parse_full(text: str, video_id: str) -> FullVerdict:
+    """Read a stage-2 reply into a :class:`FullVerdict`, enforcing the contract.
+
+    The contract is five lines, and the rules below are guarantees rather than
+    requests — a reply that breaks one is a **parse failure**: logged, counted,
+    surfaced. It is not silently accepted, because a broken output format that
+    nobody notices is how `/ask` came to report 2 citations out of 104.
+
+    The rules, and why each is a rule:
+
+    ``VERDICT: NO`` must carry ``EVIDENCE: CLEAR``
+        You cannot confidently reject evidence you could not read. A NO on
+        degraded evidence is a claim about captions wearing the costume of a
+        claim about content — and NO is permanent, because Gate 2 treats every
+        past NO as final.
+
+    ``EVIDENCE: DEGRADED`` must blame the evidence
+        Ordinary uncertainty about a readable video is a judgement stage 2 is
+        equipped to make, and its answer is YES. Checked by proxy; see above.
+
+    ``CLEAR`` + ``YES`` must name where the value is
+        Keeping a video while pointing at nothing in it is the shape of a
+        judgement that did not happen. ``UNAVAILABLE`` is a real answer here —
+        that is what it is for — but ``NONE`` is not.
+
+    Exactly the five lines, nothing else
+        No preamble, no reasoning, no trailing commentary.
+
+    **A violation never rejects.** Every resolution points at keeping, for the
+    reason every parser here points that way: a parser bug that resolves to NO
+    deletes videos from a library nobody will ever know were missing.
+    """
+    found: dict[str, str] = {}
+    extra_lines = 0
+
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        match = _FULL_LABEL_RE.match(line)
+        if match is None:
+            extra_lines += 1
+            continue
+        label = match.group(1).upper()
+        # First wins. A model that restates a label has changed its mind out
+        # loud, and the first answer is the one the format asked for.
+        found.setdefault(label, match.group(2).strip())
+
+    problems: list[str] = []
+
+    missing = [label for label in _FULL_LINES if label not in found]
+    if missing:
+        problems.append(f"missing {'/'.join(missing)}")
+    if extra_lines:
+        problems.append(f"{extra_lines} line(s) outside the format")
+
+    word = re.search(r"\b(YES|NO|MAYBE)\b", found.get("VERDICT", ""), re.IGNORECASE)
+    if word is None:
+        verdict = VERDICT_YES
+        problems.append("no readable verdict")
+    else:
+        spoken = _VERDICT_WORDS[word.group(1).upper()]
+        # There is no stage 3. A MAYBE has nowhere to go, so it resolves the
+        # way the asymmetry points.
+        verdict = VERDICT_YES if spoken == VERDICT_MAYBE else spoken
+
+    evidence = (
+        EVIDENCE_DEGRADED
+        if re.search(r"\bDEGRADED\b", found.get("EVIDENCE", ""), re.IGNORECASE)
+        else EVIDENCE_CLEAR
+    )
+    if "EVIDENCE" in found and not re.search(
+        r"\b(CLEAR|DEGRADED)\b", found["EVIDENCE"], re.IGNORECASE
+    ):
+        problems.append("evidence is neither CLEAR nor DEGRADED")
+
+    reason = _tidy_reason(found.get("REASON", ""), limit=_FULL_REASON)
+    relevant, relevant_problem = _parse_relevant(found.get("RELEVANT", ""))
+    if relevant_problem:
+        problems.append(relevant_problem)
+    concepts = _parse_concepts(found.get("UNEXPLAINED", ""))[:_MAX_UNEXPLAINED]
+
+    # -- the consistency rules ---------------------------------------------
+
+    blames_damage = _blames_damaged_evidence(reason)
+
+    if verdict == VERDICT_NO and (evidence == EVIDENCE_DEGRADED or blames_damage):
+        problems.append(
+            "rejected on degraded evidence"
+            if evidence == EVIDENCE_DEGRADED
+            else "rejected while calling the transcript unreadable"
+        )
+        # Keep, and take the DEGRADED grade from the reason rather than from
+        # the EVIDENCE line. The judge has said it could not read the
+        # transcript; believing that costs a note, which is cheap and
+        # reversible, while the alternative is a permanent rejection made on
+        # evidence nobody could see. A damaged transcript is not evidence the
+        # content is bad — it is evidence of nothing at all.
+        verdict = VERDICT_YES
+        evidence = EVIDENCE_DEGRADED
+
+    if evidence == EVIDENCE_DEGRADED and not blames_damage:
+        problems.append("degraded without naming an evidence problem")
+
+    if (
+        verdict == VERDICT_YES
+        and evidence == EVIDENCE_CLEAR
+        and not relevant
+        and "RELEVANT" in found
+    ):
+        problems.append("kept on clear evidence but named no relevant range")
+
+    if not problems:
+        return FullVerdict(
+            video_id=video_id,
+            verdict=verdict,
+            evidence=evidence,
+            reason=reason or "no reason given",
+            relevant=relevant,
+            concepts=concepts,
+            parsed=True,
+        )
+
+    problem = "; ".join(problems)
+    log.warning("judge: stage-2 reply for %s broke the contract (%s) — kept", video_id, problem)
+    log.debug("judge: unparsed stage-2 reply for %s:\n%s", video_id, text)
+    return FullVerdict(
+        video_id=video_id,
+        verdict=verdict,
+        evidence=evidence,
+        reason=reason or f"reply broke the output contract ({problem})",
+        relevant=relevant,
+        concepts=concepts,
+        parsed=False,
+        problem=problem,
+    )
+
+
+def _parse_relevant(body: str) -> tuple[list[str], str]:
+    """``(ranges, problem)``. ``UNAVAILABLE`` survives as itself.
+
+    Two absences that must not collapse into one: NONE means nothing worth
+    pointing at, UNAVAILABLE means there is and the clock cannot be trusted.
+    """
+    stripped = body.strip()
+    if not stripped:
+        return [], ""
+    if re.fullmatch(r"\**\s*NONE\s*\**\.?", stripped, re.IGNORECASE):
+        return [], ""
+    if re.search(r"\bUNAVAILABLE\b", stripped, re.IGNORECASE):
+        return [RELEVANT_UNAVAILABLE], ""
+
+    ranges = [f"{start}-{end}" for start, end in _RANGE_RE.findall(stripped)]
+    if not ranges:
+        return [], "relevant ranges were neither timestamps, NONE nor UNAVAILABLE"
+    return ranges, ""
+
+
 def parse_queries(text: str, limit: int) -> list[str]:
     """Read expanded search queries, one per line, tolerating list markers."""
     queries: list[str] = []
@@ -203,10 +455,10 @@ def _parse_concepts(body: str) -> list[str]:
     return concepts[:6]
 
 
-def _tidy_reason(raw: str) -> str:
+def _tidy_reason(raw: str, *, limit: int = _MAX_REASON) -> str:
     cleaned = " ".join(raw.split()).lstrip("-–—:*").strip().strip("*")
-    if len(cleaned) > _MAX_REASON:
-        cleaned = cleaned[: _MAX_REASON - 1].rstrip() + "…"
+    if len(cleaned) > limit:
+        cleaned = cleaned[: limit - 1].rstrip() + "…"
     return cleaned
 
 
@@ -320,6 +572,72 @@ class Judge:
             MetadataVerdict(candidate.video_id, verdict, reason, was_parsed)
             for candidate, (verdict, reason, was_parsed) in zip(chunk, parsed)
         ]
+
+    # -- stage 2: the whole transcript, one per call -----------------------
+
+    def judge_full(
+        self,
+        brief: Brief,
+        candidate: SearchResult,
+        *,
+        transcript: str,
+        chapters: Sequence[str] = (),
+        duration_s: int | None = None,
+    ) -> FullVerdict:
+        """Judge one video on everything it says.
+
+        The transcript arrives as text rather than being read from disk, for the
+        same reason `opening_words` takes lines: this must never become a path
+        that can read a stored transcript into a report. `brain/` cannot reach
+        the filesystem at all, which makes that structural rather than careful.
+        """
+        prompt = self.prompt(FULL_PROMPT)
+        chapter_text = (
+            "CHAPTERS: " + "; ".join(chapters) if chapters else "CHAPTERS: none published"
+        )
+        try:
+            reply = self.client.complete(
+                "You judge whether one video satisfies a research brief, "
+                "having read it in full.",
+                prompt.render(
+                    brief=brief.text,
+                    title=candidate.title,
+                    channel=candidate.channel,
+                    duration=str(duration_s) if duration_s else "unknown",
+                    chapters=chapter_text,
+                    transcript=transcript,
+                ),
+                task="judge_full",
+            )
+        except Exception as exc:  # noqa: BLE001 - a failed call must not reject
+            log.warning("judge: stage-2 call failed for %s (%s) — keeping", candidate.video_id, exc)
+            return FullVerdict(
+                candidate.video_id,
+                VERDICT_YES,
+                reason="stage-2 judge failed, kept",
+                parsed=False,
+                problem="call failed",
+            )
+
+        if reply.finish_reason == "length":
+            # Not a judgement — a fragment. Parsing it would read whichever of
+            # the five lines happened to fit, and a half-read verdict is worse
+            # than an unread one because it looks like an answer.
+            log.warning(
+                "judge: stage-2 reply for %s was truncated (%d output tokens) — keeping",
+                candidate.video_id,
+                reply.usage.output_tokens,
+            )
+            return FullVerdict(
+                candidate.video_id,
+                VERDICT_YES,
+                reason="reply hit the token ceiling before finishing, kept",
+                parsed=False,
+                problem="truncated reply",
+            )
+
+        return parse_full(reply.text, candidate.video_id)
+
 
     # -- stage 2: the opening, one per call --------------------------------
 

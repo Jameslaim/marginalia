@@ -52,6 +52,9 @@ __all__ = [
     "Brief",
     "MetadataVerdict",
     "OpeningVerdict",
+    "FullVerdict",
+    "RELEVANT_UNAVAILABLE",
+    "RELEVANT_NONE",
     # ledger rows
     "VideoRow",
     # discovery runs
@@ -130,6 +133,13 @@ VIDEO_STATUSES = frozenset(
 # so a DEGRADED one is a video permanently excluded on evidence nobody can see.
 EVIDENCE_CLEAR = "CLEAR"
 EVIDENCE_DEGRADED = "DEGRADED"
+
+# What stage 2 says about *where* the value is. Two different absences, kept
+# apart on purpose: NONE means there is nothing worth pointing at, UNAVAILABLE
+# means there is and the timestamps cannot be trusted. Collapsing them would
+# make a video with unusable captions look like a video with nothing in it.
+RELEVANT_NONE = "NONE"
+RELEVANT_UNAVAILABLE = "UNAVAILABLE"
 
 
 # -- query provenance ---------------------------------------------------------
@@ -262,11 +272,58 @@ class MetadataVerdict:
 
 @dataclass(frozen=True)
 class OpeningVerdict:
+    """Stage 2 before B3, when it read only the opening.
+
+    Kept because `prompts/judge_opening.md` and its parser are still here and
+    still tested: the opening judge is the fallback if reading whole
+    transcripts turns out to cost more than it is worth, and deleting the
+    working version of a thing while replacing it is how a rollback stops
+    being possible. Nothing in the live path constructs one.
+    """
+
     video_id: str
     verdict: str
     reason: str
     concepts: list[str] = field(default_factory=list)
     parsed: bool = True
+
+
+@dataclass(frozen=True)
+class FullVerdict:
+    """Stage 2's answer, having read the whole transcript.
+
+    Replaces `OpeningVerdict`, which was named for evidence stage 2 no longer
+    uses. Reading only the opening could not tell a video that delivers from one
+    that opens well and never arrives — the two are identical for a thousand
+    words — so the name had to go with the evidence.
+
+    ``evidence`` is the field that earns its place. A NO decided from a full
+    clean transcript and a NO decided from garbled captions are different
+    claims, and Gate 2 treats every past NO as final. `DEGRADED` also suppresses
+    the note: a note written from unreadable text is worse than no note, because
+    `/ask` cannot tell that it was.
+
+    ``relevant`` is where the value is, as timestamp ranges. Empty means the
+    model said NONE; `UNAVAILABLE` means there is value but the timestamps
+    cannot be trusted, which is a different claim and must not read as absence.
+    """
+
+    video_id: str
+    verdict: str
+    evidence: str = EVIDENCE_CLEAR
+    reason: str = ""
+    relevant: list[str] = field(default_factory=list)
+    concepts: list[str] = field(default_factory=list)
+    parsed: bool = True
+    # Set when a consistency rule fired, for the log line. The verdict is still
+    # usable — a violation resolves toward keeping — but it was not the reply
+    # the contract asked for, and silently accepting it is how a broken output
+    # format survives for months.
+    problem: str = ""
+
+    @property
+    def timestamps_unavailable(self) -> bool:
+        return self.relevant == [RELEVANT_UNAVAILABLE]
 
 
 # -- ledger rows ------------------------------------------------------------
@@ -315,19 +372,52 @@ class VideoRow:
 
 @dataclass
 class RoundReport:
+    """What one round did, with every outcome on its own counter.
+
+    B3 separated three meanings that had been sharing two buckets. The
+    principle is already written into `cli.py`, after a real run where
+    thirteen transient fetch failures left no trace in the report at all: a
+    round that says nothing about an outcome is indistinguishable from a round
+    where it did not happen. B5's planner reads these numbers to decide what
+    to do next, and three causes summed into one integer cannot be planned on.
+    """
+
     number: int
     queries: list[str]
     candidates: int = 0
+    # Gate 1: already in the library, so never a candidate at all.
     known: int = 0
+    # Gate 2: carries a NO for this exact topic from an earlier run.
     rejected_before: int = 0
     verdict_no: int = 0
     verdict_maybe: int = 0
     verdict_yes: int = 0
     flipped_to_no: int = 0
     stored: int = 0
+    # A fetch was attempted and did not produce a transcript. **Only** that —
+    # it used to absorb the two below, which meant a round where nothing went
+    # wrong could report failures.
     failed: int = 0
+    # The transcript was already on disk from an earlier topic. Not a failure
+    # and not a Gate 1 hit: the video *is* a candidate, it just costs nothing.
+    already_held: int = 0
+    # The provider said there is no caption track, so no fetch was attempted.
+    # Nothing failed; the video was routed to ASR without being tried.
+    no_captions: int = 0
+    # Kept, but stage 2 could not read the transcript well enough to be sure.
+    # Not a rejection and not a clean keep — and it suppresses the note, which
+    # is a consequence nobody should have to infer from a silent counter.
+    degraded: int = 0
+    # Stage-2 replies that broke the five-line contract. Counted rather than
+    # swallowed, the way citation parsing counts what it drops.
+    unparsed: int = 0
     concepts: list[str] = field(default_factory=list)
     from_threads: bool = False
+
+    @property
+    def judged_here(self) -> int:
+        """Candidates this round actually reached a stage-2 verdict on."""
+        return self.stored + self.flipped_to_no
 
 
 @dataclass

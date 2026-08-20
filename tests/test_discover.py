@@ -28,8 +28,10 @@ from marginalia.contracts import (
     VERDICT_NO,
     VERDICT_YES,
     Brief,
+    EVIDENCE_CLEAR,
+    EVIDENCE_DEGRADED,
+    FullVerdict,
     MetadataVerdict,
-    OpeningVerdict,
     Usage,
 )
 from marginalia.flow.discover import (
@@ -41,8 +43,8 @@ from marginalia.flow.discover import (
     discover,
 )
 from marginalia.core.ledger import (
+    STAGE_FULL,
     STAGE_METADATA,
-    STAGE_OPENING,
     Ledger,
     in_library,
     skip_reason,
@@ -96,16 +98,30 @@ def transcript(text: str = "hello world") -> TranscriptResult:
     )
 
 
+class FakePrompt:
+    version = "1"
+
+
 class FakeJudge:
-    """Scripted verdicts. Records what it was asked, so routing is assertable."""
+    """Scripted verdicts. Records what it was asked, so routing is assertable.
+
+    `openings` keeps its name because the tests using it are about *routing to
+    stage 2*, which has not changed — only the evidence stage 2 reads. A value
+    is `(verdict, reason, concepts)` or `(verdict, reason, concepts, evidence)`.
+    """
 
     def __init__(self, *, queries=None, metadata=None, openings=None) -> None:
         self._queries = list(queries or [["q1"]])
         self._metadata = dict(metadata or {})
         self._openings = dict(openings or {})
         self.opening_calls: list[str] = []
+        self.transcripts_seen: list[str] = []
         self.query_calls: list[tuple[int, tuple[str, ...]]] = []
         self.batch_sizes: list[int] = []
+        self.unparsed: set[str] = set()
+
+    def prompt(self, name):
+        return FakePrompt()
 
     def write_brief(self, topic: str) -> Brief:
         return BRIEF
@@ -123,12 +139,20 @@ class FakeJudge:
             for c in candidates
         ]
 
-    def judge_opening(self, brief, candidate, *, opening, chapters=()):
+    def judge_full(self, brief, candidate, *, transcript, chapters=(), duration_s=None):
         self.opening_calls.append(candidate.video_id)
-        verdict, reason, concepts = self._openings.get(
-            candidate.video_id, (VERDICT_YES, "good", [])
+        self.transcripts_seen.append(transcript)
+        scripted = self._openings.get(candidate.video_id, (VERDICT_YES, "good", []))
+        verdict, reason, concepts = scripted[:3]
+        evidence = scripted[3] if len(scripted) > 3 else EVIDENCE_CLEAR
+        return FullVerdict(
+            candidate.video_id,
+            verdict,
+            evidence=evidence,
+            reason=reason,
+            concepts=list(concepts),
+            parsed=candidate.video_id not in self.unparsed,
         )
-        return OpeningVerdict(candidate.video_id, verdict, reason, list(concepts))
 
 
 class FakeTranscripts:
@@ -138,6 +162,9 @@ class FakeTranscripts:
         self._failures = dict(failures or {})
         self._missing = set(missing)
         self.fetched: list[str] = []
+        # Overridable so a test can put content at a known timestamp and assert
+        # stage 2 actually saw it.
+        self.lines: list[TranscriptLine] | None = None
 
     def fetch(self, video_id: str):
         self.fetched.append(video_id)
@@ -145,6 +172,8 @@ class FakeTranscripts:
             raise self._failures[video_id]
         if video_id in self._missing:
             return None
+        if self.lines is not None:
+            return replace(transcript(), lines=list(self.lines))
         return transcript()
 
 
@@ -301,7 +330,7 @@ def test_the_rejection_is_still_logged_against_its_topic(
 
     decision = ledger.latest_decision("aaaaaaaaaaa", "prompt caching", verdict=VERDICT_NO)
     assert decision is not None
-    assert decision.stage == STAGE_OPENING
+    assert decision.stage == STAGE_FULL
     assert decision.reason == "actually a product demo"
 
 
@@ -728,7 +757,7 @@ def test_stage_two_writes_its_own_row(config, ledger, library, client, searches)
 
     stages = [(r.stage, r.verdict) for r in ledger.decisions_for_run(outcome.run_id)]
     assert (STAGE_METADATA, VERDICT_MAYBE) in stages
-    assert (STAGE_OPENING, VERDICT_NO) in stages
+    assert (STAGE_FULL, VERDICT_NO) in stages
 
 
 # -- dry run ----------------------------------------------------------------
@@ -798,7 +827,11 @@ def test_a_second_run_stores_nothing_new(config, ledger, library, client, search
 
     assert first.stored_ids == ["aaaaaaaaaaa"]
     assert second.stored_ids == []
-    assert second.rounds[0].known == 1
+    # `already_held`, not `known`: the video has no note, so Gate 1 let it
+    # through as a candidate. What stopped it was the transcript being on disk,
+    # which is a different fact with a different counter since B3.
+    assert second.rounds[0].already_held == 1
+    assert second.rounds[0].known == 0
 
 
 def test_a_rejected_video_is_not_rejudged_on_the_same_topic(
@@ -934,3 +967,215 @@ def test_a_round_that_found_nothing_records_no_concepts(
     outcome = run(config, ledger, library, client, judge, max_rounds=1)
 
     assert outcome.rounds[0].concepts == []
+
+
+# -- B3: stage 2 reads everything -------------------------------------------
+
+
+def test_stage_two_receives_the_whole_transcript(
+    config, ledger, library, client, searches
+) -> None:
+    """The change the phase is for. An opening cannot tell a video that delivers
+    from one that promises well and never arrives — for a thousand words they
+    are the same video, and padding is exactly what stage 2 exists to catch."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    provider = FakeTranscripts()
+    provider.lines = [
+        TranscriptLine(0, 2000, "the opening promise"),
+        TranscriptLine(600_000, 602_000, "the payoff ten minutes later"),
+    ]
+
+    run(config, ledger, library, client, judge, max_rounds=1, provider=provider)
+
+    seen = judge.transcripts_seen[0]
+    assert "the opening promise" in seen
+    assert "the payoff ten minutes later" in seen
+
+
+def test_the_transcript_reaches_the_judge_with_timestamps(
+    config, ledger, library, client, searches
+) -> None:
+    """The judge is asked to name *where* the value is. A clock it cannot see is
+    a clock it will invent."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    provider = FakeTranscripts()
+    provider.lines = [TranscriptLine(3_723_000, 3_725_000, "an hour and two minutes in")]
+
+    run(config, ledger, library, client, judge, max_rounds=1, provider=provider)
+
+    assert judge.transcripts_seen[0].startswith("[01:02:03.000] ")
+
+
+def test_the_verdict_is_logged_under_the_full_stage(
+    config, ledger, library, client, searches
+) -> None:
+    """A different name for different evidence. Recording a whole-transcript
+    verdict as `opening` would make the log claim evidence never read."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    stages = [d.stage for d in ledger.decisions_for("aaaaaaaaaaa")]
+    assert STAGE_FULL in stages
+
+
+def test_the_prompt_version_is_recorded(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    stage_two = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_FULL]
+    assert stage_two[0].prompt_version == "1"
+
+
+# -- B3: degraded evidence --------------------------------------------------
+
+
+def test_degraded_evidence_keeps_the_video_and_the_transcript(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "captions unreadable", [], EVIDENCE_DEGRADED)},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.stored_ids == ["aaaaaaaaaaa"]
+    assert library.has_transcript("aaaaaaaaaaa")
+    assert outcome.rounds[0].degraded == 1
+
+
+def test_degraded_evidence_blocks_the_note(config, ledger, library, client, searches) -> None:
+    """The whole point of the flag. The transcript is worth keeping — it is what
+    ASR will replace — but a note built from it would be built from noise."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "transcript is garbled", [], EVIDENCE_DEGRADED)},
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert ledger.videos_needing_note(version="1") == []
+
+
+def test_clear_evidence_leaves_the_note_queued(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert [r.video_id for r in ledger.videos_needing_note(version="1")] == ["aaaaaaaaaaa"]
+
+
+def test_the_evidence_grade_is_written_to_the_decision(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "captions are noise", [], EVIDENCE_DEGRADED)},
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    stage_two = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_FULL]
+    assert stage_two[0].evidence == EVIDENCE_DEGRADED
+
+
+# -- B3: the counters say which thing happened ------------------------------
+
+
+def test_three_outcomes_land_on_three_counters(
+    config, ledger, library, client, searches
+) -> None:
+    """A caption skip, a disk hit and a Gate 1 hit used to share two buckets.
+    B5's planner reads these; a sum of three causes cannot be planned on."""
+    in_library_already = "iiiiiiiiiii"
+    on_disk = "ddddddddddd"
+    no_captions = "nnnnnnnnnnn"
+
+    # Already in the library: has a note, so Gate 1 drops it.
+    ledger.mark_pending(in_library_already)
+    ledger.mark_has_transcript(in_library_already, source="captions", provider="ytdlp")
+    ledger.mark_noted(in_library_already, version="1", model="m")
+
+    # On disk with no note: a candidate, but the bytes are already here.
+    library.write_transcript(on_disk, [TranscriptLine(0, 1000, "already fetched")])
+    ledger.mark_pending(on_disk)
+    ledger.mark_has_transcript(on_disk, source="captions", provider="ytdlp")
+
+    searches["*"] = [
+        result(in_library_already),
+        result(on_disk),
+        result(no_captions, has_captions=False),
+        result("aaaaaaaaaaa"),
+    ]
+
+    trusting = replace(config, discover=replace(config.discover, trust_caption_hint=True))
+    outcome = run(trusting, ledger, library, client, FakeJudge(), max_rounds=1)
+    report = outcome.rounds[0]
+
+    assert report.known == 1, "Gate 1: already in the library"
+    assert report.already_held == 1, "the transcript was already on disk"
+    assert report.no_captions == 1, "routed to ASR without a fetch"
+    assert report.failed == 0, "nothing actually failed"
+    assert report.stored == 1
+
+
+def test_a_real_fetch_failure_still_counts_as_failed(
+    config, ledger, library, client, searches
+) -> None:
+    """The counter separation must not lose the thing it was originally for."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts(failures={"aaaaaaaaaaa": TransientError("network")})
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1, provider=provider)
+
+    assert outcome.rounds[0].failed == 1
+    assert outcome.rounds[0].no_captions == 0
+    assert outcome.rounds[0].already_held == 0
+
+
+def test_an_unparsed_reply_is_counted(config, ledger, library, client, searches) -> None:
+    """Counted, not swallowed. The same shape citation parsing reports, for the
+    same reason: `/ask` once said 2 citations out of 104 because a parser threw
+    away what it could not read and said nothing."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    judge.unparsed = {"aaaaaaaaaaa"}
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.rounds[0].unparsed == 1
+    assert outcome.stored_ids == ["aaaaaaaaaaa"], "an unreadable reply must never reject"
+
+
+def test_no_transcript_content_reaches_the_report(
+    config, ledger, library, client, searches, capsys
+) -> None:
+    """Hard rule 1, at the one place B3 newly put a whole transcript in flight.
+
+    Stage 2 now reads every word of every video it judges. The report that comes
+    back must still be counts and verdicts — the entire reason marginalia is a
+    CLI is that heavy text never enters the conversation, and a judge that reads
+    more is exactly where that would start to leak.
+    """
+    secret = "a phrase that appears only inside the transcript"
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    provider = FakeTranscripts()
+    provider.lines = [TranscriptLine(0, 2000, secret)]
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1, provider=provider)
+
+    assert secret in judge.transcripts_seen[0], "the judge should have read it"
+    assert secret not in capsys.readouterr().out
+    assert secret not in repr(outcome)
+    assert all(secret not in " ".join(r.concepts) for r in outcome.rounds)
