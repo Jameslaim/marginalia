@@ -17,8 +17,8 @@ import logging
 
 import pytest
 
-from marginalia.judge import parse_batch, parse_opening, parse_queries
-from marginalia.ledger import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
+from marginalia.brain.judge import parse_batch, parse_opening, parse_queries
+from marginalia.core.ledger import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
 
 CLEAN = """\
 1: YES - covers cache expiry and shows configuration
@@ -174,7 +174,7 @@ def test_unparseable_entries_are_logged_with_their_positions(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A parse failure absorbed in silence is a judge nobody can diagnose."""
-    with caplog.at_level(logging.WARNING, logger="marginalia.judge"):
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
         parse_batch("1: YES - fine\n", 3)
 
     assert "unparseable" in caplog.text
@@ -311,7 +311,7 @@ def test_a_short_video_is_not_described_as_zero_duration() -> None:
     """Observed in a real run: integer minutes rendered a 59-second short as
     "0 min", and the judge rejected it citing "zero duration". The judge was
     reasoning correctly from a number we got wrong."""
-    from marginalia.judge import _describe
+    from marginalia.brain.judge import _describe
     from marginalia.providers.base import SearchResult
 
     short = SearchResult(
@@ -325,7 +325,7 @@ def test_a_short_video_is_not_described_as_zero_duration() -> None:
 
 
 def test_a_normal_video_is_described_in_minutes() -> None:
-    from marginalia.judge import _describe
+    from marginalia.brain.judge import _describe
     from marginalia.providers.base import SearchResult
 
     normal = SearchResult(

@@ -70,16 +70,42 @@ not drift.
    refused batch, a network blip mid-judgement: all resolve toward keeping. The two
    mistakes are not symmetric and the code must not treat them as if they were.
 
+9. **`brain/` reasons and returns decisions; `flow/` executes them.** `brain/` performs
+   no filesystem, database, network or provider access — it may call the LLM abstraction
+   only. A reasoning layer is worth having because it can be tested without a machine,
+   and that property is worth exactly as much as it is enforced: `tests/test_boundaries.py`
+   scans the imports. `brain/` gains `territory.py` and `planner.py`, which is why the
+   boundary is drawn now, while there is one file behind it, rather than after there are
+   three and the first `Ledger` call has already been written.
+
+10. **Every structure crossing a module boundary is defined in `contracts.py`. No bare
+    dicts across boundaries.** A type defined where it is produced makes `flow/` import
+    `brain/` to name a verdict and `brain/` import `providers/` to name a search result —
+    each import individually reasonable, the graph as a whole cyclic. Protocols and
+    exception types are the exception and stay put: `TranscriptProvider`, `SearchProvider`,
+    `PermanentError` and `TransientError` remain in `providers/base.py`, because a
+    Protocol is the shape of an implementation rather than a structure in flight.
+
 ## Structure
+
+```
+src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
+  core/     ids.py  ledger.py  library.py        identity, state, file layout
+  providers/                                     the part guaranteed to break
+  brain/    judge.py                             reasoning; no I/O
+  flow/     search.py  discover.py               execution
+  enrich/   note.py  timestamps.py               what happens after storage
+```
 
 - `cli.py` is the only entry point. Skills are thin: they call `marg` and report the
   line it returns. Logic never lives in a `SKILL.md` — the ingest skill routes on
   whether the argument parses as a video ID, and does nothing else.
-- `library.py` builds every library path. No other module constructs one.
-- `llm.py` makes calls and knows nothing about verdicts. `judge.py` turns replies into
-  verdicts and knows nothing about the loop. `discover.py` runs the loop and parses
-  nothing. Keep that split; it is why the parsers are testable without a model.
-  `note.py` holds the same split internally: pure section parsing at the top, the
+- `core/library.py` builds every library path. No other module constructs one; `cli.py`
+  reads `config.library_path` solely to hand it over.
+- `llm.py` makes calls and knows nothing about verdicts. `brain/judge.py` turns replies
+  into verdicts and knows nothing about the loop. `flow/discover.py` runs the loop and
+  parses nothing. Keep that split; it is why the parsers are testable without a model.
+  `enrich/note.py` holds the same split internally: pure section parsing at the top, the
   drain loop at the bottom, and nothing in between that needs a model to test.
 - `print` appears only in `cli.py`. Everything else uses `logging`.
 - Reading a transcript must be followed by `Ledger.touch_accessed(video_id)`. The
@@ -88,7 +114,7 @@ not drift.
 
 ## Scope
 
-Milestone 5 adds **understanding notes**: `note.py`, `prompts/write_note.md`, the
+Milestone 5 adds **understanding notes**: `enrich/note.py`, `prompts/write_note.md`, the
 `marg note` command, and `note_version`/`note_model`/`noted_at` on `videos`. A stored
 transcript goes in, a note comes out, and the note is what every later question is
 answered from.

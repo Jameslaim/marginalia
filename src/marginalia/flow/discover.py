@@ -29,14 +29,14 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Sequence
 
-from .config import Config
-from .ids import extract_video_id
-from .judge import Brief, Judge, OpeningVerdict, opening_words
-from .ledger import (
+from ..brain.judge import Judge, opening_words
+from ..config import Config
+from ..contracts import DiscoverRun, RoundReport, SearchResult, TranscriptResult
+from ..core.ids import extract_video_id
+from ..core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
     STAGE_METADATA,
@@ -47,10 +47,10 @@ from .ledger import (
     Ledger,
     normalise_topic,
 )
-from .library import Library
-from .llm import LlmClient
-from .providers import PermanentError, TransientError, get_provider
-from .providers.base import SearchResult, TranscriptProvider, TranscriptResult
+from ..core.library import Library
+from ..llm import LlmClient
+from ..providers import PermanentError, TransientError, get_provider
+from ..providers.base import TranscriptProvider
 from .search import NEW, run_search
 
 log = logging.getLogger(__name__)
@@ -78,51 +78,6 @@ STOP_REASONS = (
 # Requests a round needs beyond judging: query expansion. Checked before the
 # round starts so the loop stops cleanly instead of failing mid-round.
 _ROUND_OVERHEAD_REQUESTS = 1
-
-
-@dataclass
-class RoundReport:
-    number: int
-    queries: list[str]
-    candidates: int = 0
-    known: int = 0
-    rejected_before: int = 0
-    verdict_no: int = 0
-    verdict_maybe: int = 0
-    verdict_yes: int = 0
-    flipped_to_no: int = 0
-    stored: int = 0
-    failed: int = 0
-    concepts: list[str] = field(default_factory=list)
-    from_threads: bool = False
-
-
-@dataclass
-class DiscoverRun:
-    run_id: str
-    topic: str
-    brief: Brief
-    model: str
-    rounds: list[RoundReport] = field(default_factory=list)
-    stored_ids: list[str] = field(default_factory=list)
-    stopped_because: str = ""
-    requests: int = 0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    dry_run: bool = False
-
-    cost_usd: float = 0.0
-
-    @property
-    def candidates_seen(self) -> int:
-        return sum(report.candidates for report in self.rounds)
-
-    @property
-    def judged(self) -> int:
-        return sum(
-            report.verdict_no + report.verdict_maybe + report.verdict_yes
-            for report in self.rounds
-        )
 
 
 def discover(

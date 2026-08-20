@@ -20,10 +20,10 @@ from pathlib import Path
 import pytest
 from conftest import make_config, make_note_config
 
-from marginalia.ledger import Ledger, STATUS_NEEDS_ASR, STATUS_STORED
-from marginalia.library import Library
+from marginalia.core.ledger import Ledger, STATUS_NEEDS_ASR, STATUS_STORED
+from marginalia.core.library import Library
 from marginalia.llm import LlmClient, LlmError
-from marginalia.note import (
+from marginalia.enrich.note import (
     FAILED,
     NOTED,
     REQUIRED_SECTIONS,
@@ -325,7 +325,7 @@ def test_a_note_is_written_atomically(tmp_path: Path, monkeypatch) -> None:
     """A crash mid-write must leave the previous note or none, never half of
     one: half a note passes no section check and would look like a bad model."""
     config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa")
-    import marginalia.library as library_module
+    import marginalia.core.library as library_module
 
     real_replace = library_module.os.replace
 

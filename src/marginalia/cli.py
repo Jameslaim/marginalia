@@ -35,24 +35,24 @@ from typing import Any, Sequence
 
 from . import __version__
 from .config import Config, ConfigError, load_config
-from .discover import DiscoverRun, discover
-from .ids import extract_video_id
+from .contracts import DiscoverRun, TranscriptResult, VideoRow
+from .core.ids import extract_video_id
+from .flow.discover import discover
 from .llm import LlmClient, LlmError
-from .ledger import (
+from .core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
     STATUS_STORED,
     Ledger,
-    VideoRow,
     skip_reason,
 )
-from .library import Library, format_duration
-from .note import FAILED, NOTED, SKIPPED, note_version, write_notes
+from .core.library import Library, format_duration
+from .enrich.note import FAILED, NOTED, SKIPPED, note_version, write_notes
 from .ask import answer_question, deep_link, render_links
-from .timestamps import snap_library
+from .enrich.timestamps import snap_library
 from .providers import PermanentError, TransientError, get_provider
-from .providers.base import TranscriptProvider, TranscriptResult
-from .search import KNOWN, NEW, REJECTED, Candidate, SearchRun, run_search
+from .providers.base import TranscriptProvider
+from .flow.search import KNOWN, NEW, REJECTED, Candidate, SearchRun, run_search
 
 log = logging.getLogger("marginalia")
 

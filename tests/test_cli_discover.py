@@ -14,8 +14,8 @@ from pathlib import Path
 import pytest
 
 from marginalia.cli import EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
-from marginalia.discover import DiscoverRun, RoundReport
-from marginalia.judge import Brief
+from marginalia.flow.discover import DiscoverRun, RoundReport
+from marginalia.brain.judge import Brief
 from marginalia.llm import LlmConfigError
 
 BRIEF = Brief(

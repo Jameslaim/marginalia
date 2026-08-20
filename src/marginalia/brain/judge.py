@@ -21,12 +21,11 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
 from typing import Sequence
 
-from .ledger import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
-from .llm import LlmClient, Prompt, Reply, batched, load_prompt
-from .providers.base import SearchResult
+from ..contracts import Brief, MetadataVerdict, OpeningVerdict, SearchResult
+from ..core.ledger import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
+from ..llm import LlmClient, Prompt, Reply, batched, load_prompt
 
 log = logging.getLogger(__name__)
 
@@ -65,47 +64,6 @@ _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s*")
 _MAX_REASON = 120
 
 _OPENING_WORDS = 1000
-
-
-@dataclass(frozen=True)
-class Brief:
-    """The explicit statement of what is wanted, and the prompts behind it."""
-
-    topic: str
-    text: str
-    version: str
-
-    @property
-    def intent(self) -> str:
-        """The INTENT section on one line, for the report."""
-        lines = self.text.splitlines()
-        for index, line in enumerate(lines):
-            if line.strip().upper().startswith("INTENT"):
-                body = line.partition(":")[2].strip()
-                if body:
-                    return " ".join(body.split())
-                for follower in lines[index + 1 :]:
-                    if follower.strip():
-                        return " ".join(follower.split())
-        first = next((line for line in lines if line.strip()), "")
-        return " ".join(first.split())
-
-
-@dataclass(frozen=True)
-class MetadataVerdict:
-    video_id: str
-    verdict: str
-    reason: str
-    parsed: bool = True
-
-
-@dataclass(frozen=True)
-class OpeningVerdict:
-    video_id: str
-    verdict: str
-    reason: str
-    concepts: list[str] = field(default_factory=list)
-    parsed: bool = True
 
 
 # -- parsing ----------------------------------------------------------------

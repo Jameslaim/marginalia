@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from marginalia.ids import extract_video_id, is_video_id
+from marginalia.core.ids import extract_video_id, is_video_id
 
 VIDEO_ID = "dQw4w9WgXcQ"
 

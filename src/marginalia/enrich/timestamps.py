@@ -34,7 +34,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Iterable, Sequence
 
-from .library import Library
+from ..core.library import Library
 
 log = logging.getLogger(__name__)
 

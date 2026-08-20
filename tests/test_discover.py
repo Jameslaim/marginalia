@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from conftest import make_config
 
-from marginalia.discover import (
+from marginalia.flow.discover import (
     STOP_DRY_RUN,
     STOP_MAX_COST,
     STOP_MAX_REQUESTS,
@@ -28,8 +28,8 @@ from marginalia.discover import (
     STOP_NO_NEW_VIDEOS,
     discover,
 )
-from marginalia.judge import Brief, MetadataVerdict, OpeningVerdict
-from marginalia.ledger import (
+from marginalia.brain.judge import Brief, MetadataVerdict, OpeningVerdict
+from marginalia.core.ledger import (
     STAGE_METADATA,
     STAGE_OPENING,
     STATUS_REJECTED,
@@ -39,7 +39,7 @@ from marginalia.ledger import (
     VERDICT_YES,
     Ledger,
 )
-from marginalia.library import Library
+from marginalia.core.library import Library
 from marginalia.llm import LlmClient, Usage
 from marginalia.providers.base import (
     PermanentError,
@@ -174,7 +174,7 @@ def searches(monkeypatch: pytest.MonkeyPatch):
 
         return P()
 
-    monkeypatch.setattr("marginalia.search.get_search_provider", fake_provider)
+    monkeypatch.setattr("marginalia.flow.search.get_search_provider", fake_provider)
     table["calls"] = calls  # type: ignore[assignment]
     return table
 
@@ -643,7 +643,7 @@ def test_fetches_are_paced_apart(config, ledger, library, client, searches, monk
     fetches all fail inside nine seconds. Real backoff is M3; not provoking
     the throttle is cheap and belongs here."""
     slept: list[float] = []
-    monkeypatch.setattr("marginalia.discover.time.sleep", lambda s: slept.append(s))
+    monkeypatch.setattr("marginalia.flow.discover.time.sleep", lambda s: slept.append(s))
     searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb"), result("ccccccccccc")]
     config = replace(config, discover=replace(config.discover, fetch_delay_s=2.5))
 
@@ -654,7 +654,7 @@ def test_fetches_are_paced_apart(config, ledger, library, client, searches, monk
 
 def test_no_delay_is_configurable(config, ledger, library, client, searches, monkeypatch) -> None:
     slept: list[float] = []
-    monkeypatch.setattr("marginalia.discover.time.sleep", lambda s: slept.append(s))
+    monkeypatch.setattr("marginalia.flow.discover.time.sleep", lambda s: slept.append(s))
     searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
 
     run(config, ledger, library, client, FakeJudge(), max_rounds=1)
@@ -664,7 +664,7 @@ def test_no_delay_is_configurable(config, ledger, library, client, searches, mon
 
 def test_a_dry_run_never_waits(config, ledger, library, client, searches, monkeypatch) -> None:
     slept: list[float] = []
-    monkeypatch.setattr("marginalia.discover.time.sleep", lambda s: slept.append(s))
+    monkeypatch.setattr("marginalia.flow.discover.time.sleep", lambda s: slept.append(s))
     searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
     config = replace(config, discover=replace(config.discover, fetch_delay_s=9.0))
 

@@ -27,8 +27,9 @@ Contract for ``SearchProvider.search``:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
+
+from ..contracts import SearchResult, TranscriptLine, TranscriptResult
 
 __all__ = [
     "ProviderError",
@@ -86,29 +87,6 @@ class ProviderUnavailable(ProviderError):
     """
 
 
-@dataclass
-class TranscriptLine:
-    start_ms: int
-    end_ms: int
-    text: str
-
-
-@dataclass
-class TranscriptResult:
-    lines: list[TranscriptLine]
-    language: str
-    source: str  # "captions"
-    title: str
-    channel: str
-    duration_s: int
-    upload_date: str | None
-    chapters: list[dict] = field(default_factory=list)  # [{"start_ms": int, "title": str}]
-    # Which caption track was used: "manual" (author-written) or "auto"
-    # (machine-generated). Recorded because manual captions are materially
-    # better and a later upgrade pass needs to know which it has.
-    caption_kind: str = "manual"
-
-
 @runtime_checkable
 class TranscriptProvider(Protocol):
     name: str
@@ -127,30 +105,6 @@ class MetadataCapable(Protocol):
 
 
 # -- search -----------------------------------------------------------------
-
-
-@dataclass
-class SearchResult:
-    """One candidate video, as a search provider described it.
-
-    Everything here is cheap metadata — the material stage 1 of relevance
-    judging reads (M2b). No transcript text ever passes through this type.
-
-    ``duration_s``, ``published_at`` and ``view_count`` are optional because
-    providers differ in what they return: YouTube's ``search.list`` omits all
-    three, and yt-dlp's flat extraction omits some.
-    """
-
-    video_id: str
-    title: str
-    channel: str
-    description: str
-    duration_s: int | None
-    published_at: str | None
-    view_count: int | None
-    # Which provider produced this result. Set by the provider itself; the
-    # report names it, and a mixed-provider result set must stay attributable.
-    provider: str = ""
 
 
 @runtime_checkable

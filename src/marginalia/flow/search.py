@@ -31,8 +31,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Sequence
 
-from .config import Config
-from .ledger import (
+from ..config import Config
+from ..core.ledger import (
     KNOWN_STATUSES,
     STAGE_SEARCH,
     STATUS_DUPLICATE,
@@ -41,7 +41,7 @@ from .ledger import (
     Ledger,
     normalise_topic,
 )
-from .providers import (
+from ..providers import (
     PermanentError,
     ProviderUnavailable,
     QuotaExhausted,

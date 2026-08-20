@@ -727,34 +727,86 @@ marginalia/
 ├── src/marginalia/
 │   ├── cli.py                   single entry point
 │   ├── config.py
-│   ├── ids.py                   canonical video ID extraction
-│   ├── ledger.py                the three gates, decisions, quota
-│   ├── library.py               folder layout read/write
-│   ├── search.py                provider chain + gates 1 and 2
-│   ├── judge.py                 model output → verdicts (the parsers)
-│   ├── discover.py              brief → queries → judge → loop
+│   ├── contracts.py             every structure that crosses a boundary
+│   ├── llm.py                   all model calls, prompt loading
+│   ├── ask.py                   load notes, escalate to transcript
+│   ├── core/
+│   │   ├── ids.py               canonical video ID extraction
+│   │   ├── ledger.py            the three gates, decisions, quota
+│   │   └── library.py           folder layout read/write
 │   ├── providers/
 │   │   ├── base.py              TranscriptProvider + SearchProvider interfaces
 │   │   ├── ytdlp.py
 │   │   ├── youtube_api.py       official search, metered
 │   │   ├── ytdlp_search.py      overflow search, unmetered
 │   │   └── whisper_local.py     faster-whisper small, int8, CPU
-│   ├── normalize.py             artifact stripping, chapters, gap preservation
-│   ├── note.py                  background note worker
-│   ├── ask.py                   load notes, escalate to transcript
-│   └── llm.py                   all model calls, prompt loading
+│   ├── brain/
+│   │   └── judge.py             model output → verdicts (the parsers)
+│   ├── flow/
+│   │   ├── search.py            provider chain + gates 1 and 2
+│   │   └── discover.py          brief → queries → judge → loop
+│   └── enrich/
+│       ├── note.py              background note worker
+│       ├── timestamps.py        snap cited timestamps onto the transcript
+│       └── normalize.py         artifact stripping, chapters, gap preservation
 │
 └── tests/
 ```
+
+### The layered layout, and why it arrived when it did
+
+The flat module list above was right for M1–M6 and stopped being right the moment the
+discovery upgrade was scoped. That upgrade adds `territory.py` and `planner.py` —
+modules whose entire job is to *decide*, and whose value depends on being testable
+without a database, a network, or a machine. In a flat package there is nothing to stop
+the first `Ledger` call being written into one of them, and once it is, nothing to
+notice.
+
+So the package now has four folders, drawn along the axis of what a module is allowed to
+touch rather than what it happens to be about:
+
+| Folder | Holds | May touch |
+|---|---|---|
+| `core/` | identity, ledger, file layout | the disk and the database — it *is* the state |
+| `providers/` | the part guaranteed to break | the network, and yt-dlp |
+| `brain/` | reasoning | `llm` and `contracts`. Nothing else. |
+| `flow/` | execution | everything — that is what it is for |
+| `enrich/` | what happens to a transcript after storage | the library, `llm` |
+
+`brain/` is the one that matters and the only genuinely new rule. It is drawn now, with
+one file behind it, because a boundary added to three files that already cross it is a
+refactor, and a refactor is exactly what does not happen under deadline.
+
+`contracts.py` is the other half. Types defined where they are produced force `flow/` to
+import `brain/` to name a verdict and `brain/` to import `providers/` to name a search
+result — each import defensible on its own, the import graph as a whole cyclic. One file
+holding every structure that crosses a boundary makes the graph acyclic by construction.
+Protocols and exception types stay in `providers/base.py`: a Protocol is the shape of an
+implementation, not a structure in flight.
+
+The move itself changed no behaviour — imports, file paths, `contracts.py`, and the
+boundary tests, and nothing else. `tests/test_boundaries.py` enforces every rule below;
+the ones this project has actually held held because a test enforced them, and the ones
+written down and left unchecked drifted.
+
+**One violation was found and left in place rather than refactored around:**
+`brain/judge.py` imports `VERDICT_YES` / `VERDICT_NO` / `VERDICT_MAYBE` from
+`core/ledger.py`, which pulls sqlite3 into any process that imports the judge. It is
+recorded as a named allowlist entry in the boundary test, with a test asserting the
+allowlist is exactly one item long.
 
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source
   means adding one file, never a refactor. Nothing outside `providers/` imports yt-dlp.
+- `brain/` reasons and returns decisions; `flow/` executes them. `brain/` performs no
+  filesystem, database, network or provider access.
+- Every structure crossing a module boundary is defined in `contracts.py`. No bare dicts
+  across boundaries.
 - `llm.py` is the only place model names appear. Switching tiers is one file.
 - `cli.py` is the only entry point. Skills are thin — they call the CLI and read the
   report. Logic never lives in a SKILL.md.
-- `library.py` builds every library path. No other module constructs one.
+- `core/library.py` builds every library path. No other module constructs one.
 - `CLAUDE.md` states the non-negotiables: never print transcript contents into the
   conversation, never bypass the ledger, never modify a stored transcript, never
   lowercase a video ID, always write the ledger row before fetching.

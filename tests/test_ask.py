@@ -23,7 +23,7 @@ from marginalia.ask import (
     render_links,
     scan_citations,
 )
-from marginalia.library import Library
+from marginalia.core.library import Library
 from marginalia.llm import LlmClient
 
 from conftest import make_config

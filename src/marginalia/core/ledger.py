@@ -25,6 +25,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 
+from ..contracts import VideoRow
+
 log = logging.getLogger(__name__)
 
 __all__ = [
@@ -195,40 +197,6 @@ def normalise_topic(topic: str) -> str:
     "fixing" one to match the other.
     """
     return " ".join(topic.split()).lower()
-
-
-@dataclass(frozen=True)
-class VideoRow:
-    video_id: str
-    status: str
-    source: str | None
-    caption_kind: str | None
-    transcribed_at: str | None
-    content_hash: str | None
-    duplicate_of: str | None
-    first_seen: str
-    last_updated: str
-    last_accessed: str | None
-    attempts: int
-    fail_kind: str | None
-    provider: str | None
-    note_version: str | None = None
-    note_model: str | None = None
-    noted_at: str | None = None
-
-    @classmethod
-    def from_sqlite(cls, row: sqlite3.Row) -> VideoRow:
-        return cls(**{field.name: row[field.name] for field in fields(cls)})
-
-    def note_is_current(self, version: str) -> bool:
-        """Does this video carry a note written by the current prompt?
-
-        Both halves matter. ``noted_at`` alone says a note was written once;
-        ``note_version`` says which prompt wrote it, and that is what turns
-        "which notes are stale?" into a query rather than a list somebody
-        maintains by hand.
-        """
-        return self.noted_at is not None and self.note_version == version
 
 
 @dataclass(frozen=True)

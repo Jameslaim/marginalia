@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import pytest
 
-from marginalia.library import Library
-from marginalia.timestamps import (
+from marginalia.core.library import Library
+from marginalia.enrich.timestamps import (
     REASON_ALREADY,
     REASON_NO_ANCHOR,
     REASON_NO_MATCH,

@@ -33,9 +33,9 @@ from dataclasses import dataclass, field
 from typing import Any, Sequence
 
 from .config import Config
-from .ids import is_video_id
-from .ledger import Ledger, LedgerError
-from .library import Library
+from .core.ids import is_video_id
+from .core.ledger import Ledger, LedgerError
+from .core.library import Library
 from .llm import LlmClient, LlmError, Prompt, load_prompt
 
 log = logging.getLogger(__name__)

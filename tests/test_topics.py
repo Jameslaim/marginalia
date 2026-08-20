@@ -19,8 +19,8 @@ from __future__ import annotations
 
 import pytest
 
-from marginalia.ids import extract_video_id, is_video_id
-from marginalia.ledger import normalise_topic
+from marginalia.core.ids import extract_video_id, is_video_id
+from marginalia.core.ledger import normalise_topic
 
 
 # -- topics: case and whitespace collapse -----------------------------------

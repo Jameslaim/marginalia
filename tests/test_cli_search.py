@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from marginalia.cli import EXIT_OK, EXIT_USAGE, _duration, main
-from marginalia.ledger import STAGE_METADATA, VERDICT_NO, Ledger
+from marginalia.core.ledger import STAGE_METADATA, VERDICT_NO, Ledger
 from marginalia.providers.base import SearchResult
 
 A = "dQw4w9WgXcQ"
@@ -67,7 +67,7 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     )
     monkeypatch.setenv("MARGINALIA_CONFIG", str(config))
     monkeypatch.setattr(
-        "marginalia.search.get_search_provider", lambda name, **_: FakeProvider(RESULTS)
+        "marginalia.flow.search.get_search_provider", lambda name, **_: FakeProvider(RESULTS)
     )
     yield root
 
@@ -147,7 +147,7 @@ def test_a_bad_query_is_a_usage_error(library: Path, monkeypatch) -> None:
         def search(self, query: str, limit: int = 25):
             raise PermanentError("empty query")
 
-    monkeypatch.setattr("marginalia.search.get_search_provider", lambda name, **_: Broken([]))
+    monkeypatch.setattr("marginalia.flow.search.get_search_provider", lambda name, **_: Broken([]))
     assert main(["search", "   "]) == EXIT_USAGE
 
 

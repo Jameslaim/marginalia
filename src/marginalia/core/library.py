@@ -25,8 +25,8 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
+from ..contracts import TranscriptLine
 from .ids import is_video_id
-from .providers.base import TranscriptLine
 
 log = logging.getLogger(__name__)
 

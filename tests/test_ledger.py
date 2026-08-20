@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from marginalia.ledger import (
+from marginalia.core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
     STAGE_METADATA,

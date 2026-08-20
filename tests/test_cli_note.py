@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from marginalia.cli import EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
-from marginalia.note import FAILED, NOTED, SKIPPED, NoteResult, NoteRun
+from marginalia.enrich.note import FAILED, NOTED, SKIPPED, NoteResult, NoteRun
 
 # The distinctive strings the leak tests look for.
 SECRET_NOTE = "## Claims\nthe speaker calls quadratic growth exponential twice\n"
@@ -131,9 +131,9 @@ def test_a_real_run_prints_neither_the_transcript_nor_the_note(
 ) -> None:
     """End to end with only the model mocked: the worker reads a real
     transcript off disk and writes a real note, and neither appears."""
-    from marginalia.ledger import Ledger
-    from marginalia.library import Library
-    from marginalia.note import REQUIRED_SECTIONS
+    from marginalia.core.ledger import Ledger
+    from marginalia.core.library import Library
+    from marginalia.enrich.note import REQUIRED_SECTIONS
     from marginalia.providers.base import TranscriptLine
 
     library = Library(configured)

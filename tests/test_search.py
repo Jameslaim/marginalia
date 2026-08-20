@@ -18,7 +18,7 @@ import pytest
 from conftest import make_config
 
 from marginalia.config import Config
-from marginalia.ledger import (
+from marginalia.core.ledger import (
     STAGE_METADATA,
     STAGE_SEARCH,
     VERDICT_MAYBE,
@@ -33,7 +33,7 @@ from marginalia.providers.base import (
     SearchResult,
     TransientError,
 )
-from marginalia.search import KNOWN, NEW, REJECTED, run_search
+from marginalia.flow.search import KNOWN, NEW, REJECTED, run_search
 
 TOPIC = "prompt caching"
 
@@ -101,7 +101,7 @@ def providers(monkeypatch: pytest.MonkeyPatch) -> dict[str, FakeProvider]:
             raise provider
         return provider
 
-    monkeypatch.setattr("marginalia.search.get_search_provider", factory)
+    monkeypatch.setattr("marginalia.flow.search.get_search_provider", factory)
     return registry
 
 
