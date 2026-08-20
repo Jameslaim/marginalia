@@ -20,6 +20,8 @@ import pytest
 from conftest import make_config
 
 from marginalia.contracts import (
+    STATUS_HAS_TRANSCRIPT,
+    STATUS_SEEN,
     STOP_MAX_COST,
     VERDICT_MAYBE,
     VERDICT_NO,
@@ -37,13 +39,7 @@ from marginalia.flow.discover import (
     STOP_NO_NEW_VIDEOS,
     discover,
 )
-from marginalia.core.ledger import (
-    STAGE_METADATA,
-    STAGE_OPENING,
-    STATUS_REJECTED,
-    STATUS_STORED,
-    Ledger,
-)
+from marginalia.core.ledger import STAGE_METADATA, STAGE_OPENING, Ledger
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient
 from marginalia.providers.base import (
@@ -238,7 +234,7 @@ def test_a_maybe_that_flips_to_no_is_not_stored(config, ledger, library, client,
     assert outcome.stored_ids == []
     assert not library.has_transcript("aaaaaaaaaaa")
     row = ledger.get("aaaaaaaaaaa")
-    assert row is not None and row.status == STATUS_REJECTED
+    assert row is not None and row.status == STATUS_SEEN
     assert outcome.rounds[0].flipped_to_no == 1
 
 
@@ -250,7 +246,7 @@ def test_a_maybe_that_survives_is_stored(config, ledger, library, client, search
 
     assert outcome.stored_ids == ["aaaaaaaaaaa"]
     assert library.has_transcript("aaaaaaaaaaa")
-    assert ledger.get("aaaaaaaaaaa").status == STATUS_STORED
+    assert ledger.get("aaaaaaaaaaa").status == STATUS_HAS_TRANSCRIPT
 
 
 def test_the_configured_batch_size_is_used(config, ledger, library, client, searches) -> None:

@@ -20,10 +20,18 @@ from pathlib import Path
 import pytest
 from conftest import make_config, make_note_config
 
-from marginalia.core.ledger import Ledger, STATUS_NEEDS_ASR, STATUS_STORED
+from marginalia.contracts import (
+    FAILED,
+    NOTED,
+    SKIPPED,
+    STATUS_HAS_TRANSCRIPT,
+    STATUS_NEEDS_ASR,
+    STOP_MAX_COST,
+    STOP_REPEATED_FAILURES,
+)
+from marginalia.core.ledger import Ledger
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient, LlmError
-from marginalia.contracts import FAILED, NOTED, SKIPPED, STOP_MAX_COST, STOP_REPEATED_FAILURES
 from marginalia.enrich.note import (
     REQUIRED_SECTIONS,
     NoteInvalid,
@@ -104,7 +112,7 @@ def library_with(tmp_path: Path, *video_ids: str, text: str = "hello world") -> 
             },
         )
         ledger.mark_pending(video_id)
-        ledger.mark_stored(video_id, source="captions", provider="ytdlp")
+        ledger.mark_has_transcript(video_id, source="captions", provider="ytdlp")
     return config, library, ledger
 
 
@@ -295,7 +303,7 @@ def test_a_failed_call_leaves_the_video_retryable_and_the_transcript_untouched(
     assert not library.has_note("aaaaaaaaaaa")
     assert library.transcript_path("aaaaaaaaaaa").read_bytes() == before
     row = ledger.get("aaaaaaaaaaa")
-    assert row.noted_at is None and row.status == STATUS_STORED
+    assert row.noted_at is None and row.status == STATUS_HAS_TRANSCRIPT
     # Retryable means the next run picks it up again, with no intervention.
     assert [r.video_id for r in ledger.videos_needing_note(version="1")] == ["aaaaaaaaaaa"]
 

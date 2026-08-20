@@ -24,6 +24,22 @@ import sqlite3
 from dataclasses import dataclass, field, fields
 
 __all__ = [
+    # asset state
+    "STATUS_SEEN",
+    "STATUS_PENDING",
+    "STATUS_HAS_TRANSCRIPT",
+    "STATUS_NEEDS_ASR",
+    "STATUS_FAILED",
+    "STATUS_DUPLICATE",
+    "VIDEO_STATUSES",
+    # judgement evidence
+    "EVIDENCE_CLEAR",
+    "EVIDENCE_DEGRADED",
+    # query provenance
+    "ORIGIN_BRIEF",
+    "ORIGIN_TERRITORY",
+    "ORIGIN_PLANNER",
+    "ORIGIN_THREAD",
     # verdict vocabulary
     "VERDICT_YES",
     "VERDICT_NO",
@@ -71,6 +87,60 @@ __all__ = [
     # model calls
     "Usage",
 ]
+
+
+# -- asset state ------------------------------------------------------------
+
+# What we *have*, and nothing else. Relevance is not a status: a video rejected
+# for prompt caching is still a perfectly good video about Redis, and one field
+# carrying both meanings is why it used to be labelled `rejected` globally. What
+# was decided, and for which topic, lives in `decisions`.
+STATUS_SEEN = "seen"
+STATUS_PENDING = "pending"
+STATUS_HAS_TRANSCRIPT = "has_transcript"
+STATUS_NEEDS_ASR = "needs_asr"
+STATUS_FAILED = "failed"
+STATUS_DUPLICATE = "duplicate"
+
+# `seen` and `pending` stay distinct, and the distinction is the whole payoff of
+# the write-before-fetch rule. `pending` means *something was interrupted* —
+# a row written before a network call that never came back. Collapsing it into
+# `seen` would turn every candidate we merely looked at into a phantom crash,
+# and the one signal that says "a fetch died here" would be gone.
+VIDEO_STATUSES = frozenset(
+    {
+        STATUS_SEEN,
+        STATUS_PENDING,
+        STATUS_HAS_TRANSCRIPT,
+        STATUS_NEEDS_ASR,
+        STATUS_FAILED,
+        STATUS_DUPLICATE,
+    }
+)
+
+
+# -- judgement evidence -------------------------------------------------------
+
+# How good the evidence behind a verdict was. B3 writes these; the column exists
+# now so that no later migration is needed, and nothing reads it yet.
+#
+# The reason it is worth a column at all: a NO decided from a full transcript and
+# a NO decided from a truncated description are not the same claim, and today
+# they are indistinguishable in the log. Gate 2 treats every past NO as final,
+# so a DEGRADED one is a video permanently excluded on evidence nobody can see.
+EVIDENCE_CLEAR = "CLEAR"
+EVIDENCE_DEGRADED = "DEGRADED"
+
+
+# -- query provenance ---------------------------------------------------------
+
+# Where a search query came from. B4 and B5 write these; nothing reads them yet.
+# This is the column that makes "why did it search for *that*?" answerable at
+# all — without it a run's queries are a list with no causal story.
+ORIGIN_BRIEF = "brief"
+ORIGIN_TERRITORY = "territory"
+ORIGIN_PLANNER = "planner"
+ORIGIN_THREAD = "thread"
 
 
 # -- verdicts ---------------------------------------------------------------
@@ -204,6 +274,10 @@ class VideoRow:
     note_version: str | None = None
     note_model: str | None = None
     noted_at: str | None = None
+    # B1. Deliberately not backfilled: 64 existing rows would have meant 64
+    # network calls for a column no current feature reads. New videos populate
+    # it, and NULL is the honest answer for a video seen before it existed.
+    channel_id: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> VideoRow:

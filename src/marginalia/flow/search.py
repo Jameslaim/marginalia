@@ -10,7 +10,7 @@ Two gates run, both free, both before anything is spent:
 ============  =========================================  ================
 Gate          Drops                                      Ledger evidence
 ============  =========================================  ================
-1. known ID   videos already ``stored`` or ``duplicate``  ``videos.status``
+1. known ID   videos already in the library                ``in_library()``
 2. rejection  videos with a ``no`` verdict *for this      ``decisions``
               exact topic*
 ============  =========================================  ================
@@ -35,19 +35,14 @@ from ..contracts import (
     KNOWN,
     NEW,
     REJECTED,
+    STATUS_DUPLICATE,
     VERDICT_MAYBE,
     VERDICT_NO,
     Candidate,
     SearchResult,
     SearchRun,
 )
-from ..core.ledger import (
-    KNOWN_STATUSES,
-    STAGE_SEARCH,
-    STATUS_DUPLICATE,
-    Ledger,
-    normalise_topic,
-)
+from ..core.ledger import STAGE_SEARCH, Ledger, in_library, normalise_topic
 from ..providers import (
     PermanentError,
     ProviderUnavailable,
@@ -126,11 +121,12 @@ def _verdict(ledger: Ledger, result: SearchResult, topic: str) -> tuple[str, str
     ``yes``, because this stage has judged nothing about it.
     """
     row = ledger.get(result.video_id)
-    if row is not None and row.status in KNOWN_STATUSES:
+    if in_library(row):
+        assert row is not None  # in_library() is False for None
         if row.status == STATUS_DUPLICATE:
             reason = f"duplicate of {row.duplicate_of}" if row.duplicate_of else "duplicate"
         else:
-            reason = "already stored"
+            reason = "already in the library"
         return KNOWN, reason, VERDICT_NO
 
     previous = ledger.latest_decision(result.video_id, topic, verdict=VERDICT_NO)

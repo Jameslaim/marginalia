@@ -102,6 +102,27 @@ not drift.
     `config.py` — configuration is what a run is set up with, not data moving through
     it, and every module reading it is reading the same single object by design.
 
+
+11. **`videos.status` is asset state. Relevance is not a status.** `status` says what
+    we *have* — `seen`, `pending`, `has_transcript`, `needs_asr`, `failed`, `duplicate`
+    — and never what we decided. What was decided lives in `decisions`, against the
+    topic it was decided for, because a video declined for prompt caching is still a
+    perfectly good video about Redis and one column cannot hold both claims. There is
+    no `rejected` state and there must not be one again.
+
+    **`seen` and `pending` stay distinct.** `pending` means a fetch started and did not
+    finish — the entire payoff of rule 6's write-before-fetch ordering. Collapsing it
+    into `seen` would turn every candidate we merely looked at into a phantom crash and
+    delete the one signal that says a fetch died here.
+
+    **A video is in the library if it has a note**, and `in_library()` is the only place
+    that decides. Notes are what `/ask` loads, so note existence *is* membership;
+    `ask.py` already selected this way, which is what makes it the honest rule rather
+    than a new one. Holding a transcript is a different question and has a different
+    caller: `flow/discover.py` checks the disk before the network so an unnoted
+    transcript is never re-fetched, and `write_transcript` refuses to overwrite either
+    way.
+
 ## Structure
 
 ```
@@ -176,7 +197,7 @@ marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --d
 marg ask "<question>"               answer from every note; --deep <id>, --json
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
-marg list                          list stored videos
+marg list [--status S]             list videos by asset state (default has_transcript)
 marg guard-write                   internal: the PreToolUse hook, reads stdin
 ```
 

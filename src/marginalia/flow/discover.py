@@ -310,6 +310,27 @@ def _judge_round(
             return concepts
 
         candidate = by_id[verdict.video_id]
+
+        # Gate 1 asks whether a video is in the *library*, which since B1 means
+        # it has a note. This asks a different question — do we already hold the
+        # bytes? — and it has to be asked separately, because the two answers
+        # genuinely differ: a video fetched for an earlier topic whose note has
+        # not been written yet is not in the library and is already on disk.
+        #
+        # Gate 1 used to shadow this by dropping anything `stored`. Splitting
+        # status from relevance unshadowed it, and `write_transcript` caught the
+        # result immediately by refusing to overwrite an immutable file — which
+        # is the guard working, not a reason to weaken Gate 1. The transcript
+        # stays, no network call is made, and `marg note` will pick the video up
+        # from `has_transcript` regardless of which topic first found it.
+        if library.has_transcript(candidate.video_id):
+            log.info(
+                "discover: %s already has a transcript; not re-fetching",
+                candidate.video_id,
+            )
+            report.known += 1
+            continue
+
         _pace(config, fetched_any)
         fetched_any = True
         fetched = _fetch(ledger, candidate.video_id, provider, config)
@@ -334,7 +355,10 @@ def _judge_round(
             concepts.extend(opening.concepts)
             if opening.verdict == VERDICT_NO:
                 report.flipped_to_no += 1
-                ledger.mark_rejected(candidate.video_id)
+                # The verdict is already logged against this topic just above.
+                # All the row records is that we hold nothing — and it must not
+                # be left `pending`, which would read as an interrupted fetch.
+                ledger.mark_seen(candidate.video_id)
                 continue
 
         _store(library, ledger, candidate, fetched, config)
@@ -397,7 +421,7 @@ def _store(
             "line_count": count,
         },
     )
-    ledger.mark_stored(
+    ledger.mark_has_transcript(
         candidate.video_id,
         source=result.source,
         caption_kind=result.caption_kind,

@@ -76,10 +76,15 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 
 @pytest.fixture()
 def gated(library: Path) -> Path:
-    """One of each verdict: A new, B already stored, C rejected for the topic."""
+    """One of each verdict: A new, B already in the library, C declined for the topic.
+
+    B needs a *note*, not just a transcript: since B1 the library is what has
+    notes, and Gate 1 asks about membership rather than about bytes on disk.
+    """
     with Ledger(library / "ledger.db") as ledger:
         ledger.mark_pending(B)
-        ledger.mark_stored(B, source="captions", provider="ytdlp")
+        ledger.mark_has_transcript(B, source="captions", provider="ytdlp")
+        ledger.mark_noted(B, version="1", model="m")
         ledger.log_decision(
             C, "prompt caching", stage=STAGE_METADATA, verdict=VERDICT_NO, reason="off topic"
         )
@@ -112,7 +117,7 @@ def test_a_dropped_candidate_carries_its_reason(gated: Path, capsys) -> None:
     main(["search", "prompt caching"])
     known, rejected = capsys.readouterr().out.splitlines()[1:3]
 
-    assert known == f"known     {B}  already stored"
+    assert known == f"known     {B}  already in the library"
     assert rejected.startswith(f"rejected  {C}  no for this topic (20")
 
 

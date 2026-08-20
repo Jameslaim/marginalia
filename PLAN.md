@@ -822,6 +822,51 @@ was resolved first: `ask.py`'s became `AnswerCitation`, `enrich/timestamps.py`'s
 `NoteCitation`. `Config` and its sub-configs stay in `config.py`; configuration is what
 a run is set up with, not data moving through it.
 
+
+### B1 — the status / verdict split
+
+`videos.status` carried two ideas: what we hold, and what we decided. The second is
+topic-relative and the first is not, so a video declined for prompt caching was
+globally labelled `rejected` while being a perfectly good video about Redis — and
+every later feature would have written into that confusion.
+
+Status is now asset state alone:
+
+| State | Means |
+|---|---|
+| `seen` | Known to us. Nothing held. No fetch in flight. |
+| `pending` | A fetch started and did not finish. **A crash indicator.** |
+| `has_transcript` | `transcript.txt` is on disk |
+| `needs_asr` | No captions available; awaiting transcription |
+| `failed` | Acquisition failed — see `fail_kind` |
+| `duplicate` | Same content as another video |
+
+Migrated in place: `stored` → `has_transcript` (37 rows), `rejected` → `seen` (15).
+A value rename rather than a change of meaning, which is why it migrates instead of
+forcing the rebuild the no-migration rule demands elsewhere — and all 15 of those rows
+still carry their NO verdict in `decisions`, checked by query, which is what makes
+dropping the label lossless.
+
+**Gate 1 changed meaning, not just vocabulary.** It used to drop anything `stored`.
+It now drops anything *in the library*, and a video is in the library if it has a
+note — `/ask` loads notes, so note existence is membership. `ask.py` already selected
+exactly this way.
+
+That unshadowed something Gate 1 had been hiding: a video can hold a transcript and
+not be in the library, and discovery would then re-fetch it. `write_transcript` caught
+it immediately by refusing to overwrite an immutable file, which is the guard working.
+The fix is a second, separate check at the fetch step — *do we already hold the
+bytes?* — because that is a different question from *is this in the library?* and B1
+is about not conflating questions. No network call, no overwrite, and `marg note`
+picks the video up from `has_transcript` regardless of which topic first found it.
+
+Also added, with no consumer until later: `videos.channel_id` (never backfilled — 64
+rows would have meant 64 network calls for a column nothing reads), `decisions.evidence`
+and `decisions.prompt_version` (B3), `runs.territory_map` and `runs.territory_version`
+(B4), and the `queries` table (B4, B5). `queries.origin` is the column that makes
+"why did it search for *that*?" answerable at all; without it a run's queries are a
+list with no causal story.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

@@ -42,6 +42,7 @@ from .contracts import (
     NOTED,
     REJECTED,
     SKIPPED,
+    STATUS_HAS_TRANSCRIPT,
     Candidate,
     DiscoverRun,
     SearchRun,
@@ -51,13 +52,7 @@ from .contracts import (
 from .core.ids import extract_video_id
 from .flow.discover import discover
 from .llm import LlmClient, LlmError
-from .core.ledger import (
-    FAIL_PERMANENT,
-    FAIL_TRANSIENT,
-    STATUS_STORED,
-    Ledger,
-    skip_reason,
-)
+from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
 from .enrich.note import note_version, write_notes
 from .ask import answer_question, deep_link, render_links
@@ -150,14 +145,14 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
         assert provider is not None
         count = _store(library, video_id, result, provider, args.url)
-        ledger.mark_stored(
+        ledger.mark_has_transcript(
             video_id,
             source=result.source,
             caption_kind=result.caption_kind,
             provider=provider.name,
         )
         _report(
-            "stored",
+            "has-transcript",
             video_id,
             _quoted(result.title),
             f"{count} lines",
@@ -393,7 +388,7 @@ def _note_status(config: Config, library: Library) -> int:
     with Ledger(library.ledger_path) as ledger:
         counts = ledger.note_counts(version=version)
     print(
-        f"notes:    {counts['stored']} stored, {counts['current']} current, "
+        f"notes:    {counts['has_transcript']} with transcript, {counts['current']} current, "
         f"{counts['stale']} stale, {counts['missing']} missing  (prompt v{version})"
     )
     return EXIT_OK
@@ -912,7 +907,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     listing = subparsers.add_parser("list", help="list stored videos")
     listing.add_argument(
-        "--status", default=STATUS_STORED, help="ledger status to list (default: stored)"
+        "--status",
+        default=STATUS_HAS_TRANSCRIPT,
+        help="ledger status to list (default: has_transcript)",
     )
     listing.set_defaults(handler=_cmd_list)
 

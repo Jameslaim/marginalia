@@ -334,6 +334,22 @@ def test_every_shared_structure_is_in_contracts() -> None:
     from marginalia import contracts
 
     expected = {
+        # asset state
+        "STATUS_SEEN",
+        "STATUS_PENDING",
+        "STATUS_HAS_TRANSCRIPT",
+        "STATUS_NEEDS_ASR",
+        "STATUS_FAILED",
+        "STATUS_DUPLICATE",
+        "VIDEO_STATUSES",
+        # judgement evidence
+        "EVIDENCE_CLEAR",
+        "EVIDENCE_DEGRADED",
+        # query provenance
+        "ORIGIN_BRIEF",
+        "ORIGIN_TERRITORY",
+        "ORIGIN_PLANNER",
+        "ORIGIN_THREAD",
         # verdict vocabulary
         "VERDICT_YES",
         "VERDICT_NO",

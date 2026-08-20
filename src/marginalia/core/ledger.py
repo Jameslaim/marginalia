@@ -3,17 +3,23 @@
 The ledger outlives the data. Rows are never deleted, even if a transcript is.
 Otherwise the agent re-downloads tomorrow exactly what it discarded today.
 
+``status`` is **asset state only** — what we hold, never what we decided. What
+was decided, and for which topic, is in ``decisions``, because relevance is
+topic-relative and a status column cannot be. One field carrying both is why a
+video declined for prompt caching used to be labelled ``rejected`` outright
+while being a perfectly good video about Redis.
+
 Write ordering is non-negotiable::
 
     1. mark_pending(video_id)   <- BEFORE any network call
     2. fetch the transcript
     3. write files to disk
-    4. mark_stored(video_id)
+    4. mark_has_transcript(video_id)
 
 A crash between 1 and 4 leaves the row ``pending``, which tells the next run the
 job was in flight. Writing only on success loses that and causes blind
-re-fetching. ``mark_stored`` and friends therefore refuse to act on a row that
-does not already exist.
+re-fetching. ``mark_has_transcript`` and friends therefore refuse to act on a row
+that does not already exist.
 """
 
 from __future__ import annotations
@@ -25,7 +31,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 
-from ..contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES, VideoRow
+from ..contracts import (
+    STATUS_DUPLICATE,
+    STATUS_FAILED,
+    STATUS_HAS_TRANSCRIPT,
+    STATUS_NEEDS_ASR,
+    STATUS_PENDING,
+    STATUS_SEEN,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
+    VIDEO_STATUSES,
+    VideoRow,
+)
 
 log = logging.getLogger(__name__)
 
@@ -37,27 +55,14 @@ __all__ = [
     "RunRow",
     "skip_reason",
     "normalise_topic",
-    "STATUS_PENDING",
-    "STATUS_NEEDS_ASR",
-    "STATUS_STORED",
-    "STATUS_REJECTED",
-    "STATUS_FAILED",
-    "STATUS_DUPLICATE",
+    "in_library",
     "FAIL_PERMANENT",
     "FAIL_TRANSIENT",
     "STAGE_SEARCH",
     "STAGE_METADATA",
     "STAGE_OPENING",
     "STAGE_NOTE",
-    "KNOWN_STATUSES",
 ]
-
-STATUS_PENDING = "pending"
-STATUS_NEEDS_ASR = "needs_asr"
-STATUS_STORED = "stored"
-STATUS_REJECTED = "rejected"
-STATUS_FAILED = "failed"
-STATUS_DUPLICATE = "duplicate"
 
 FAIL_PERMANENT = "permanent"
 FAIL_TRANSIENT = "transient"
@@ -73,17 +78,14 @@ _STAGES = frozenset({STAGE_SEARCH, STAGE_METADATA, STAGE_OPENING, STAGE_NOTE})
 
 _VERDICTS = frozenset({VERDICT_YES, VERDICT_NO, VERDICT_MAYBE})
 
-# Gate 1: statuses meaning "we already have this video's content". Not
-# `failed` or `needs_asr` — those are unfinished work, and a later search
-# should surface them again.
-KNOWN_STATUSES = frozenset({STATUS_STORED, STATUS_DUPLICATE})
-
 # `content_hash` is unused until M3. It is created now on purpose: migrating
 # later is worse than one idle column.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
   video_id       TEXT PRIMARY KEY,
-  status         TEXT NOT NULL,   -- pending|needs_asr|stored|rejected|failed|duplicate
+  -- Asset state only: what we have, never what we decided. Relevance is
+  -- topic-relative and lives in `decisions`.
+  status         TEXT NOT NULL,   -- seen|pending|has_transcript|needs_asr|failed|duplicate
   source         TEXT,            -- captions|whisper
   caption_kind   TEXT,            -- manual|auto
   transcribed_at TEXT,
@@ -97,7 +99,8 @@ CREATE TABLE IF NOT EXISTS videos (
   provider       TEXT,
   note_version   TEXT,            -- the write_note prompt version behind note.md
   note_model     TEXT,            -- which model read the transcript
-  noted_at       TEXT
+  noted_at       TEXT,
+  channel_id     TEXT             -- B1; never backfilled, new videos only
 );
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_hash   ON videos(content_hash);
@@ -110,7 +113,9 @@ CREATE TABLE IF NOT EXISTS decisions (
   reason     TEXT,
   decided_at TEXT NOT NULL,
   run_id     TEXT,            -- the discovery run, and so the brief, behind it
-  model      TEXT             -- which model said so; the provider is temporary
+  model      TEXT,            -- which model said so; the provider is temporary
+  evidence   TEXT,            -- CLEAR | DEGRADED; B3 writes it, nothing reads it yet
+  prompt_version TEXT         -- which prompt produced this verdict
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_topic ON decisions(topic, verdict);
 CREATE INDEX IF NOT EXISTS idx_decisions_video ON decisions(video_id);
@@ -137,9 +142,29 @@ CREATE TABLE IF NOT EXISTS runs (
   requests_made   INTEGER NOT NULL DEFAULT 0,
   input_tokens    INTEGER NOT NULL DEFAULT 0,
   output_tokens   INTEGER NOT NULL DEFAULT 0,
-  stopped_because TEXT
+  stopped_because TEXT,
+  territory_map     TEXT,        -- B4 writes it, nothing reads it yet
+  territory_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs(topic);
+
+-- Every query a run issued, and why it issued it. `origin` is the column
+-- that makes "why did it search for *that*?" answerable; without it a run's
+-- queries are a list with no causal story. B4 and B5 write these rows —
+-- the table exists now so that neither needs a migration.
+CREATE TABLE IF NOT EXISTS queries (
+  run_id         TEXT NOT NULL,
+  round          INTEGER NOT NULL,
+  query          TEXT NOT NULL,
+  filters_json   TEXT,
+  origin         TEXT NOT NULL,   -- brief | territory | planner | thread
+  origin_detail  TEXT,
+  results_count  INTEGER,
+  provider       TEXT,
+  quota_units    INTEGER,
+  ran_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_queries_run ON queries(run_id, round);
 """
 
 # Columns added after a table shipped, which can be introduced in place.
@@ -159,6 +184,14 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("videos", "note_version", "TEXT"),
     ("videos", "note_model", "TEXT"),
     ("videos", "noted_at", "TEXT"),
+    # B1. All five read NULL on existing rows, which is the honest answer:
+    # nobody recorded a channel, an evidence grade or a territory map before
+    # the columns existed, and inventing one would be worse than admitting it.
+    ("videos", "channel_id", "TEXT"),
+    ("decisions", "evidence", "TEXT"),
+    ("decisions", "prompt_version", "TEXT"),
+    ("runs", "territory_map", "TEXT"),
+    ("runs", "territory_version", "TEXT"),
 )
 
 # Tables an older marginalia created that no longer exist. Their presence is
@@ -209,6 +242,12 @@ class DecisionRow:
     decided_at: str
     run_id: str | None = None
     model: str | None = None
+    # B1, both NULL on every existing row and on everything written until B3.
+    # `evidence` is the one that changes what a verdict *means*: a NO decided
+    # from a full transcript and a NO decided from a truncated description are
+    # different claims, and Gate 2 treats both as final.
+    evidence: str | None = None
+    prompt_version: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> DecisionRow:
@@ -243,6 +282,9 @@ class RunRow:
     input_tokens: int
     output_tokens: int
     stopped_because: str | None
+    # B1. B4 writes these; nothing reads them yet.
+    territory_map: str | None = None
+    territory_version: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> RunRow:
@@ -256,11 +298,54 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "decisions": frozenset(field.name for field in fields(DecisionRow)),
     "quota": frozenset({"provider", "date", "units_used"}),
     "runs": frozenset(field.name for field in fields(RunRow)),
+    # No dataclass yet: nothing reads `queries` until B4, and inventing a row
+    # type for a table with no reader would be inventing its shape twice.
+    "queries": frozenset(
+        {
+            "run_id",
+            "round",
+            "query",
+            "filters_json",
+            "origin",
+            "origin_detail",
+            "results_count",
+            "provider",
+            "quota_units",
+            "ran_at",
+        }
+    ),
 }
 
 
 class LedgerError(RuntimeError):
     """Raised when the ledger is used out of order, or is the wrong shape."""
+
+
+def in_library(row: VideoRow | None) -> bool:
+    """Gate 1: do we already have this video, for library purposes?
+
+    **A video is in the library if it has a note.** Notes are what `/ask` loads,
+    so note existence *is* membership — nothing else is visible to a question.
+
+    This deliberately is not "has a transcript". Since B1 a video can hold a
+    transcript and not be in the library: a candidate judged NO at stage 2 keeps
+    whatever was fetched, and a freshly ingested video has a transcript for as
+    long as it takes the note worker to reach it. Treating those as members
+    would hide them from every future search while contributing nothing to any
+    answer — present in the ledger, absent from the library, invisible to both.
+
+    ``noted_at`` rather than ``note_is_current``: a note written by last month's
+    prompt is still a note, and `/ask` still loads it. Staleness is the note
+    worker's question, not this one.
+
+    ``duplicate`` counts because the canonical copy is the membership that
+    matters; fetching the same content under a second ID adds nothing.
+    """
+    if row is None:
+        return False
+    if row.status == STATUS_DUPLICATE:
+        return True
+    return row.noted_at is not None
 
 
 def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None:
@@ -273,19 +358,23 @@ def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None
     status              re-attempt?  why
     ==================  ===========  =====================================
     (not in ledger)     yes          never seen
+    ``seen``            yes          known, but nothing is held
     ``pending``         yes          was in flight; a crash left it here
-    ``stored``          no           unless the transcript file is missing
+    ``has_transcript``  no           unless the transcript file is missing
     ``needs_asr``       yes          captions can appear later
     ``failed`` perm.    no           deleted, private, blocked
     ``failed`` trans.   yes          network or rate limit
-    ``duplicate``       no           the canonical copy is already stored
-    ``rejected``        yes          see below
+    ``duplicate``       no           the canonical copy is already held
     ==================  ===========  =====================================
 
-    ``rejected`` re-attempts on purpose. A rejection is topic-relative — it
-    means "irrelevant to some brief", which says nothing about a video the
-    user has now named directly. A direct request outranks a past judgement
-    made for a different purpose.
+    **``rejected`` is gone as a state**, and nothing replaced it here. It used
+    to re-attempt on purpose, with the reasoning that a rejection is
+    topic-relative — "irrelevant to some brief" says nothing about a video the
+    user has now named directly. That reasoning was right and is now structural
+    rather than a special case: relevance never was asset state, so a video
+    declined for one topic is simply ``seen``, and ``seen`` re-attempts because
+    nothing is held. "Has a NO for this topic" is Gate 2's question, and Gate 2
+    is not consulted when a user names a video directly.
 
     ``transcript_present`` is passed in rather than looked up so this stays a
     pure function of ledger state; the library owns the filesystem.
@@ -293,16 +382,16 @@ def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None
     if row is None:
         return None
 
-    if row.status == STATUS_STORED:
-        return "already stored" if transcript_present else None
+    if row.status == STATUS_HAS_TRANSCRIPT:
+        return "already have the transcript" if transcript_present else None
     if row.status == STATUS_DUPLICATE:
         return f"duplicate of {row.duplicate_of}" if row.duplicate_of else "duplicate"
     if row.status == STATUS_FAILED and row.fail_kind == FAIL_PERMANENT:
         return "previously failed (permanent)"
 
-    # pending, needs_asr, failed/transient, rejected, and anything a later
-    # milestone adds: re-attempt. Doing surplus work is recoverable; silently
-    # never retrying is not.
+    # seen, pending, needs_asr, failed/transient, and anything a later milestone
+    # adds: re-attempt. Doing surplus work is recoverable; silently never
+    # retrying is not.
     return None
 
 
@@ -320,6 +409,7 @@ class Ledger:
         self._add_missing_columns()
         self._conn.executescript(_SCHEMA)
         self._conn.commit()
+        self._migrate_status_vocabulary()
         self._check_schema()
 
     # -- lifecycle ---------------------------------------------------------
@@ -383,7 +473,7 @@ class Ledger:
         log.info("ledger: %s -> pending", video_id)
         return self._require(video_id)
 
-    def mark_stored(
+    def mark_has_transcript(
         self,
         video_id: str,
         *,
@@ -391,8 +481,13 @@ class Ledger:
         provider: str,
         caption_kind: str | None = None,
         content_hash: str | None = None,
+        channel_id: str | None = None,
     ) -> VideoRow:
         """Record a stored transcript.
+
+        Named for the state it sets rather than the act. `stored` used to mean
+        both "the file is on disk" and "this is in the library", and B1 split
+        those: the file being on disk is all this claims.
 
         ``caption_kind`` sits beside ``source`` because they answer the same
         question at the same granularity — how good is this transcript, and is
@@ -410,21 +505,23 @@ class Ledger:
                 transcribed_at = ?,
                 last_updated   = ?,
                 fail_kind      = NULL,
-                content_hash   = COALESCE(?, content_hash)
+                content_hash   = COALESCE(?, content_hash),
+                channel_id     = COALESCE(?, channel_id)
             WHERE video_id = ?
             """,
             (
-                STATUS_STORED,
+                STATUS_HAS_TRANSCRIPT,
                 source,
                 caption_kind,
                 provider,
                 _utcnow(),
                 _utcnow(),
                 content_hash,
+                channel_id,
                 video_id,
             ),
         )
-        log.info("ledger: %s -> stored", video_id)
+        log.info("ledger: %s -> has_transcript", video_id)
         return self._require(video_id)
 
     def mark_needs_asr(self, video_id: str, *, provider: str | None = None) -> VideoRow:
@@ -463,13 +560,19 @@ class Ledger:
         log.info("ledger: %s -> failed (%s)", video_id, fail_kind)
         return self._require(video_id)
 
-    def mark_rejected(self, video_id: str, *, provider: str | None = None) -> VideoRow:
-        """A video that was fetched, read, and declined.
+    def mark_seen(self, video_id: str, *, provider: str | None = None) -> VideoRow:
+        """Known to us, holding nothing. The resting state for a non-keeper.
 
-        The row is kept and the transcript is not written. Status `rejected`
-        rather than `failed`: nothing went wrong, and ``skip_reason`` still
-        re-attempts it if the user later names this video directly, because a
-        judgement made for one brief says nothing about a direct request.
+        This used to be ``mark_rejected`` and set a status of ``rejected``,
+        which put a judgement in the asset column — the video was globally
+        labelled rejected when what actually happened was that one brief did
+        not want it. The verdict is logged in ``decisions`` against its topic,
+        where it can be true of one question and false of the next; the row
+        here records only that nothing is held.
+
+        Also the correct landing place for an interrupted fetch that resolved
+        to nothing: ``pending`` must not outlive the attempt, because a stale
+        ``pending`` reads as a crash.
         """
         self._update(
             video_id,
@@ -481,9 +584,9 @@ class Ledger:
                 fail_kind    = NULL
             WHERE video_id = ?
             """,
-            (STATUS_REJECTED, provider, _utcnow(), video_id),
+            (STATUS_SEEN, provider, _utcnow(), video_id),
         )
-        log.info("ledger: %s -> rejected", video_id)
+        log.info("ledger: %s -> seen", video_id)
         return self._require(video_id)
 
     # -- notes -------------------------------------------------------------
@@ -522,23 +625,33 @@ class Ledger:
     def videos_needing_note(
         self, *, version: str, stale_only: bool = True, limit: int | None = None
     ) -> list[VideoRow]:
-        """Stored videos with no note written by the current prompt.
+        """Videos holding a transcript, with no note from the current prompt.
 
-        ``stale_only=False`` returns every stored video instead — what
+        Keyed on ``has_transcript`` because a note is written *from* the
+        transcript — this is the one place where holding the file, rather than
+        library membership, is the right question. It is also the job that
+        turns the former into the latter.
+
+        ``stale_only=False`` returns every such video instead — what
         ``--regenerate --all`` means. Ordered by ``first_seen`` so a ``--limit``
         run is a stable prefix rather than a random sample: reading three notes,
         revising the prompt and running again should show you the same three.
         """
-        rows = [row for row in self.list_by_status(STATUS_STORED)]
+        rows = [row for row in self.list_by_status(STATUS_HAS_TRANSCRIPT)]
         if stale_only:
             rows = [row for row in rows if not row.note_is_current(version)]
         return rows[:limit] if limit is not None else rows
 
     def note_counts(self, *, version: str) -> dict[str, int]:
-        """How many stored videos are current, stale, or have never been noted."""
-        counts = {"stored": 0, "current": 0, "stale": 0, "missing": 0}
-        for row in self.list_by_status(STATUS_STORED):
-            counts["stored"] += 1
+        """Of the videos holding a transcript: current, stale, or never noted.
+
+        ``missing`` is the interesting number since B1 — those are videos with
+        a transcript and no note, which means they are *not in the library*
+        and no question can reach them.
+        """
+        counts = {"has_transcript": 0, "current": 0, "stale": 0, "missing": 0}
+        for row in self.list_by_status(STATUS_HAS_TRANSCRIPT):
+            counts["has_transcript"] += 1
             if row.noted_at is None:
                 counts["missing"] += 1
             elif row.note_version == version:
@@ -779,6 +892,40 @@ class Ledger:
                 f"no ledger row for {video_id!r}: mark_pending() must be called first"
             )
 
+    # B1 renamed two status values in place. `stored` described an asset and
+    # `rejected` described a judgement, and one column carrying both is why a
+    # video declined for prompt caching was globally labelled rejected while
+    # being a perfectly good video about Redis.
+    #
+    # A value rename, not a schema change, so it migrates rather than forcing a
+    # rebuild — the no-migration rule guards against a column changing *meaning*
+    # under existing data, and here the data means what it always did. The NO
+    # verdicts that made those rows `rejected` already live in `decisions`, in
+    # full, with their topic; dropping the label loses nothing.
+    #
+    # Idempotent: after the first run no row matches either WHERE.
+    _STATUS_RENAMES: tuple[tuple[str, str], ...] = (
+        ("stored", STATUS_HAS_TRANSCRIPT),
+        ("rejected", STATUS_SEEN),
+    )
+
+    def _migrate_status_vocabulary(self) -> None:
+        if "videos" not in self._tables():
+            return
+        for old, new in self._STATUS_RENAMES:
+            with self._conn:
+                changed = self._conn.execute(
+                    "UPDATE videos SET status = ? WHERE status = ?", (new, old)
+                ).rowcount
+            if changed:
+                log.info("ledger: migrated %d row(s) from %r to %r", changed, old, new)
+
+    def _tables(self) -> set[str]:
+        return {
+            row["name"]
+            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+
     def _add_missing_columns(self) -> None:
         """Introduce nullable columns added after a table shipped.
 
@@ -803,10 +950,7 @@ class Ledger:
         writing verdicts into a table nothing reads. There is no migration
         path yet, so the message must say exactly what to do instead.
         """
-        tables = {
-            row["name"]
-            for row in self._conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
-        }
+        tables = self._tables()
 
         for name in sorted(_LEGACY_TABLES):
             if name in tables:

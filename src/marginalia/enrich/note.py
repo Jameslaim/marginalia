@@ -36,6 +36,7 @@ from ..contracts import (
     FAILED,
     NOTED,
     SKIPPED,
+    STATUS_HAS_TRANSCRIPT,
     STOP_LIMIT,
     STOP_MAX_COST,
     STOP_REPEATED_FAILURES,
@@ -43,7 +44,7 @@ from ..contracts import (
     NoteRun,
     VideoRow,
 )
-from ..core.ledger import STATUS_STORED, Ledger
+from ..core.ledger import Ledger
 from ..core.library import Library, format_duration
 from ..llm import LlmClient, LlmConfigError, LlmError, Prompt, load_prompt
 
@@ -212,7 +213,7 @@ def select(
             row = ledger.get(video_id)
             if row is None:
                 skipped.append(NoteResult(video_id, SKIPPED, "not in the ledger"))
-            elif row.status != STATUS_STORED:
+            elif row.status != STATUS_HAS_TRANSCRIPT:
                 skipped.append(NoteResult(video_id, SKIPPED, f"status is {row.status}"))
             elif row.note_is_current(version) and not regenerate:
                 skipped.append(

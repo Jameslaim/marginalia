@@ -107,7 +107,7 @@ def test_a_bad_id_is_a_usage_error(configured, capsys) -> None:
 def test_status_reports_current_and_stale(configured, capsys) -> None:
     assert main(["note", "--status"]) == EXIT_OK
     out = capsys.readouterr().out
-    assert out.startswith("notes:    0 stored, 0 current, 0 stale, 0 missing")
+    assert out.startswith("notes:    0 with transcript, 0 current, 0 stale, 0 missing")
 
 
 # -- the rule ----------------------------------------------------------------
@@ -144,7 +144,7 @@ def test_a_real_run_prints_neither_the_transcript_nor_the_note(
     library.write_meta("aaaaaaaaaaa", {"title": "A video", "channel": "Chan"})
     with Ledger(library.ledger_path) as ledger:
         ledger.mark_pending("aaaaaaaaaaa")
-        ledger.mark_stored("aaaaaaaaaaa", source="captions", provider="ytdlp")
+        ledger.mark_has_transcript("aaaaaaaaaaa", source="captions", provider="ytdlp")
 
     body = "\n".join(f"## {section}\nquadratic not exponential\n" for section in REQUIRED_SECTIONS)
 

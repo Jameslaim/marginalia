@@ -116,15 +116,49 @@ def test_an_unknown_video_is_new(config, ledger, providers) -> None:
     assert run.counts == {"found": 1, KNOWN: 0, REJECTED: 0, NEW: 1}
 
 
-def test_a_stored_video_is_known(config, ledger, providers) -> None:
+def test_a_video_in_the_library_is_known(config, ledger, providers) -> None:
+    """In the library means *has a note*. Notes are what `/ask` loads, so
+    note existence is membership — nothing else is visible to a question."""
     ledger.mark_pending(A)
-    ledger.mark_stored(A, source="captions", provider="ytdlp")
+    ledger.mark_has_transcript(A, source="captions", provider="ytdlp")
+    ledger.mark_noted(A, version="1", model="m")
     config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
 
     run = run_search(config, ledger, "prompt caching")
 
     assert run.candidates[0].verdict == KNOWN
-    assert run.candidates[0].reason == "already stored"
+    assert run.candidates[0].reason == "already in the library"
+
+
+def test_a_transcript_without_a_note_is_not_known(config, ledger, providers) -> None:
+    """The case B1 exists to separate.
+
+    Holding the bytes is not membership. This video contributes nothing to
+    any answer until a note is written, so hiding it from every future search
+    would strand it: present in the ledger, absent from the library, invisible
+    to both. It stays a candidate.
+
+    Not re-fetched, though — `flow/discover.py` checks the disk before the
+    network, and `write_transcript` refuses to overwrite regardless."""
+    ledger.mark_pending(A)
+    ledger.mark_has_transcript(A, source="captions", provider="ytdlp")
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    run = run_search(config, ledger, "prompt caching")
+
+    assert run.candidates[0].verdict == NEW
+
+
+def test_a_stale_note_is_still_a_note(config, ledger, providers) -> None:
+    """`noted_at`, not `note_is_current`. A note written by last month's
+    prompt is still loaded by `/ask`, so the video is still in the library.
+    Staleness is the note worker's question, not Gate 1's."""
+    ledger.mark_pending(A)
+    ledger.mark_has_transcript(A, source="captions", provider="ytdlp")
+    ledger.mark_noted(A, version="0-ancient", model="m")
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    assert run_search(config, ledger, "prompt caching").candidates[0].verdict == KNOWN
 
 
 def test_a_duplicate_is_known_and_names_the_canonical_video(config, ledger, providers) -> None:
@@ -155,10 +189,11 @@ def test_unfinished_work_is_not_known(config, ledger, providers, status: str) ->
 
 
 def test_gate_1_runs_before_gate_2(config, ledger, providers) -> None:
-    """A stored video that was also rejected for this topic reports `known`.
-    The order has to be stable — a skill reads this column."""
+    """A video in the library that was also declined for this topic reports
+    `known`. The order has to be stable — a skill reads this column."""
     ledger.mark_pending(A)
-    ledger.mark_stored(A, source="captions", provider="ytdlp")
+    ledger.mark_has_transcript(A, source="captions", provider="ytdlp")
+    ledger.mark_noted(A, version="1", model="m")
     ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO, reason="off topic")
     config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
 
@@ -246,7 +281,8 @@ def test_every_candidate_produces_a_decision_row(config, ledger, providers) -> N
     """Kept or dropped, at every outcome. The log cannot be reconstructed
     retroactively, and M2b's judge is diagnosable only from what was written."""
     ledger.mark_pending(B)
-    ledger.mark_stored(B, source="captions", provider="ytdlp")
+    ledger.mark_has_transcript(B, source="captions", provider="ytdlp")
+    ledger.mark_noted(B, version="1", model="m")
     ledger.log_decision(C, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO)
     config = install(
         providers, config, primary=FakeProvider("primary", [result(A), result(B), result(C)])
@@ -277,13 +313,17 @@ def test_a_survivor_is_logged_maybe_not_yes(config, ledger, providers) -> None:
     assert row.reason == "new candidate"
 
 
-@pytest.mark.parametrize("setup,reason", [("stored", "already stored"), ("rejected", None)])
+@pytest.mark.parametrize(
+    "setup,reason",
+    [("in_library", "already in the library"), ("declined_before", None)],
+)
 def test_a_dropped_candidate_is_logged_no_with_its_reason(
     config, ledger, providers, setup: str, reason: str | None
 ) -> None:
-    if setup == "stored":
+    if setup == "in_library":
         ledger.mark_pending(A)
-        ledger.mark_stored(A, source="captions", provider="ytdlp")
+        ledger.mark_has_transcript(A, source="captions", provider="ytdlp")
+        ledger.mark_noted(A, version="1", model="m")
     else:
         ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO)
     config = install(providers, config, primary=FakeProvider("primary", [result(A)]))

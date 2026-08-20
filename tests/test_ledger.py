@@ -8,12 +8,25 @@ Every test uses a temporary library. Nothing here touches the real one.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
 
-from marginalia.contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES, VideoRow
+from marginalia.contracts import (
+    STATUS_DUPLICATE,
+    STATUS_FAILED,
+    STATUS_HAS_TRANSCRIPT,
+    STATUS_NEEDS_ASR,
+    STATUS_PENDING,
+    STATUS_SEEN,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
+    VIDEO_STATUSES,
+    VideoRow,
+)
 from marginalia.core.ledger import (
     FAIL_PERMANENT,
     FAIL_TRANSIENT,
@@ -21,14 +34,9 @@ from marginalia.core.ledger import (
     STAGE_NOTE,
     STAGE_OPENING,
     STAGE_SEARCH,
-    STATUS_DUPLICATE,
-    STATUS_FAILED,
-    STATUS_NEEDS_ASR,
-    STATUS_PENDING,
-    STATUS_REJECTED,
-    STATUS_STORED,
     Ledger,
     LedgerError,
+    in_library,
     skip_reason,
 )
 
@@ -153,10 +161,10 @@ def test_pending_then_stored(ledger: Ledger) -> None:
     assert pending.transcribed_at is None
     assert pending.caption_kind is None
 
-    stored = ledger.mark_stored(
+    stored = ledger.mark_has_transcript(
         VIDEO_ID, source="captions", caption_kind="manual", provider="ytdlp"
     )
-    assert stored.status == STATUS_STORED
+    assert stored.status == STATUS_HAS_TRANSCRIPT
     assert stored.source == "captions"
     assert stored.caption_kind == "manual"
     assert stored.provider == "ytdlp"
@@ -172,7 +180,7 @@ def test_pending_then_stored(ledger: Ledger) -> None:
 @pytest.mark.parametrize("kind", ["manual", "auto"])
 def test_caption_kind_is_recorded(ledger: Ledger, kind: str) -> None:
     ledger.mark_pending(VIDEO_ID)
-    row = ledger.mark_stored(
+    row = ledger.mark_has_transcript(
         VIDEO_ID, source="captions", caption_kind=kind, provider="ytdlp"
     )
     assert row.caption_kind == kind
@@ -181,7 +189,7 @@ def test_caption_kind_is_recorded(ledger: Ledger, kind: str) -> None:
 def test_caption_kind_is_optional(ledger: Ledger) -> None:
     """Whisper transcripts (M4) have a source but no caption kind."""
     ledger.mark_pending(VIDEO_ID)
-    row = ledger.mark_stored(VIDEO_ID, source="whisper", provider="whisper_local")
+    row = ledger.mark_has_transcript(VIDEO_ID, source="whisper", provider="whisper_local")
     assert row.source == "whisper"
     assert row.caption_kind is None
 
@@ -190,13 +198,13 @@ def test_auto_captioned_videos_are_queryable(ledger: Ledger) -> None:
     """The reason it is a column: M3's upgrade pass must find these cheaply,
     without opening every meta.json in the library."""
     ledger.mark_pending(VIDEO_ID)
-    ledger.mark_stored(VIDEO_ID, source="captions", caption_kind="auto", provider="ytdlp")
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", caption_kind="auto", provider="ytdlp")
     ledger.mark_pending(OTHER_ID)
-    ledger.mark_stored(OTHER_ID, source="captions", caption_kind="manual", provider="ytdlp")
+    ledger.mark_has_transcript(OTHER_ID, source="captions", caption_kind="manual", provider="ytdlp")
 
     upgradable = [
         row.video_id
-        for row in ledger.list_by_status(STATUS_STORED)
+        for row in ledger.list_by_status(STATUS_HAS_TRANSCRIPT)
         if row.caption_kind == "auto"
     ]
     assert upgradable == [VIDEO_ID]
@@ -205,10 +213,10 @@ def test_auto_captioned_videos_are_queryable(ledger: Ledger) -> None:
 def test_re_ingest_of_a_stored_video_is_a_no_op(ledger: Ledger) -> None:
     """The CLI reads this status to decide to skip without a network call."""
     ledger.mark_pending(VIDEO_ID)
-    ledger.mark_stored(VIDEO_ID, source="captions", provider="ytdlp")
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
 
     before = ledger.get(VIDEO_ID)
-    assert before is not None and before.status == STATUS_STORED
+    assert before is not None and before.status == STATUS_HAS_TRANSCRIPT
 
     # A second ingest sees `stored` and stops here — no mark_pending, no fetch.
     after = ledger.get(VIDEO_ID)
@@ -246,7 +254,7 @@ def test_re_attempt_clears_a_previous_failure(ledger: Ledger) -> None:
 @pytest.mark.parametrize(
     "call",
     [
-        lambda l: l.mark_stored(VIDEO_ID, source="captions", provider="ytdlp"),
+        lambda l: l.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp"),
         lambda l: l.mark_needs_asr(VIDEO_ID),
         lambda l: l.mark_failed(VIDEO_ID, FAIL_PERMANENT),
         lambda l: l.touch_accessed(VIDEO_ID),
@@ -287,7 +295,7 @@ def test_mark_failed_rejects_an_unknown_kind(ledger: Ledger) -> None:
 def test_last_accessed_updates_on_read(ledger: Ledger) -> None:
     """Cannot be reconstructed retroactively; the deletion policy needs it."""
     ledger.mark_pending(VIDEO_ID)
-    stored = ledger.mark_stored(VIDEO_ID, source="captions", provider="ytdlp")
+    stored = ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
     assert stored.last_accessed is None
 
     ledger.touch_accessed(VIDEO_ID)
@@ -296,7 +304,7 @@ def test_last_accessed_updates_on_read(ledger: Ledger) -> None:
     assert row is not None
     assert row.last_accessed is not None
     # Reading must not disturb anything else about the row.
-    assert row.status == STATUS_STORED
+    assert row.status == STATUS_HAS_TRANSCRIPT
     assert row.last_updated == stored.last_updated
 
 
@@ -305,11 +313,11 @@ def test_last_accessed_updates_on_read(ledger: Ledger) -> None:
 
 def test_list_by_status(ledger: Ledger) -> None:
     ledger.mark_pending(VIDEO_ID)
-    ledger.mark_stored(VIDEO_ID, source="captions", provider="ytdlp")
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
     ledger.mark_pending(OTHER_ID)
     ledger.mark_needs_asr(OTHER_ID)
 
-    assert [row.video_id for row in ledger.list_by_status(STATUS_STORED)] == [VIDEO_ID]
+    assert [row.video_id for row in ledger.list_by_status(STATUS_HAS_TRANSCRIPT)] == [VIDEO_ID]
     assert [row.video_id for row in ledger.list_by_status(STATUS_NEEDS_ASR)] == [OTHER_ID]
     assert ledger.list_by_status(STATUS_FAILED) == []
     assert {row.video_id for row in ledger.list_by_status()} == {VIDEO_ID, OTHER_ID}
@@ -355,13 +363,34 @@ def test_unseen_video_is_ingested() -> None:
     assert skip_reason(None, transcript_present=False) is None
 
 
-def test_stored_video_is_skipped() -> None:
-    assert skip_reason(row(STATUS_STORED), transcript_present=True) == "already stored"
+def test_has_transcript_is_skipped() -> None:
+    verdict = skip_reason(row(STATUS_HAS_TRANSCRIPT), transcript_present=True)
+    assert verdict == "already have the transcript"
 
 
-def test_stored_video_with_a_missing_transcript_is_refetched() -> None:
+def test_has_transcript_with_a_missing_file_is_refetched() -> None:
     """The ledger and the filesystem disagree; the filesystem wins."""
-    assert skip_reason(row(STATUS_STORED), transcript_present=False) is None
+    assert skip_reason(row(STATUS_HAS_TRANSCRIPT), transcript_present=False) is None
+
+
+def test_seen_is_reattempted() -> None:
+    """`seen` means known to us and holding nothing, so there is work to do.
+
+    This row replaces the old `rejected` one. That state re-attempted for a
+    reason worth keeping: a rejection is topic-relative — "irrelevant to some
+    brief" — which says nothing about a video the user has now handed us by
+    URL. B1 made that reasoning structural rather than a special case. There
+    is no rejected *state* any more; relevance lives in `decisions` against a
+    topic, and what is left on the row is simply that nothing is held.
+    """
+    assert skip_reason(row(STATUS_SEEN), transcript_present=False) is None
+
+
+def test_seen_is_reattempted_even_holding_a_stray_file() -> None:
+    """`seen` says the ledger holds nothing. If a file is somehow present the
+    two disagree, and as everywhere else the filesystem is not trusted to
+    overrule the ledger into skipping work."""
+    assert skip_reason(row(STATUS_SEEN), transcript_present=True) is None
 
 
 def test_pending_is_reattempted() -> None:
@@ -399,21 +428,29 @@ def test_duplicate_without_a_canonical_id_still_skips() -> None:
     assert skip_reason(row(STATUS_DUPLICATE), transcript_present=False) == "duplicate"
 
 
-def test_rejected_is_reattempted_when_named_directly() -> None:
-    """A rejection is topic-relative: "irrelevant to some brief". That says
-    nothing about a video the user has now handed us by URL, so a direct
-    request outranks the earlier judgement."""
-    assert skip_reason(row(STATUS_REJECTED), transcript_present=False) is None
-
-
 def test_unknown_future_status_is_reattempted() -> None:
     """Surplus work is recoverable; silently never retrying is not."""
-    assert skip_reason(row("some_m5_status"), transcript_present=False) is None
+    assert skip_reason(row("some_b7_status"), transcript_present=False) is None
 
 
-@pytest.mark.parametrize(
-    "status", [STATUS_PENDING, STATUS_NEEDS_ASR, STATUS_REJECTED, STATUS_STORED]
-)
+def test_every_status_has_a_skip_reason_test() -> None:
+    """The table above must cover the vocabulary, not most of it.
+
+    A state added without a policy decision silently falls through to the
+    re-attempt default, which is the safe direction but not a decision anyone
+    made. This fails the moment `VIDEO_STATUSES` grows."""
+    covered = {
+        STATUS_SEEN,
+        STATUS_PENDING,
+        STATUS_HAS_TRANSCRIPT,
+        STATUS_NEEDS_ASR,
+        STATUS_FAILED,
+        STATUS_DUPLICATE,
+    }
+    assert covered == VIDEO_STATUSES
+
+
+@pytest.mark.parametrize("status", sorted(VIDEO_STATUSES))
 def test_a_skip_reason_is_short_enough_for_a_report_line(status: str) -> None:
     verdict = skip_reason(row(status), transcript_present=True)
     assert verdict is None or (len(verdict) < 40 and "\n" not in verdict)
@@ -579,3 +616,241 @@ def test_yesterdays_spend_is_kept(ledger: Ledger) -> None:
 def test_negative_spend_is_refused(ledger: Ledger) -> None:
     with pytest.raises(ValueError):
         ledger.spend_quota("youtube_api", -100)
+
+
+# -- B1: status is asset state, and the vocabulary migrated -----------------
+
+
+def _legacy_ledger(path: Path) -> None:
+    """A ledger as it looked before B1: `stored` and `rejected` statuses, and
+    none of the columns B1 added.
+
+    Hand-built rather than checked in, because the point is the *shape*, and a
+    fixture file would drift out of sync with the thing it is supposed to
+    predate.
+    """
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE videos (
+          video_id TEXT PRIMARY KEY, status TEXT NOT NULL, source TEXT,
+          caption_kind TEXT, transcribed_at TEXT, content_hash TEXT,
+          duplicate_of TEXT, first_seen TEXT NOT NULL, last_updated TEXT NOT NULL,
+          last_accessed TEXT, attempts INTEGER NOT NULL DEFAULT 0, fail_kind TEXT,
+          provider TEXT, note_version TEXT, note_model TEXT, noted_at TEXT
+        );
+        CREATE TABLE decisions (
+          video_id TEXT NOT NULL, topic TEXT NOT NULL, stage TEXT NOT NULL,
+          verdict TEXT NOT NULL, reason TEXT, decided_at TEXT NOT NULL,
+          run_id TEXT, model TEXT
+        );
+        CREATE TABLE quota (
+          provider TEXT NOT NULL, date TEXT NOT NULL,
+          units_used INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (provider, date)
+        );
+        CREATE TABLE runs (
+          run_id TEXT PRIMARY KEY, topic TEXT NOT NULL, brief TEXT NOT NULL,
+          brief_version TEXT, model TEXT, started_at TEXT NOT NULL, finished_at TEXT,
+          rounds INTEGER NOT NULL DEFAULT 0, candidates_seen INTEGER NOT NULL DEFAULT 0,
+          videos_stored INTEGER NOT NULL DEFAULT 0, requests_made INTEGER NOT NULL DEFAULT 0,
+          input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+          stopped_because TEXT
+        );
+        """
+    )
+    now = "2026-01-01T00:00:00+00:00"
+    conn.executemany(
+        "INSERT INTO videos (video_id, status, first_seen, last_updated, attempts)"
+        " VALUES (?, ?, ?, ?, 1)",
+        [
+            ("aaaaaaaaaaa", "stored", now, now),
+            ("bbbbbbbbbbb", "stored", now, now),
+            ("ccccccccccc", "rejected", now, now),
+            ("ddddddddddd", "needs_asr", now, now),
+            ("eeeeeeeeeee", "failed", now, now),
+            ("fffffffffff", "duplicate", now, now),
+        ],
+    )
+    conn.execute(
+        "INSERT INTO decisions (video_id, topic, stage, verdict, reason, decided_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        ("ccccccccccc", "prompt caching", "metadata", "no", "off topic", now),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_the_old_vocabulary_migrates_in_place(tmp_path: Path) -> None:
+    """`stored` -> `has_transcript`, `rejected` -> `seen`. Nothing else moves.
+
+    A value rename, not a change of meaning, which is why it migrates rather
+    than forcing the rebuild the no-migration rule demands elsewhere. The NO
+    verdicts that made those rows `rejected` are already in `decisions` with
+    their topic, so dropping the label loses nothing.
+    """
+    path = tmp_path / "ledger.db"
+    _legacy_ledger(path)
+
+    with Ledger(path) as ledger:
+        by_id = {row.video_id: row.status for row in ledger.list_by_status()}
+
+    assert by_id == {
+        "aaaaaaaaaaa": STATUS_HAS_TRANSCRIPT,
+        "bbbbbbbbbbb": STATUS_HAS_TRANSCRIPT,
+        "ccccccccccc": STATUS_SEEN,
+        "ddddddddddd": STATUS_NEEDS_ASR,
+        "eeeeeeeeeee": STATUS_FAILED,
+        "fffffffffff": STATUS_DUPLICATE,
+    }
+
+
+def test_the_migration_loses_no_rows(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.db"
+    _legacy_ledger(path)
+
+    with Ledger(path) as ledger:
+        assert len(ledger.list_by_status()) == 6
+        assert len(ledger.decisions_for("ccccccccccc")) == 1
+
+
+def test_the_rejection_survives_the_label_being_dropped(tmp_path: Path) -> None:
+    """The whole argument for dropping the status. The video is no longer
+    globally `rejected`, but it is still a NO *for prompt caching*, and Gate 2
+    still finds it — which is what a rejection actually meant all along."""
+    path = tmp_path / "ledger.db"
+    _legacy_ledger(path)
+
+    with Ledger(path) as ledger:
+        row = ledger.get("ccccccccccc")
+        assert row is not None and row.status == STATUS_SEEN
+        previous = ledger.latest_decision("ccccccccccc", "prompt caching", verdict=VERDICT_NO)
+        assert previous is not None and previous.reason == "off topic"
+
+
+def test_the_migration_is_idempotent(tmp_path: Path) -> None:
+    """It runs on every open, so running twice must be indistinguishable from
+    running once — otherwise a second session would rewrite live data."""
+    path = tmp_path / "ledger.db"
+    _legacy_ledger(path)
+
+    with Ledger(path) as ledger:
+        first = {row.video_id: row.status for row in ledger.list_by_status()}
+    with Ledger(path) as ledger:
+        second = {row.video_id: row.status for row in ledger.list_by_status()}
+
+    assert first == second
+
+
+def test_an_older_ledger_gains_the_b1_columns(tmp_path: Path) -> None:
+    """All five read NULL, which is the honest answer: nobody recorded a
+    channel or an evidence grade before the column existed."""
+    path = tmp_path / "ledger.db"
+    _legacy_ledger(path)
+
+    with Ledger(path) as ledger:
+        row = ledger.get("aaaaaaaaaaa")
+        assert row is not None and row.channel_id is None
+        decision = ledger.decisions_for("ccccccccccc")[0]
+        assert decision.evidence is None and decision.prompt_version is None
+
+
+def test_an_older_ledger_gains_the_queries_table(tmp_path: Path) -> None:
+    path = tmp_path / "ledger.db"
+    _legacy_ledger(path)
+
+    with Ledger(path) as ledger:
+        columns = [
+            row["name"] for row in ledger._conn.execute("PRAGMA table_info(queries)")
+        ]
+
+    assert columns == [
+        "run_id",
+        "round",
+        "query",
+        "filters_json",
+        "origin",
+        "origin_detail",
+        "results_count",
+        "provider",
+        "quota_units",
+        "ran_at",
+    ]
+
+
+def test_every_mark_lands_on_a_known_status(ledger: Ledger) -> None:
+    """A status the vocabulary does not contain is a state nothing has a policy
+    for — `skip_reason` would fall through to its default and no decision would
+    have been made anywhere."""
+    ledger.mark_pending(VIDEO_ID)
+    assert ledger.get(VIDEO_ID).status in VIDEO_STATUSES
+
+    for mark in (
+        lambda: ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp"),
+        lambda: ledger.mark_needs_asr(VIDEO_ID),
+        lambda: ledger.mark_failed(VIDEO_ID, FAIL_TRANSIENT),
+        lambda: ledger.mark_seen(VIDEO_ID),
+    ):
+        assert mark().status in VIDEO_STATUSES
+
+
+def test_marking_seen_clears_a_pending_row(ledger: Ledger) -> None:
+    """`pending` means an interrupted fetch, so a candidate that was fetched and
+    then declined must not be left there — it would read as a phantom crash."""
+    ledger.mark_pending(VIDEO_ID)
+    assert ledger.get(VIDEO_ID).status == STATUS_PENDING
+
+    assert ledger.mark_seen(VIDEO_ID).status == STATUS_SEEN
+
+
+def test_a_channel_id_is_recorded_when_offered(ledger: Ledger) -> None:
+    ledger.mark_pending(VIDEO_ID)
+    row = ledger.mark_has_transcript(
+        VIDEO_ID, source="captions", provider="ytdlp", channel_id="UC_example"
+    )
+    assert row.channel_id == "UC_example"
+
+
+def test_a_channel_id_is_not_clobbered_by_a_later_store(ledger: Ledger) -> None:
+    """COALESCE, like content_hash: a re-store that does not know the channel
+    must not erase one that was recorded."""
+    ledger.mark_pending(VIDEO_ID)
+    ledger.mark_has_transcript(
+        VIDEO_ID, source="captions", provider="ytdlp", channel_id="UC_example"
+    )
+    row = ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
+    assert row.channel_id == "UC_example"
+
+
+# -- B1: in_library ---------------------------------------------------------
+
+
+def test_in_library_is_false_for_an_unknown_video() -> None:
+    assert in_library(None) is False
+
+
+def test_in_library_needs_a_note_not_a_transcript() -> None:
+    """The split B1 exists for. Notes are what `/ask` loads, so a video holding
+    only a transcript contributes nothing to any answer yet."""
+    assert in_library(row(STATUS_HAS_TRANSCRIPT)) is False
+    assert in_library(row(STATUS_HAS_TRANSCRIPT, noted_at="2026-01-01T00:00:00+00:00")) is True
+
+
+def test_in_library_accepts_a_stale_note() -> None:
+    """`noted_at`, not `note_is_current`: `/ask` loads a note written by last
+    month's prompt just the same."""
+    assert (
+        in_library(
+            row(
+                STATUS_HAS_TRANSCRIPT,
+                noted_at="2026-01-01T00:00:00+00:00",
+                note_version="0-ancient",
+            )
+        )
+        is True
+    )
+
+
+def test_a_duplicate_is_in_the_library_without_a_note() -> None:
+    """The canonical copy is the membership that matters; fetching the same
+    content under a second ID adds nothing to answer from."""
+    assert in_library(row(STATUS_DUPLICATE)) is True
