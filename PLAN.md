@@ -867,6 +867,44 @@ and `decisions.prompt_version` (B3), `runs.territory_map` and `runs.territory_ve
 "why did it search for *that*?" answerable at all; without it a run's queries are a
 list with no causal story.
 
+
+### B2 — keep what was fetched, and enrich stage 1
+
+**A stage-2 NO now stores its transcript.** It used to drop the bytes and record
+`seen`. That repeated the one step this plan calls fragile, for content already in
+hand, and the fragility is measured rather than assumed: thirteen of thirteen fetches
+died in nine seconds when YouTube throttled a run. A video rejected for prompt caching
+and wanted later for Redis now costs zero network calls the second time — Gate 1 lets
+it through because it has no note, and the fetch-step check finds the file.
+
+Nothing else had to change to make it safe, which is the sign B1 drew the line in the
+right place: `in_library` is False without a note, so `/ask` cannot reach it; the
+fetch-step disk check skips the download; `marg note` finds it under `has_transcript`
+if a later topic ever keeps it.
+
+**Note selection had to become a real question.** Holding a transcript stopped meaning
+anyone chose the video, so `wanted_for_a_note` decides instead, keyed on a stage-
+`opening` NO — checked against the live library, it identified all fifteen rejections
+and nothing else. Overridden by an existing note, by an acceptance for any topic, and
+by having no verdicts at all, which is what `marg ingest <url>` produces.
+
+**Chapters are parsed out of the description at stage 1.** A creator's table of
+contents is the only structural view of a video that exists before anything is
+downloaded, and stage 1 was judging from the raw blob. `providers/chapters.py` refuses
+unless several timestamped lines run in sequence, start at or near zero, and ascend —
+a fabricated table of contents is worse than none, because it reads as confident
+structure for a video that never had any. Parsed before `_text` flattens the
+description, which is a mistake the provider test caught.
+
+**`contentDetails.caption` is recorded and not believed.** The phase asked for a skip
+when it says false. Measured against the 40 videos in the library whose caption
+outcome is known, the API called 31 of the 37 working ones captionless. It is not a
+noisy signal but an exact one answering a different question: **it counts manually
+uploaded tracks only** — 6 of 6 manual right, 31 of 31 auto-generated wrong, because
+yt-dlp reads auto-captions and the API does not count them. The mechanism is built and
+tested; `[discover] trust_caption_hint` gates it and ships false. Turning it on today
+would route most of a run into `needs_asr`, whose worker is M4 and does not exist.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

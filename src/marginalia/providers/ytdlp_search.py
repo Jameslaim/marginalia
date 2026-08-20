@@ -21,6 +21,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .base import PermanentError, SearchResult, TransientError
+from .chapters import parse_description_chapters
 from .ytdlp import _SilentLogger, _classify
 
 log = logging.getLogger(__name__)
@@ -68,17 +69,31 @@ class YtDlpSearchProvider:
         if not isinstance(video_id, str) or not video_id:
             return None
 
+        # Flat extraction gives at most a truncated blurb, and often nothing.
+        # M2b's metadata judge has to cope with an empty string, and so does
+        # the chapter parser — a truncated description usually loses the
+        # listing, and no chapters is the honest answer when it does.
+        raw_description = entry.get("description")
+        description = _text(raw_description)
+
         return SearchResult(
             video_id=video_id,
             title=_text(entry.get("title")),
             channel=_text(entry.get("channel") or entry.get("uploader")),
-            # Flat extraction gives at most a truncated blurb, and often
-            # nothing. M2b's metadata judge has to cope with an empty string.
-            description=_text(entry.get("description")),
+            description=description,
             duration_s=_seconds(entry.get("duration")),
             published_at=_published(entry),
             view_count=_int_or_none(entry.get("view_count")),
             provider=self.name,
+            # Off the raw text: the listing is lines, and `_text` collapses them.
+            chapters=parse_description_chapters(
+                str(raw_description) if raw_description else ""
+            ),
+            # Flat extraction never reports caption tracks. `None` is "nobody
+            # asked", which is the truth, and it leaves the fetch path exactly
+            # as it was — this provider must not route videos to ASR by
+            # failing to know something the other provider happens to know.
+            has_captions=None,
         )
 
 

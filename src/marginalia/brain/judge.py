@@ -72,6 +72,9 @@ _MAX_REASON = 120
 
 _OPENING_WORDS = 1000
 
+# Chapters shown per candidate at stage 1. The same cap stage 2 uses.
+_CHAPTER_LIMIT = 12
+
 
 # -- parsing ----------------------------------------------------------------
 
@@ -373,6 +376,20 @@ def _describe(position: int, candidate: SearchResult) -> str:
     description = " ".join((candidate.description or "").split())
     if description:
         parts.append(f"   description: {description[:400]}")
+    # The creator's own table of contents, and the only structural view of a
+    # video that exists before anything is downloaded. After the description
+    # because that is the order a reader needs them in: what the video says it
+    # is, then how it is laid out.
+    #
+    # Capped at the same twelve stage 2 uses, so a fifty-chapter workshop
+    # cannot crowd the other candidates out of a batch.
+    titles = [
+        " ".join(str(chapter.get("title", "")).split())
+        for chapter in (candidate.chapters or [])
+    ]
+    shown = [title for title in titles if title][:_CHAPTER_LIMIT]
+    if shown:
+        parts.append("   chapters: " + " | ".join(shown))
     return "\n".join(parts)
 
 

@@ -331,6 +331,36 @@ def _judge_round(
             report.known += 1
             continue
 
+        # YouTube already told us there is no caption track, in the same
+        # `videos.list` call that supplied the duration. Trying anyway costs a
+        # request and arrives at `failed` on the way to `needs_asr`, which is
+        # both a wasted fetch and a misleading row in between.
+        #
+        # A hint, not a verdict, and only in one direction: an explicit False
+        # skips, `None` and True fetch exactly as before. Never a reason to
+        # reject — this is a caption fact, not a content fact, and the verdict
+        # above already stands.
+        #
+        # **Off by default**, and that is a measurement rather than caution. The
+        # API reported `caption: "false"` for 31 of the 37 videos in this library
+        # that yielded a working transcript, because it counts only *manually
+        # uploaded* tracks: 6 of 6 manual right, 31 of 31 auto wrong. Trusting it
+        # would route most of what discovery finds into `needs_asr`, whose worker
+        # does not exist until M4. See `DEFAULT_TRUST_CAPTION_HINT`.
+        if config.discover.trust_caption_hint and candidate.has_captions is False:
+            log.info(
+                "discover: %s reports no caption track; routing to ASR unfetched",
+                candidate.video_id,
+            )
+            # `mark_pending` is the only insert, so the row has to pass through
+            # it even though nothing is in flight. It resolves in the next
+            # statement with no network call between them, so the `pending`
+            # that rule 6 watches for cannot be observed by anyone.
+            ledger.mark_pending(candidate.video_id)
+            ledger.mark_needs_asr(candidate.video_id)
+            report.failed += 1
+            continue
+
         _pace(config, fetched_any)
         fetched_any = True
         fetched = _fetch(ledger, candidate.video_id, provider, config)
@@ -355,10 +385,17 @@ def _judge_round(
             concepts.extend(opening.concepts)
             if opening.verdict == VERDICT_NO:
                 report.flipped_to_no += 1
-                # The verdict is already logged against this topic just above.
-                # All the row records is that we hold nothing — and it must not
-                # be left `pending`, which would read as an interrupted fetch.
-                ledger.mark_seen(candidate.video_id)
+                # Keep the bytes. Acquisition is the one step this project
+                # calls fragile, and it is fragile in a measured way — thirteen
+                # of thirteen fetches died in nine seconds when YouTube
+                # throttled a run. Throwing away a transcript already in hand
+                # means paying that risk again for content we have.
+                #
+                # What keeps it out of the library is the absence of a *note*,
+                # not the absence of a transcript. `in_library` stays False, so
+                # a later topic still gets to judge this video on its own
+                # terms — and by then the download is already done.
+                _store(library, ledger, candidate, fetched, config)
                 continue
 
         _store(library, ledger, candidate, fetched, config)

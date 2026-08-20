@@ -1,0 +1,19 @@
+{
+  "kind": "youtube#searchListResponse",
+  "etag": "recorded-fixture",
+  "regionCode": "GB",
+  "pageInfo": { "totalResults": 1, "resultsPerPage": 1 },
+  "items": [
+    {
+      "kind": "youtube#searchResult",
+      "id": { "kind": "youtube#video", "videoId": "dQw4w9WgXcQ" },
+      "snippet": {
+        "publishedAt": "2026-03-14T09:00:07Z",
+        "channelId": "UCrecorded",
+        "title": "Prompt caching, end to end",
+        "description": "Everything you need to know.\n\n00:00 Intro\n01:45 What a cache hit costs\n04:20 Setting up your key\n14:20 cache_control breakpoints\n\nSubscribe for more.",
+        "channelTitle": "Some Channel"
+      }
+    }
+  ]
+}

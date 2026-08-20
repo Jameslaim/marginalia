@@ -25,6 +25,7 @@ from marginalia.providers.base import (
     SearchResult,
     TransientError,
 )
+from marginalia.providers.ytdlp_search import YtDlpSearchProvider
 from marginalia.providers.youtube_api import (
     SEARCH_COST,
     VIDEOS_COST,
@@ -488,3 +489,114 @@ def test_ytdlp_search_writes_nothing_to_stdout(ytdlp_search) -> None:
 
     assert FakeYoutubeDL.last_options["quiet"] is True
     assert FakeYoutubeDL.last_options["logger"] is not None
+
+
+# -- B2: the caption hint and chapters, through the providers ---------------
+
+
+def test_the_caption_flag_is_read_from_the_recorded_payload() -> None:
+    """`contentDetails.caption` is a **string**, `"true"` or `"false"`. Reading
+    it as a boolean would make `bool("false")` True and route every captioned
+    video to ASR while looking like it worked."""
+    provider, _ = api(fixture("youtube_search.json"), fixture("youtube_videos.json"))
+
+    results = provider.search("prompt caching")
+
+    assert results[0].has_captions is True
+    assert results[1].has_captions is False
+
+
+def test_the_caption_flag_costs_no_extra_call() -> None:
+    """It rides along in the `videos.list` call already being made for duration.
+    Two calls before B2, two after."""
+    provider, transport = api(fixture("youtube_search.json"), fixture("youtube_videos.json"))
+
+    provider.search("prompt caching")
+
+    assert len(transport.urls) == 2
+    assert "contentDetails" in transport.urls[1]
+
+
+def test_an_unknown_caption_value_is_none_not_false() -> None:
+    """"Nobody asked" and "there is no caption track" are different claims, and
+    only the second may skip a fetch. A payload that omits the field, or ships a
+    value this code has not seen, must land on the first."""
+    videos = json.dumps(
+        {
+            "items": [
+                {"id": "dQw4w9WgXcQ", "contentDetails": {"duration": "PT5M"}},
+                {"id": "jNQXAC9IVRw", "contentDetails": {"duration": "PT5M", "caption": "maybe"}},
+            ]
+        }
+    ).encode()
+    provider, _ = api(fixture("youtube_search.json"), videos)
+
+    results = provider.search("prompt caching")
+
+    assert results[0].has_captions is None
+    assert results[1].has_captions is None
+
+
+def test_quota_exhaustion_leaves_the_caption_flag_unknown() -> None:
+    """The search is already paid for. Losing `videos.list` costs duration and
+    the caption hint, and the hint has to degrade to `None` — degrading to
+    `False` would send a whole page of results to ASR unfetched."""
+    quota = FakeQuota(used=10_000 - SEARCH_COST)
+    provider, _ = api(fixture("youtube_search.json"), quota=quota, daily_units=10_000)
+
+    results = provider.search("prompt caching")
+
+    assert results
+    assert all(r.has_captions is None for r in results)
+
+
+def test_chapters_are_parsed_out_of_the_api_description() -> None:
+    provider, _ = api(
+        fixture("youtube_search_chaptered.json"), fixture("youtube_videos_chaptered.json")
+    )
+
+    chapters = provider.search("prompt caching")[0].chapters
+
+    assert [c["title"] for c in chapters] == [
+        "Intro",
+        "What a cache hit costs",
+        "Setting up your key",
+        "cache_control breakpoints",
+    ]
+    assert chapters[0]["start_ms"] == 0
+
+
+def test_a_description_without_chapters_yields_none_through_the_provider() -> None:
+    """The recorded payload is an ordinary description. No chapters is the
+    common case and must not become an empty-ish something."""
+    provider, _ = api(fixture("youtube_search.json"), fixture("youtube_videos.json"))
+
+    assert provider.search("prompt caching")[0].chapters == []
+
+
+def test_the_ytdlp_search_provider_reports_captions_as_unknown() -> None:
+    """Flat extraction never reports caption tracks. `None` is the truth, and it
+    leaves the fetch path exactly as it was — this provider must not route
+    videos to ASR by failing to know something the other one happens to know."""
+    provider = YtDlpSearchProvider()
+    result = provider._to_result({"id": "dQw4w9WgXcQ", "title": "A video"})
+
+    assert result is not None
+    assert result.has_captions is None
+
+
+def test_the_ytdlp_search_provider_parses_chapters_when_it_has_them() -> None:
+    """Both providers must agree on the shape of what they return. A truncated
+    blurb usually loses the listing, but when the description survives, the same
+    parser runs and the judge cannot tell which provider answered."""
+    provider = YtDlpSearchProvider()
+    result = provider._to_result(
+        {
+            "id": "dQw4w9WgXcQ",
+            "title": "A video",
+            "description": "0:00 Intro\n2:00 Middle\n5:00 Later\n9:00 End",
+        }
+    )
+
+    assert result is not None
+    assert [c["title"] for c in result.chapters] == ["Intro", "Middle", "Later", "End"]

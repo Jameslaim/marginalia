@@ -207,6 +207,22 @@ class SearchResult:
     # Which provider produced this result. Set by the provider itself; the
     # report names it, and a mixed-provider result set must stay attributable.
     provider: str = ""
+    # B2. A table of contents parsed out of the description, in the same shape
+    # as `TranscriptResult.chapters` — so stage 1 and stage 2 read chapters
+    # identically and neither learns which produced them. Empty when the
+    # description has none, or has something the parser would not vouch for.
+    chapters: list[dict] = field(default_factory=list)
+    # B2. Does YouTube know of a caption track? **Tri-state, and the third
+    # state is the point.** `None` means nobody asked — yt-dlp search does not
+    # report it, and the API omits it when quota ran out before `videos.list`.
+    # Only an explicit `False` may skip a fetch; `None` must behave exactly as
+    # it did before this field existed, or a provider that cannot answer would
+    # silently route every video to ASR.
+    #
+    # A hint, never a verdict: it reflects the tracks YouTube admits to, and
+    # yt-dlp finds auto-captions where the API reports none. And it is a
+    # caption fact, never a content fact — it must never reject a video.
+    has_captions: bool | None = None
 
 
 # -- judgement --------------------------------------------------------------

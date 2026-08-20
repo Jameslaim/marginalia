@@ -28,6 +28,7 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
+from .chapters import parse_description_chapters
 from .base import (
     PermanentError,
     ProviderUnavailable,
@@ -150,6 +151,9 @@ class YouTubeApiProvider:
             payload = self._call(
                 "videos",
                 VIDEOS_COST,
+                # `contentDetails` already carries `caption`, so knowing whether
+                # a video has a caption track costs nothing beyond the call
+                # that was being made anyway for duration.
                 part="contentDetails,statistics",
                 id=",".join(video_ids),
             )
@@ -157,7 +161,10 @@ class YouTubeApiProvider:
             # The search itself is already paid for and in hand. Losing
             # duration and view count is a smaller loss than discarding
             # results we spent 100 units on.
-            log.warning("youtube_api: quota ran out before videos.list; results lack duration")
+            log.warning(
+                "youtube_api: quota ran out before videos.list; "
+                "results lack duration and caption status"
+            )
             return {}
         return {item.get("id"): item for item in _items(payload) if item.get("id")}
 
@@ -167,15 +174,24 @@ class YouTubeApiProvider:
         snippet = item.get("snippet") or {}
         detail = details.get(video_id) or {}
 
+        # Chapters come off the description *before* `_text` flattens it: the
+        # listing is lines, and collapsing whitespace destroys it irrecoverably.
+        # The stored description stays flattened, which is what the judge reads
+        # as prose and what keeps both providers agreeing on the field.
+        raw_description = snippet.get("description")
+        description = _text(raw_description)
+
         return SearchResult(
             video_id=video_id,
             title=_text(snippet.get("title")),
             channel=_text(snippet.get("channelTitle")),
-            description=_text(snippet.get("description")),
+            description=description,
             duration_s=_duration_seconds((detail.get("contentDetails") or {}).get("duration")),
             published_at=snippet.get("publishedAt") or None,
             view_count=_int_or_none((detail.get("statistics") or {}).get("viewCount")),
             provider=self.name,
+            chapters=parse_description_chapters(_lines(raw_description)),
+            has_captions=_caption_flag((detail.get("contentDetails") or {}).get("caption")),
         )
 
     def _call(self, endpoint: str, cost: int, **params: str) -> dict[str, Any]:
@@ -237,6 +253,37 @@ def _text(value: Any) -> str:
     the API as ``&amp;amp;``, so a second pass would corrupt it.
     """
     return " ".join(html.unescape(str(value)).split()) if value else ""
+
+
+def _lines(value: Any) -> str:
+    """Unescaped, with line structure intact.
+
+    `_text` is right for everything a reader sees as prose and wrong for
+    anything read as *lines*. The API escapes descriptions like everything
+    else, so the unescaping still has to happen — just not the flattening.
+    """
+    return html.unescape(str(value)) if value else ""
+
+
+def _caption_flag(raw: Any) -> bool | None:
+    """``contentDetails.caption`` — the string ``"true"`` or ``"false"``.
+
+    A string, not a boolean, which is why this exists at all: ``bool("false")``
+    is ``True``, and that mistake would route every captioned video to ASR while
+    looking like it worked.
+
+    Anything else — absent, null, a value the API has not shipped yet — is
+    ``None``, meaning *nobody asked*. Only an explicit false may skip a fetch.
+    """
+    if isinstance(raw, bool):  # a future API that fixes the type
+        return raw
+    if isinstance(raw, str):
+        lowered = raw.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    return None
 
 
 def _int_or_none(value: Any) -> int | None:

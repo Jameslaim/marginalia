@@ -1,0 +1,13 @@
+{
+  "kind": "youtube#videoListResponse",
+  "etag": "recorded-fixture",
+  "pageInfo": { "totalResults": 1, "resultsPerPage": 1 },
+  "items": [
+    {
+      "kind": "youtube#video",
+      "id": "dQw4w9WgXcQ",
+      "contentDetails": { "duration": "PT18M32S", "definition": "hd", "caption": "true" },
+      "statistics": { "viewCount": "148213" }
+    }
+  ]
+}

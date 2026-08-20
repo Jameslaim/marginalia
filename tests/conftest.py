@@ -46,6 +46,7 @@ def make_discover_config(**overrides: object) -> DiscoverConfig:
         # Zero in tests: pacing is for YouTube's benefit, and a suite that
         # actually slept three seconds per fetch would stop being run.
         "fetch_delay_s": 0.0,
+        "trust_caption_hint": False,
     }
     values.update(overrides)
     return DiscoverConfig(**values)  # type: ignore[arg-type]

@@ -279,6 +279,12 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         # the report at all.
         if report.failed:
             line += f" ({report.failed} fetch failed)"
+        # Since B2 a stage-2 rejection keeps its transcript, so these videos are
+        # neither "stored" nor absent — they are on disk, unnoted, and available
+        # to the next topic for free. Naming them keeps the round's arithmetic
+        # closeable: candidates in, and every one of them accounted for.
+        if report.flipped_to_no:
+            line += f" ({report.flipped_to_no} kept on disk, declined here)"
         if report.rejected_before:
             line += f", {report.rejected_before} previously rejected"
         lines.append(line)
@@ -389,7 +395,8 @@ def _note_status(config: Config, library: Library) -> int:
         counts = ledger.note_counts(version=version)
     print(
         f"notes:    {counts['has_transcript']} with transcript, {counts['current']} current, "
-        f"{counts['stale']} stale, {counts['missing']} missing  (prompt v{version})"
+        f"{counts['stale']} stale, {counts['missing']} missing, "
+        f"{counts['unwanted']} unwanted  (prompt v{version})"
     )
     return EXIT_OK
 

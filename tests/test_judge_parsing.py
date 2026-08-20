@@ -17,8 +17,14 @@ import logging
 
 import pytest
 
-from marginalia.brain.judge import parse_batch, parse_opening, parse_queries
-from marginalia.contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
+from marginalia.brain.judge import (
+    _CHAPTER_LIMIT,
+    _describe,
+    parse_batch,
+    parse_opening,
+    parse_queries,
+)
+from marginalia.contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES, SearchResult
 
 CLEAN = """\
 1: YES - covers cache expiry and shows configuration
@@ -343,3 +349,78 @@ def test_a_described_candidate_carries_no_transcript_text() -> None:
     from marginalia.providers.base import SearchResult
 
     assert not any(f.name in {"transcript", "lines", "text"} for f in fields(SearchResult))
+
+
+# -- B2: chapters reach stage 1 ---------------------------------------------
+
+
+def _candidate(**overrides) -> SearchResult:
+    base = dict(
+        video_id="aaaaaaaaaaa",
+        title="Prompt caching explained",
+        channel="Chan",
+        description="A video about caching.",
+        duration_s=600,
+        published_at="2026-01-01T00:00:00Z",
+        view_count=10,
+        provider="fake",
+    )
+    base.update(overrides)
+    return SearchResult(**base)  # type: ignore[arg-type]
+
+
+def test_chapters_are_shown_to_the_metadata_judge() -> None:
+    """A creator's table of contents is the only structural view of a video that
+    exists before anything is downloaded, and stage 1 was throwing it away."""
+    described = _describe(
+        1,
+        _candidate(
+            chapters=[
+                {"start_ms": 0, "title": "Intro"},
+                {"start_ms": 120_000, "title": "cache_control breakpoints"},
+                {"start_ms": 400_000, "title": "The five minute TTL"},
+            ]
+        ),
+    )
+
+    assert "chapters: Intro | cache_control breakpoints | The five minute TTL" in described
+
+
+def test_a_candidate_without_chapters_says_nothing_about_them() -> None:
+    """An empty line would be noise in every batch, and a judge that sees
+    "chapters:" with nothing after it will reason about the absence."""
+    assert "chapters" not in _describe(1, _candidate(chapters=[]))
+
+
+def test_chapters_are_capped_so_one_video_cannot_crowd_a_batch() -> None:
+    """A fifty-chapter workshop must not push the other candidates out of the
+    judge's attention. The same cap stage 2 uses."""
+    many = [{"start_ms": i * 60_000, "title": f"Part {i}"} for i in range(40)]
+    described = _describe(1, _candidate(chapters=many))
+
+    assert described.count(" | ") == _CHAPTER_LIMIT - 1
+    assert "Part 39" not in described
+
+
+def test_an_untitled_chapter_is_dropped_rather_than_shown_blank() -> None:
+    chapters = [
+        {"start_ms": 0, "title": "Intro"},
+        {"start_ms": 60_000, "title": ""},
+        {"start_ms": 120_000, "title": "End"},
+    ]
+    assert "chapters: Intro | End" in _describe(1, _candidate(chapters=chapters))
+
+
+def test_chapters_come_after_the_description() -> None:
+    """What the video says it is, then how it is laid out. The order is the one
+    a reader needs, and a batch of ten candidates is read quickly."""
+    described = _describe(1, _candidate(chapters=[{"start_ms": 0, "title": "Intro"}]))
+    assert described.index("description:") < described.index("chapters:")
+
+
+def test_the_judge_never_sees_a_caption_flag() -> None:
+    """`has_captions` is a fact about caption tracks, not about content. It must
+    never reach a relevance judgement — a video with no captions is unreadable
+    today, not irrelevant."""
+    described = _describe(1, _candidate(has_captions=False))
+    assert "caption" not in described.lower()

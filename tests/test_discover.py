@@ -21,6 +21,7 @@ from conftest import make_config
 
 from marginalia.contracts import (
     STATUS_HAS_TRANSCRIPT,
+    STATUS_NEEDS_ASR,
     STATUS_SEEN,
     STOP_MAX_COST,
     VERDICT_MAYBE,
@@ -39,7 +40,13 @@ from marginalia.flow.discover import (
     STOP_NO_NEW_VIDEOS,
     discover,
 )
-from marginalia.core.ledger import STAGE_METADATA, STAGE_OPENING, Ledger
+from marginalia.core.ledger import (
+    STAGE_METADATA,
+    STAGE_OPENING,
+    Ledger,
+    in_library,
+    skip_reason,
+)
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient
 from marginalia.providers.base import (
@@ -54,7 +61,13 @@ TOPIC = "prompt caching"
 BRIEF = Brief(topic=TOPIC, text="INTENT\nLearn how prompt caching works.\n" + "x" * 200, version="1/1")
 
 
-def result(video_id: str, title: str = "A video") -> SearchResult:
+def result(
+    video_id: str,
+    title: str = "A video",
+    *,
+    has_captions: bool | None = None,
+    chapters: list[dict] | None = None,
+) -> SearchResult:
     return SearchResult(
         video_id=video_id,
         title=title,
@@ -64,6 +77,10 @@ def result(video_id: str, title: str = "A video") -> SearchResult:
         published_at="2026-01-01T00:00:00Z",
         view_count=10,
         provider="fake",
+        chapters=chapters or [],
+        # `None` by default, matching a provider that cannot answer. A test
+        # that wants the skip has to ask for it.
+        has_captions=has_captions,
     )
 
 
@@ -180,9 +197,9 @@ def searches(monkeypatch: pytest.MonkeyPatch):
     return table
 
 
-def run(config, ledger, library, client, judge, provider=None, **kwargs):
+def run(config, ledger, library, client, judge, provider=None, topic=TOPIC, **kwargs):
     return discover(
-        config, ledger, library, client, TOPIC,
+        config, ledger, library, client, topic,
         judge=judge, provider=provider or FakeTranscripts(), **kwargs,
     )
 
@@ -222,7 +239,16 @@ def test_a_no_is_never_fetched(config, ledger, library, client, searches) -> Non
     assert judge.opening_calls == []
 
 
-def test_a_maybe_that_flips_to_no_is_not_stored(config, ledger, library, client, searches) -> None:
+def test_a_maybe_that_flips_to_no_keeps_its_transcript(
+    config, ledger, library, client, searches
+) -> None:
+    """B2. The bytes stay; the note is what decides membership.
+
+    Acquisition is the fragile step, and fragile here is measured rather than
+    theoretical — thirteen of thirteen fetches died in nine seconds when YouTube
+    throttled a run. Discarding a transcript already in hand means paying that
+    risk a second time for content we have.
+    """
     searches["*"] = [result("aaaaaaaaaaa")]
     judge = FakeJudge(
         metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
@@ -231,11 +257,212 @@ def test_a_maybe_that_flips_to_no_is_not_stored(config, ledger, library, client,
 
     outcome = run(config, ledger, library, client, judge, max_rounds=1)
 
+    # Not a keeper: this run stored nothing it would answer a question from.
     assert outcome.stored_ids == []
-    assert not library.has_transcript("aaaaaaaaaaa")
-    row = ledger.get("aaaaaaaaaaa")
-    assert row is not None and row.status == STATUS_SEEN
     assert outcome.rounds[0].flipped_to_no == 1
+
+    # But the transcript is on disk and the row says so.
+    assert library.has_transcript("aaaaaaaaaaa")
+    row = ledger.get("aaaaaaaaaaa")
+    assert row is not None and row.status == STATUS_HAS_TRANSCRIPT
+
+
+def test_a_flipped_video_gets_no_note_and_so_is_not_in_the_library(
+    config, ledger, library, client, searches
+) -> None:
+    """The whole mechanism, in one assertion pair. `/ask` loads notes, so no
+    note means the video cannot reach an answer — which is what a rejection was
+    always for. Nothing else has to enforce it."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "off topic", [])},
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert not library.has_note("aaaaaaaaaaa")
+    assert in_library(ledger.get("aaaaaaaaaaa")) is False
+
+
+def test_the_rejection_is_still_logged_against_its_topic(
+    config, ledger, library, client, searches
+) -> None:
+    """Keeping the transcript must not blur what was decided. The NO is a fact
+    about one brief and stays in `decisions` where a later topic can disagree
+    with it."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "actually a product demo", [])},
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    decision = ledger.latest_decision("aaaaaaaaaaa", "prompt caching", verdict=VERDICT_NO)
+    assert decision is not None
+    assert decision.stage == STAGE_OPENING
+    assert decision.reason == "actually a product demo"
+
+
+def test_a_rejected_video_costs_no_network_on_a_later_topic(
+    config, ledger, library, client, searches
+) -> None:
+    """The payoff, and the reason to keep the bytes at all.
+
+    Rejected for prompt caching, wanted later for Redis: Gate 1 lets it through
+    because it has no note, and the fetch-step check finds the file. The
+    provider is never asked a second time.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+    rejecting = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "off topic for this brief", [])},
+    )
+    run(config, ledger, library, client, rejecting, max_rounds=1, provider=provider)
+    assert provider.fetched == ["aaaaaaaaaaa"]
+
+    second = run(
+        config,
+        ledger,
+        library,
+        client,
+        FakeJudge(),
+        topic="redis",
+        max_rounds=1,
+        provider=provider,
+    )
+
+    assert provider.fetched == ["aaaaaaaaaaa"], "the transcript was fetched twice"
+    assert second.stored_ids == []
+
+
+def test_a_flipped_video_is_never_refetched_even_by_the_same_topic(
+    config, ledger, library, client, searches
+) -> None:
+    """`write_transcript` refuses to overwrite, so a second attempt would raise
+    rather than corrupt. It must not get that far."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "off topic", [])},
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1, provider=provider)
+    run(config, ledger, library, client, judge, max_rounds=1, provider=provider)
+
+    assert provider.fetched == ["aaaaaaaaaaa"]
+
+
+def test_a_flipped_video_keeps_its_metadata(
+    config, ledger, library, client, searches
+) -> None:
+    """`meta.json` too, exactly as a keeper gets. A transcript with no metadata
+    beside it is a file nobody can identify later."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "off topic", [])},
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    meta = library.read_meta("aaaaaaaaaaa")
+    assert meta is not None
+    assert meta["video_id"] == "aaaaaaaaaaa"
+    assert meta["line_count"] == 1
+
+
+# -- B2: the caption hint ---------------------------------------------------
+
+
+def trusting(config):
+    """The same config with the caption hint believed.
+
+    Every test of the skip has to ask for it, because the shipped default is not
+    to trust it — see `DEFAULT_TRUST_CAPTION_HINT`. Measured against this
+    library, the API called 31 of 37 working videos captionless.
+    """
+    return replace(config, discover=replace(config.discover, trust_caption_hint=True))
+
+
+def test_no_caption_track_means_no_fetch_attempt(
+    config, ledger, library, client, searches
+) -> None:
+    """With the hint trusted: the provider said so in the `videos.list` call
+    already made, and trying anyway costs a request and lands on `failed` on the
+    way to the right answer."""
+    searches["*"] = [result("aaaaaaaaaaa", has_captions=False)]
+    provider = FakeTranscripts()
+
+    run(trusting(config), ledger, library, client, FakeJudge(), max_rounds=1, provider=provider)
+
+    assert provider.fetched == []
+    row = ledger.get("aaaaaaaaaaa")
+    assert row is not None and row.status == STATUS_NEEDS_ASR
+
+
+def test_the_hint_is_ignored_unless_the_config_asks_for_it(
+    config, ledger, library, client, searches
+) -> None:
+    """The shipped default. `contentDetails.caption` counts only manually
+    uploaded tracks, so a `false` says nothing about the auto-captions yt-dlp
+    actually reads — 31 of the 37 working videos in this library are reported
+    captionless. Believing it by default would route most of a run into a queue
+    whose worker does not exist until M4."""
+    searches["*"] = [result("aaaaaaaaaaa", has_captions=False)]
+    provider = FakeTranscripts()
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1, provider=provider)
+
+    assert provider.fetched == ["aaaaaaaaaaa"]
+    assert library.has_transcript("aaaaaaaaaaa")
+
+
+def test_the_caption_hint_never_rejects_a_video(
+    config, ledger, library, client, searches
+) -> None:
+    """A caption fact, not a content fact. The video is still relevant; it is
+    just unreadable today. Its YES stands, and `needs_asr` is unfinished work
+    rather than a verdict."""
+    searches["*"] = [result("aaaaaaaaaaa", has_captions=False)]
+
+    run(trusting(config), ledger, library, client, FakeJudge(), max_rounds=1)
+
+    decision = ledger.latest_decision("aaaaaaaaaaa", "prompt caching")
+    assert decision is not None and decision.verdict != VERDICT_NO
+
+
+@pytest.mark.parametrize("hint", [True, None])
+def test_anything_but_an_explicit_false_still_fetches(
+    config, ledger, library, client, searches, hint
+) -> None:
+    """Tri-state, and the third state is why. yt-dlp search cannot report
+    captions at all — if `None` behaved like `False`, that provider would route
+    every video it found straight to ASR."""
+    searches["*"] = [result("aaaaaaaaaaa", has_captions=hint)]
+    provider = FakeTranscripts()
+
+    run(trusting(config), ledger, library, client, FakeJudge(), max_rounds=1, provider=provider)
+
+    assert provider.fetched == ["aaaaaaaaaaa"]
+
+
+def test_a_caption_hint_that_is_wrong_costs_only_an_asr_pass(
+    config, ledger, library, client, searches
+) -> None:
+    """When the hint *is* trusted, being wrong is bounded: the video lands in
+    `needs_asr`, which is a queue rather than a grave. Visible in the ledger and
+    re-attemptable by name — which is the only reason trusting it could ever be
+    a reasonable setting."""
+    searches["*"] = [result("aaaaaaaaaaa", has_captions=False)]
+
+    run(trusting(config), ledger, library, client, FakeJudge(), max_rounds=1)
+
+    row = ledger.get("aaaaaaaaaaa")
+    assert skip_reason(row, transcript_present=False) is None
 
 
 def test_a_maybe_that_survives_is_stored(config, ledger, library, client, searches) -> None:

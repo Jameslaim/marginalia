@@ -30,6 +30,7 @@ from dataclasses import dataclass, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
+from typing import Sequence
 
 from ..contracts import (
     STATUS_DUPLICATE,
@@ -56,6 +57,7 @@ __all__ = [
     "skip_reason",
     "normalise_topic",
     "in_library",
+    "wanted_for_a_note",
     "FAIL_PERMANENT",
     "FAIL_TRANSIENT",
     "STAGE_SEARCH",
@@ -395,6 +397,64 @@ def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None
     return None
 
 
+# A stage-2 verdict that let a video through. MAYBE counts: stage 2 keeps on
+# MAYBE by the same asymmetry every parser here follows — an unclear answer
+# must never cost a video nobody will know existed.
+_KEPT = frozenset({VERDICT_YES, VERDICT_MAYBE})
+
+
+def wanted_for_a_note(row: VideoRow, decisions: Sequence[DecisionRow]) -> bool:
+    """Should the note worker spend a model call on this video?
+
+    B2 made this a real question. Before it, holding a transcript meant some
+    topic had accepted the video, so `has_transcript` was a good enough proxy
+    for "we chose this". Now a video declined at stage 2 keeps its transcript
+    too — that is the point of keeping it — and writing a note for a video no
+    topic has ever wanted is money spent on something `/ask` will then load.
+
+    The discriminator is exact and already recorded: **a stage-`opening` NO**.
+    Nothing else in the system writes one. Checked against the live library at
+    the time of writing, it identified all fifteen rejections and nothing else.
+
+    Three things override it, and each is a case where "we never wanted this"
+    is simply false:
+
+    ``noted_at``
+        The video is already in the library. Regeneration must be able to reach
+        every note that exists, or `--regenerate --all` would quietly stop
+        maintaining some of them — and a note nobody can rewrite is a note
+        frozen at whichever prompt happened to produce it.
+
+    an acceptance elsewhere
+        A stage-2 YES or MAYBE, or a stage-1 YES, means some brief wanted this
+        video. A NO for one topic and a YES for another is not a contradiction;
+        it is the whole reason relevance left the status column in B1.
+
+    no judgement at all
+        `marg ingest <url>` logs no decision, because there is no topic and no
+        brief — the user simply asked for this video. A rule keyed on verdicts
+        must not exclude the one path that never produces any.
+
+    Pure, and takes the decisions rather than fetching them, for the same reason
+    `skip_reason` takes ``transcript_present``: policy is testable without a
+    database and the ledger owns the queries.
+    """
+    if row.noted_at is not None:
+        return True
+
+    declined = False
+    for decision in decisions:
+        if decision.stage == STAGE_OPENING and decision.verdict == VERDICT_NO:
+            declined = True
+        elif decision.stage == STAGE_OPENING and decision.verdict in _KEPT:
+            return True
+        elif decision.stage == STAGE_METADATA and decision.verdict == VERDICT_YES:
+            return True
+
+    return not declined
+
+
+
 class Ledger:
     """SQLite-backed ledger. One instance owns one connection."""
 
@@ -625,19 +685,27 @@ class Ledger:
     def videos_needing_note(
         self, *, version: str, stale_only: bool = True, limit: int | None = None
     ) -> list[VideoRow]:
-        """Videos holding a transcript, with no note from the current prompt.
+        """Videos holding a transcript, wanted, with no note from this prompt.
 
         Keyed on ``has_transcript`` because a note is written *from* the
         transcript — this is the one place where holding the file, rather than
         library membership, is the right question. It is also the job that
         turns the former into the latter.
 
+        Filtered by :func:`wanted_for_a_note` since B2, because holding a
+        transcript stopped implying that anyone chose the video. A stage-2
+        rejection keeps its bytes and must not then be handed a note.
+
         ``stale_only=False`` returns every such video instead — what
         ``--regenerate --all`` means. Ordered by ``first_seen`` so a ``--limit``
         run is a stable prefix rather than a random sample: reading three notes,
         revising the prompt and running again should show you the same three.
         """
-        rows = [row for row in self.list_by_status(STATUS_HAS_TRANSCRIPT)]
+        rows = [
+            row
+            for row in self.list_by_status(STATUS_HAS_TRANSCRIPT)
+            if wanted_for_a_note(row, self.decisions_for(row.video_id))
+        ]
         if stale_only:
             rows = [row for row in rows if not row.note_is_current(version)]
         return rows[:limit] if limit is not None else rows
@@ -648,10 +716,20 @@ class Ledger:
         ``missing`` is the interesting number since B1 — those are videos with
         a transcript and no note, which means they are *not in the library*
         and no question can reach them.
+
+        ``unwanted`` is B2's: transcripts kept from a stage-2 rejection, which
+        are deliberately unnoted. Counted separately rather than folded into
+        ``missing``, because they are not work waiting to be done.
         """
-        counts = {"has_transcript": 0, "current": 0, "stale": 0, "missing": 0}
+        counts = {"has_transcript": 0, "current": 0, "stale": 0, "missing": 0, "unwanted": 0}
         for row in self.list_by_status(STATUS_HAS_TRANSCRIPT):
             counts["has_transcript"] += 1
+            if not wanted_for_a_note(row, self.decisions_for(row.video_id)):
+                # Declined by every topic that judged it. Not a missing note —
+                # a note deliberately not written, and counting it as missing
+                # would report permanent work that will never be done.
+                counts["unwanted"] += 1
+                continue
             if row.noted_at is None:
                 counts["missing"] += 1
             elif row.note_version == version:

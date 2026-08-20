@@ -358,3 +358,41 @@ def test_cost_and_pacing_limits_are_read(tmp_path, monkeypatch) -> None:
 
     assert config.discover.max_cost_usd == 0.5
     assert config.discover.fetch_delay_s == 4.0
+
+
+def test_the_caption_hint_is_distrusted_by_default(tmp_path, monkeypatch) -> None:
+    """Measured, not cautious. `contentDetails.caption` counts only manually
+    uploaded tracks: against this project's library it called 31 of the 37
+    working videos captionless, getting all 6 manual ones right and all 31
+    auto-generated ones wrong. Believing it would route most of a discovery run
+    into a queue whose worker does not exist until M4."""
+    write(tmp_path, BASE.format(path=tmp_path.as_posix()) + LLM, monkeypatch)
+    assert load_config().discover.trust_caption_hint is False
+
+
+def test_the_caption_hint_can_be_switched_on(tmp_path, monkeypatch) -> None:
+    """One line, for when ASR lands or a provider starts counting
+    auto-captions."""
+    write(
+        tmp_path,
+        BASE.format(path=tmp_path.as_posix())
+        + LLM
+        + "\n[discover]\ntrust_caption_hint = true\n",
+        monkeypatch,
+    )
+    assert load_config().discover.trust_caption_hint is True
+
+
+def test_a_non_boolean_caption_hint_is_refused(tmp_path, monkeypatch) -> None:
+    """"true" is not true. Silently coercing it is how `bool("false")` becomes
+    True, which is the exact mistake this whole field exists around."""
+    write(
+        tmp_path,
+        BASE.format(path=tmp_path.as_posix())
+        + LLM
+        + '\n[discover]\ntrust_caption_hint = "yes"\n',
+        monkeypatch,
+    )
+    with pytest.raises(ConfigError) as caught:
+        load_config()
+    assert "discover.trust_caption_hint" in str(caught.value)

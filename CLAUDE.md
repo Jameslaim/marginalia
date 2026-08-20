@@ -123,6 +123,23 @@ not drift.
     transcript is never re-fetched, and `write_transcript` refuses to overwrite either
     way.
 
+12. **A transcript is kept even when the video is declined.** A stage-2 NO stores
+    `transcript.txt` and `meta.json` exactly as a keeper does; what keeps the video out
+    of the library is the absence of a **note**, not the absence of bytes. Acquisition
+    is the one fragile step, measurably so — thirteen of thirteen fetches died in nine
+    seconds when YouTube throttled a run — and discarding content already in hand means
+    paying that risk again for a video rejected for one topic and wanted for the next.
+
+    The consequence is that `has_transcript` **no longer implies anyone chose the
+    video**, so note selection cannot key on it. `wanted_for_a_note` decides, and the
+    discriminator is a stage-`opening` NO — nothing else writes one. Three things
+    override it: an existing note (regeneration must reach every note that exists), an
+    acceptance for any topic, and no judgement at all (`marg ingest <url>` logs no
+    decision, and a rule keyed on verdicts must not exclude the one path that produces
+    none). **Naming a video explicitly always overrides**, for the reason `skip_reason`
+    has always followed: a judgement made for one brief says nothing about a video the
+    user has now handed over directly.
+
 ## Structure
 
 ```

@@ -66,6 +66,25 @@ DEFAULT_MAX_REQUESTS = 120
 DEFAULT_QUIET_ROUNDS = 2
 DEFAULT_QUERIES_PER_ROUND = 9
 DEFAULT_RESULTS_PER_QUERY = 10
+# Whether to believe `contentDetails.caption` when it says a video has no
+# captions, and skip the fetch.
+#
+# **Off, because it was measured.** Against the 40 videos in this library whose
+# caption outcome is already known, the API reported `caption: "false"` for 31
+# of the 37 that yielded a perfectly good transcript. It is not a noisy signal —
+# it is an exact one answering a different question: it reports *manually
+# uploaded* caption tracks, and got all 6 manual ones right and all 31
+# auto-generated ones wrong. yt-dlp reads auto-captions; the API does not count
+# them.
+#
+# Trusting it would therefore route 84% of what discovery finds into
+# `needs_asr`, a queue whose worker is M4 and does not exist yet. That is not a
+# wasted request saved; it is the library.
+#
+# The mechanism is built and tested, so this is one line to flip if a future
+# provider reports auto-captions honestly, or if ASR lands and being wrong stops
+# being terminal.
+DEFAULT_TRUST_CAPTION_HINT = False
 DEFAULT_MAX_COST_USD = 2.0
 DEFAULT_FETCH_DELAY_S = 3.0
 
@@ -180,6 +199,9 @@ class DiscoverConfig:
     # that pulled six videos quickly had the next thirteen fetches all fail in
     # nine seconds. Proper backoff belongs to M3; this keeps a run polite.
     fetch_delay_s: float
+    # Skip the fetch when the search provider reports no caption track. Off by
+    # default and measured; see DEFAULT_TRUST_CAPTION_HINT.
+    trust_caption_hint: bool = DEFAULT_TRUST_CAPTION_HINT
 
 
 @dataclass(frozen=True)
@@ -435,6 +457,9 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         fetch_delay_s=float(
             _number(section, "fetch_delay_s", DEFAULT_FETCH_DELAY_S, config_path, "discover")
         ),
+        trust_caption_hint=_flag(
+            section, "trust_caption_hint", DEFAULT_TRUST_CAPTION_HINT, config_path, "discover"
+        ),
     )
 
 
@@ -501,6 +526,15 @@ def _required_string(section: dict, key: str, config_path: Path, where: str) -> 
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigError(f"{where}.{key} must be a non-empty string in {config_path}")
     return raw.strip()
+
+
+def _flag(section: dict, key: str, default: bool, config_path: Path, where: str) -> bool:
+    raw = section.get(key)
+    if raw is None:
+        return default
+    if not isinstance(raw, bool):
+        raise ConfigError(f"{where}.{key} must be true or false in {config_path}")
+    return raw
 
 
 def _string(section: dict, key: str, default: str, config_path: Path, where: str) -> str:

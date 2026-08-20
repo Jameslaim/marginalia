@@ -34,10 +34,12 @@ from marginalia.core.ledger import (
     STAGE_NOTE,
     STAGE_OPENING,
     STAGE_SEARCH,
+    DecisionRow,
     Ledger,
     LedgerError,
     in_library,
     skip_reason,
+    wanted_for_a_note,
 )
 
 VIDEO_ID = "dQw4w9WgXcQ"
@@ -854,3 +856,155 @@ def test_a_duplicate_is_in_the_library_without_a_note() -> None:
     """The canonical copy is the membership that matters; fetching the same
     content under a second ID adds nothing to answer from."""
     assert in_library(row(STATUS_DUPLICATE)) is True
+
+
+# -- B2: which videos are worth a note --------------------------------------
+#
+# Holding a transcript stopped implying that anyone chose the video. A stage-2
+# rejection keeps its bytes now, so note selection has to ask a question it
+# never had to ask before.
+
+
+def decision(stage: str, verdict: str, topic: str = "prompt caching") -> DecisionRow:
+    return DecisionRow(
+        video_id=VIDEO_ID,
+        topic=topic,
+        stage=stage,
+        verdict=verdict,
+        reason=None,
+        decided_at="2026-01-01T00:00:00+00:00",
+    )
+
+
+def test_a_video_nobody_judged_is_wanted() -> None:
+    """`marg ingest <url>` logs no decision — there is no topic and no brief,
+    the user simply asked for this video. A rule keyed on verdicts must not
+    exclude the one path that never produces any."""
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), []) is True
+
+
+def test_a_stage_two_rejection_is_not_wanted() -> None:
+    """The case B2 created. The transcript is kept so a later topic need not
+    re-fetch it; a note would be a model call spent on something no brief
+    accepted, which `/ask` would then load."""
+    decisions = [decision(STAGE_METADATA, VERDICT_MAYBE), decision(STAGE_OPENING, VERDICT_NO)]
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), decisions) is False
+
+
+def test_a_stage_two_keeper_is_wanted() -> None:
+    decisions = [decision(STAGE_METADATA, VERDICT_MAYBE), decision(STAGE_OPENING, VERDICT_YES)]
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), decisions) is True
+
+
+def test_a_stage_two_maybe_is_wanted() -> None:
+    """Stage 2 keeps on MAYBE, by the asymmetry every parser here follows. A
+    video that was kept must be notable, or it would sit in the library holding
+    a transcript nothing can read."""
+    decisions = [decision(STAGE_METADATA, VERDICT_MAYBE), decision(STAGE_OPENING, VERDICT_MAYBE)]
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), decisions) is True
+
+
+def test_a_stage_one_yes_is_wanted_without_reaching_stage_two() -> None:
+    """A stage-1 YES is stored without an opening judgement, so there is no
+    opening verdict to find. Keying only on stage 2 would strand it."""
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [decision(STAGE_METADATA, VERDICT_YES)]) is True
+
+
+def test_a_gate_verdict_alone_does_not_reject() -> None:
+    """Gate 1 logs `search / no / already in the library` as bookkeeping. It is
+    not a judgement about content and must not read as one — two videos in the
+    live library carried nothing else."""
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [decision(STAGE_SEARCH, VERDICT_NO)]) is True
+
+
+def test_a_yes_for_another_topic_outranks_a_no() -> None:
+    """A NO for one topic and a YES for another is not a contradiction. It is
+    the reason relevance left the status column in B1."""
+    decisions = [
+        decision(STAGE_OPENING, VERDICT_NO, topic="prompt caching"),
+        decision(STAGE_OPENING, VERDICT_YES, topic="redis"),
+    ]
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), decisions) is True
+
+
+def test_order_does_not_matter() -> None:
+    """A later NO does not un-want a video that some topic accepted. Whether the
+    acceptance is read first or last must not change the answer."""
+    accepted = decision(STAGE_OPENING, VERDICT_YES, topic="redis")
+    declined = decision(STAGE_OPENING, VERDICT_NO)
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [accepted, declined]) is True
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [declined, accepted]) is True
+
+
+def test_an_existing_note_is_always_wanted() -> None:
+    """Regeneration must reach every note that exists, or `--regenerate --all`
+    quietly stops maintaining some of them — and a note nobody can rewrite is
+    frozen at whichever prompt happened to produce it."""
+    noted = row(STATUS_HAS_TRANSCRIPT, noted_at="2026-01-01T00:00:00+00:00")
+    assert wanted_for_a_note(noted, [decision(STAGE_OPENING, VERDICT_NO)]) is True
+
+
+# -- and the same policy through the ledger ---------------------------------
+
+
+def test_a_rejected_video_is_not_offered_to_the_note_worker(ledger: Ledger) -> None:
+    ledger.mark_pending(VIDEO_ID)
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
+    ledger.log_decision(
+        VIDEO_ID, "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="off topic"
+    )
+
+    assert ledger.videos_needing_note(version="1") == []
+
+
+def test_a_kept_video_is_offered_to_the_note_worker(ledger: Ledger) -> None:
+    ledger.mark_pending(VIDEO_ID)
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
+    ledger.log_decision(
+        VIDEO_ID, "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_YES, reason="good"
+    )
+
+    assert [r.video_id for r in ledger.videos_needing_note(version="1")] == [VIDEO_ID]
+
+
+def test_a_directly_ingested_video_is_offered(ledger: Ledger) -> None:
+    """`marg ingest <url>` writes no decision at all. This is the regression
+    that a "requires a YES" rule would have caused: the primary path for "I want
+    this video" would never have produced a note."""
+    ledger.mark_pending(VIDEO_ID)
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
+
+    assert [r.video_id for r in ledger.videos_needing_note(version="1")] == [VIDEO_ID]
+
+
+def test_regenerate_all_still_reaches_a_rejected_video_that_has_a_note(
+    ledger: Ledger,
+) -> None:
+    """A video noted before B2 and rejected afterwards keeps its note current."""
+    ledger.mark_pending(VIDEO_ID)
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
+    ledger.mark_noted(VIDEO_ID, version="0", model="m")
+    ledger.log_decision(
+        VIDEO_ID, "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="off topic"
+    )
+
+    rows = ledger.videos_needing_note(version="1", stale_only=False)
+    assert [r.video_id for r in rows] == [VIDEO_ID]
+
+
+def test_the_note_count_separates_unwanted_from_missing(ledger: Ledger) -> None:
+    """A rejected transcript is not a missing note. Folding it into `missing`
+    would report work that will never be done, permanently."""
+    ledger.mark_pending(VIDEO_ID)
+    ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
+    ledger.log_decision(
+        VIDEO_ID, "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="off topic"
+    )
+    ledger.mark_pending(OTHER_ID)
+    ledger.mark_has_transcript(OTHER_ID, source="captions", provider="ytdlp")
+
+    counts = ledger.note_counts(version="1")
+
+    assert counts["has_transcript"] == 2
+    assert counts["missing"] == 1
+    assert counts["unwanted"] == 1

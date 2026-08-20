@@ -28,8 +28,9 @@ from marginalia.contracts import (
     STATUS_NEEDS_ASR,
     STOP_MAX_COST,
     STOP_REPEATED_FAILURES,
+    VERDICT_NO,
 )
-from marginalia.core.ledger import Ledger
+from marginalia.core.ledger import STAGE_OPENING, Ledger
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient, LlmError
 from marginalia.enrich.note import (
@@ -481,3 +482,53 @@ def test_the_stored_note_carries_the_header_and_the_body(tmp_path: Path) -> None
     assert missing_sections(note) == []
     row = ledger.get("aaaaaaaaaaa")
     assert (row.note_version, row.note_model) == ("1", "test-model")
+
+
+def test_a_named_video_is_noted_even_after_a_stage_two_rejection(tmp_path: Path) -> None:
+    """B2. Bulk selection skips a video no topic accepted; naming it does not.
+
+    The same principle `skip_reason` has always followed: a judgement made for
+    one brief says nothing about a video the user has now handed over directly.
+    The filter exists to stop the worker spending money unprompted, not to
+    overrule the person at the keyboard.
+    """
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa")
+    ledger.log_decision(
+        "aaaaaaaaaaa",
+        "prompt caching",
+        stage=STAGE_OPENING,
+        verdict=VERDICT_NO,
+        reason="actually a product demo",
+    )
+    # Bulk selection wants nothing to do with it...
+    assert ledger.videos_needing_note(version="1") == []
+
+    run = write_notes(
+        config,
+        ledger,
+        library,
+        client(GOOD_NOTE),
+        video_ids=["aaaaaaaaaaa"],
+        prompts_directory=prompts(tmp_path),
+    )
+
+    # ...but a direct request outranks it.
+    assert run.count(NOTED) == 1
+    assert library.has_note("aaaaaaaaaaa")
+
+
+def test_a_bulk_run_leaves_a_rejected_video_alone(tmp_path: Path) -> None:
+    """The money-saving half. One kept video and one rejected one; only the
+    kept one costs a model call."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", "bbbbbbbbbbb")
+    ledger.log_decision(
+        "bbbbbbbbbbb", "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="no"
+    )
+
+    run = write_notes(
+        config, ledger, library, client(GOOD_NOTE),
+        prompts_directory=prompts(tmp_path),
+    )
+
+    assert [r.video_id for r in run.results if r.outcome == NOTED] == ["aaaaaaaaaaa"]
+    assert not library.has_note("bbbbbbbbbbb")
