@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from ..brain.judge import FULL_PROMPT, Judge
+from ..brain.planner import Planner, apply_revisions
 from ..brain.territory import Mapper, validate
 from ..config import Config
 from ..contracts import (
@@ -55,8 +56,11 @@ from ..contracts import (
     VERDICT_NO,
     VERDICT_YES,
     DiscoverRun,
+    JudgedVideo,
     PlannedQuery,
+    RoundPlan,
     RoundReport,
+    SearchFilters,
     SearchResult,
     TranscriptResult,
 )
@@ -73,7 +77,7 @@ from ..core.library import Library, format_timestamp
 from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
 from ..providers.base import TranscriptProvider
-from .search import run_search
+from .search import quota_headroom, run_search
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +91,17 @@ STOP_MAX_REQUESTS = "max_requests"
 STOP_MAX_COST = "max_cost"
 STOP_NO_SEARCH = "search_unavailable"
 STOP_DRY_RUN = "dry_run"
+# B5. The planner said the brief is covered. **Kept distinct from every budget
+# ceiling above it**, and that is the whole reason it is its own word: a run
+# that stopped because the brief was satisfied and a run that stopped because it
+# ran out of money are opposite outcomes, and one integer holding both would
+# hide the interesting one. A planner declaring satisfaction in round one is a
+# real failure mode, and it is only findable if it is labelled.
+STOP_COVERAGE_SATISFIED = "coverage_satisfied"
+# The search allowance could not pay for the next round. Checked *before* the
+# round rather than discovered inside it: a round that dies halfway leaves the
+# planner reading half a round's evidence as though it were the whole thing.
+STOP_QUOTA = "quota"
 STOP_REASONS = (
     STOP_MAX_ROUNDS,
     STOP_NO_NEW_VIDEOS,
@@ -95,6 +110,8 @@ STOP_REASONS = (
     STOP_MAX_COST,
     STOP_NO_SEARCH,
     STOP_DRY_RUN,
+    STOP_COVERAGE_SATISFIED,
+    STOP_QUOTA,
 )
 
 # Requests a round needs beyond judging: query expansion. Checked before the
@@ -115,6 +132,7 @@ def discover(
     dry_run: bool = False,
     judge: Judge | None = None,
     mapper: Mapper | None = None,
+    planner: Planner | None = None,
     provider: TranscriptProvider | None = None,
 ) -> DiscoverRun:
     """Run the loop. Writes nothing to the library when ``dry_run`` is set."""
@@ -126,6 +144,7 @@ def discover(
     normalised = normalise_topic(topic)
     judge = judge or Judge(client)
     mapper = mapper or Mapper(client)
+    planner = planner or Planner(client)
     run_id = _new_run_id()
 
     # The brief costs two requests and must exist before the run row can be
@@ -163,7 +182,7 @@ def discover(
 
     try:
         _loop(
-            config, ledger, library, client, judge, run, provider,
+            config, ledger, library, client, judge, planner, run, provider,
             max_rounds=max_rounds, max_videos=max_videos, max_requests=max_requests,
         )
     finally:
@@ -190,6 +209,7 @@ def _loop(
     library: Library,
     client: LlmClient,
     judge: Judge,
+    planner: Planner,
     run: DiscoverRun,
     provider: TranscriptProvider | None,
     *,
@@ -202,6 +222,9 @@ def _loop(
     # `date` are two searches rather than one. That is the width `order` buys.
     seen_queries: set[tuple] = set()
     quiet_rounds = 0
+    # What the planner asked for at the end of the previous round. Empty in
+    # round one, which is what makes round one the same round it always was.
+    from_planner: list[PlannedQuery] = []
 
     for number in range(1, max_rounds + 1):
         if client.usage.requests + _ROUND_OVERHEAD_REQUESTS > max_requests:
@@ -211,12 +234,27 @@ def _loop(
             run.stopped_because = STOP_MAX_COST
             return
 
-        planned = _plan_round(config, judge, run, number, threads)
+        planned = _plan_round(config, judge, run, number, threads, from_planner)
+        # Validated again, and the planner's queries were validated once already
+        # when the plan was made. That is deliberate rather than sloppy: this is
+        # the only gate between a proposed filter and a search that excludes,
+        # and it is a pure function, so running it twice costs nothing and means
+        # no future path can reach the provider around it.
         planned, rejections = validate(
             planned, recency=run.territory.recency, topic=run.brief.topic,
             already_run=seen_queries,
         )
         seen_queries.update(query.key for query in planned)
+
+        # Before anything is spent, and before the round row is written. A
+        # round that runs out of quota halfway through leaves the planner
+        # reading a partial round as though it were a whole one — which is the
+        # one input this design must never produce.
+        short = _quota_short(config, ledger, len(planned))
+        if short is not None:
+            log.warning("discover: %s", short)
+            run.stopped_because = STOP_QUOTA
+            return
 
         report = RoundReport(
             number=number,
@@ -235,7 +273,8 @@ def _loop(
             run.stopped_because = STOP_NO_NEW_VIDEOS
             return
 
-        candidates = _gather(config, ledger, run, planned, report)
+        searched: list[tuple[PlannedQuery, int | None]] = []
+        candidates = _gather(config, ledger, run, planned, report, searched)
         if candidates is None:
             run.stopped_because = STOP_NO_SEARCH
             return
@@ -261,7 +300,107 @@ def _loop(
             run.stopped_because = STOP_NO_NEW_VIDEOS
             return
 
+        # The planning call, and only if another round could actually run.
+        # Planning the end of the last round is a request spent on advice
+        # nobody will read — the same discipline as checking the ceilings
+        # before the round rather than after it.
+        if number >= max_rounds:
+            run.stopped_because = STOP_MAX_ROUNDS
+            return
+        if client.usage.requests + _ROUND_OVERHEAD_REQUESTS >= max_requests:
+            run.stopped_because = STOP_MAX_REQUESTS
+            return
+
+        plan = _run_planner(
+            config, ledger, planner, run, report, searched, seen_queries,
+            rounds_left=max_rounds - number,
+        )
+        from_planner = list(plan.queries)
+
+        # Advisory, never sovereign. Budget ceilings are checked above and
+        # below this; what the planner gets is a stop reason of its own, so
+        # "the brief is covered" is never read back as "the money ran out".
+        if plan.wants_to_stop:
+            log.info("discover: planner recommends stopping — %s", plan.reason)
+            run.stopped_because = STOP_COVERAGE_SATISFIED
+            return
+
     run.stopped_because = STOP_MAX_ROUNDS
+
+
+def _run_planner(
+    config: Config,
+    ledger: Ledger,
+    planner: Planner,
+    run: DiscoverRun,
+    report: RoundReport,
+    searched: Sequence[tuple[PlannedQuery, int | None]],
+    seen_queries: set[tuple],
+    *,
+    rounds_left: int,
+) -> RoundPlan:
+    """One call at the end of a round, and everything that follows from it.
+
+    Three outputs, applied here rather than in `brain/`: the queries the next
+    round runs, the map revisions, and the recommendation. `brain/` decided all
+    three and touched nothing; this is the half that writes.
+    """
+    remaining, _ = quota_headroom(config, ledger)
+    plan = planner.plan(
+        run.brief,
+        run.territory,
+        report,
+        searched=searched,
+        already_run=seen_queries,
+        quota_remaining=remaining,
+        # From the ceiling this run is actually working to, not the configured
+        # one: `--max-rounds 2` on a config that says 3 means the planner is
+        # writing for a round that may not happen, and "how much room is left"
+        # is a real input to how ambitious a plan should be.
+        rounds_left=max(0, rounds_left),
+        count=config.discover.planner_queries,
+    )
+    report.plan = plan
+    # On the run, not on this round's counter. A filter the planner proposed was
+    # rejected *between* rounds, for a query the next round would have run —
+    # folding it into "filters rejected on the queries this round ran" would put
+    # two meanings in one integer, which is the thing rule 14 exists to stop.
+    # The plan carries its own list, and the report prints it on its own line.
+    run.rejected_filters.extend(plan.rejected_filters)
+
+    if plan.revisions:
+        # A new map revision, with the previous one kept beside it. Written to
+        # the run immediately: a revision that only exists in memory is a
+        # change nobody can inspect afterwards, which is the same argument that
+        # put the map on the run in the first place.
+        run.territory = apply_revisions(run.territory, plan.revisions)
+        ledger.save_territory(
+            run.run_id, run.territory.as_json(), run.territory.label
+        )
+        for revision in plan.revisions:
+            log.info("discover: territory %s — %s", run.territory.label, revision.line())
+
+    return plan
+
+
+def _quota_short(config: Config, ledger: Ledger, queries: int) -> str | None:
+    """Why the next round cannot be afforded, or ``None`` if it can.
+
+    ``quota_headroom`` returns ``None`` remaining when an unmetered provider is
+    in the chain, and that is not a shortage — the overflow provider exists so
+    a run continues when the metered one runs dry. Stopping then would be
+    inventing a ceiling that does not apply.
+    """
+    remaining, per_search = quota_headroom(config, ledger)
+    if remaining is None or per_search <= 0 or queries <= 0:
+        return None
+    needed = queries * per_search
+    if remaining >= needed:
+        return None
+    return (
+        f"search quota cannot pay for this round: {remaining} units left, "
+        f"{queries} queries would cost {needed}"
+    )
 
 
 def _plan_round(
@@ -270,27 +409,33 @@ def _plan_round(
     run: DiscoverRun,
     number: int,
     threads: Sequence[str],
+    from_planner: Sequence[PlannedQuery] = (),
 ) -> list[PlannedQuery]:
     """The queries this round will run, each carrying where it came from.
 
     Round one runs two sets, and running both is the point. The brief's own
-    expansion is what discovery did before this phase; the map's queries are
-    written from words the topic never contained. Keeping them apart in the
-    ledger — by ``origin`` — is what turns "did the map help?" from an opinion
-    into a query against the `queries` table.
+    expansion is what discovery did before B4; the map's queries are written
+    from words the topic never contained. Keeping them apart in the ledger — by
+    ``origin`` — is what turns "did the map help?" from an opinion into a query
+    against the `queries` table.
 
-    Later rounds are the loop-back, unchanged: concepts stage 2 found mentioned
-    but unexplained become the next round's searches. The map is not consulted
-    again, and not revised; revising it is B5's planner.
+    From round two, the planner's queries go **first**, and that ordering is the
+    point of B5: they were written against the specific gaps the last round left
+    open, while expansion is still working from the brief alone. The expansion
+    stays anyway, for the same reason the brief's queries survived B4 — a new
+    step that silently replaced a working one would make its own contribution
+    unmeasurable, and `queries.origin` is what makes it measurable instead.
     """
+    planned = list(from_planner)
+
     expanded = judge.expand_queries(
         run.brief, count=config.discover.queries_per_round, concepts=list(threads)[:8]
     )
     origin = ORIGIN_THREAD if threads else ORIGIN_BRIEF
     detail = ", ".join(list(threads)[:8]) if threads else run.brief.topic
-    planned = [
+    planned.extend(
         PlannedQuery(text=text, origin=origin, origin_detail=detail) for text in expanded
-    ]
+    )
 
     if number == 1:
         # After the brief's, not before: the brief's queries are the ones this
@@ -306,6 +451,7 @@ def _gather(
     run: DiscoverRun,
     queries: Sequence[PlannedQuery],
     report: RoundReport,
+    searched: list[tuple[PlannedQuery, int | None]] | None = None,
 ) -> list[SearchResult] | None:
     """Search every query and apply gates 1 and 2. Returns survivors, in rank order.
 
@@ -335,7 +481,11 @@ def _gather(
             # Still recorded, with no result count. A query that failed is a
             # query that ran, and a table that only holds the successful ones
             # would answer "what did this round search for?" wrongly.
-            _log_query(ledger, run, report.number, query, results=None, provider=None, units=0)
+            _log_query(
+                ledger, run, report.number, query, results=None, provider=None, units=0
+            )
+            if searched is not None:
+                searched.append((query, None))
             continue
 
         answered = True
@@ -350,7 +500,10 @@ def _gather(
             results=len(result.candidates),
             provider=result.provider,
             units=result.quota_units,
+            applied=result.filters_applied,
         )
+        if searched is not None:
+            searched.append((query, len(result.candidates)))
 
         for candidate in result.of(NEW):
             # Which origins surfaced this video, not just the first. "Would the
@@ -374,6 +527,7 @@ def _log_query(
     results: int | None,
     provider: str | None,
     units: int,
+    applied: SearchFilters | None = None,
 ) -> None:
     """Record one search. Written even on a dry run, unlike a decision.
 
@@ -382,14 +536,22 @@ def _log_query(
     write one. A queries row poisons nothing — it says what was searched for,
     which a dry run genuinely did, and a dry run whose queries left no trace
     would be the one mode where "why did it search for that?" is unanswerable.
+
+    ``filters_json`` records **what actually ran**, not what was asked for. B4
+    stored the proposal, which was wrong in exactly one case and wrong in a way
+    that matters now: the overflow provider takes no parameters, so a fall-
+    through recorded `order=date` for a search that was plain. B5's planner
+    reads this history to decide what to try next, and a record of an experiment
+    that did not happen is worse than no record at all.
     """
+    ran = query.filters if applied is None else applied
     ledger.log_query(
         run.run_id,
         round=number,
         query=query.text,
         origin=query.origin,
         origin_detail=query.origin_detail or None,
-        filters_json=query.filters_json() if query.filters else None,
+        filters_json=query.filters_json(ran) if ran else None,
         results_count=results,
         provider=provider,
         quota_units=units,
@@ -432,6 +594,13 @@ def _judge_round(
         if verdict.verdict == VERDICT_YES:
             report.verdict_yes += 1
         elif verdict.verdict == VERDICT_NO:
+            # Recorded with the judge's own words, because the planner has to
+            # read them. Stage 1 is where most rejections happen, so leaving
+            # them out would hand the planner a view of the round in which
+            # almost nothing was turned away.
+            report.rejected.append(
+                _judged(by_id[verdict.video_id], STAGE_METADATA, verdict)
+            )
             report.verdict_no += 1
         else:
             report.verdict_maybe += 1
@@ -450,6 +619,13 @@ def _judge_round(
             return concepts
 
         candidate = by_id[verdict.video_id]
+        # Which judgement actually decided this video, and at which stage. A
+        # stage-1 YES is stored on the strength of its metadata verdict; a
+        # MAYBE is stored on the strength of stage 2's, which read every word.
+        # The planner is shown whichever one decided, because "the transcript
+        # established X" and "the title looks right" are not the same evidence
+        # and a coverage claim built on the second would be built on a guess.
+        decided, decided_stage = verdict, STAGE_METADATA
 
         # Gate 1 asks whether a video is in the *library*, which since B1 means
         # it has a note. This asks a different question — do we already hold the
@@ -541,6 +717,7 @@ def _judge_round(
                 evidence=judgement.evidence,
                 prompt_version=judge.prompt(FULL_PROMPT).version,
             )
+            decided, decided_stage = judgement, STAGE_FULL
             concepts.extend(judgement.concepts)
             if not judgement.parsed:
                 report.unparsed += 1
@@ -555,6 +732,7 @@ def _judge_round(
                     candidate.video_id,
                 )
             if judgement.verdict == VERDICT_NO:
+                report.rejected.append(_judged(candidate, STAGE_FULL, judgement))
                 report.flipped_to_no += 1
                 # Keep the bytes. Acquisition is the one step this project
                 # calls fragile, and it is fragile in a measured way — thirteen
@@ -571,6 +749,11 @@ def _judge_round(
 
         _store(library, ledger, candidate, fetched, config)
         run.stored_ids.append(candidate.video_id)
+        # The other half of what the planner reads, and the half that makes
+        # coverage answerable at all. A planner shown only rejections can only
+        # ever learn what to avoid; it needs what was kept to say which part of
+        # the brief is already satisfied.
+        report.kept.append(_judged(candidate, decided_stage, decided))
         report.stored += 1
 
     return _dedupe_concepts(concepts)
@@ -634,6 +817,24 @@ def _store(
         source=result.source,
         caption_kind=result.caption_kind,
         provider=config.transcript_order[0],
+    )
+
+
+def _judged(candidate: SearchResult, stage: str, verdict) -> JudgedVideo:
+    """One decision, as the planner will be shown it.
+
+    Title and reason only. **No description and no transcript** — the reason is
+    the judge's one-sentence account of a decision it made after reading, and
+    that sentence is the entire evidence the planner gets about the video. What
+    keeps hard rule 1 true here is that :class:`JudgedVideo` has nowhere to put
+    anything larger.
+    """
+    return JudgedVideo(
+        video_id=candidate.video_id,
+        title=candidate.title,
+        stage=stage,
+        verdict=verdict.verdict,
+        reason=verdict.reason,
     )
 
 

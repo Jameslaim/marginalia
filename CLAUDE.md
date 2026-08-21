@@ -199,13 +199,49 @@ not drift.
     excludes and cannot be inspected is one nobody can correct. `ANY` is the default and
     the wider answer.
 
+18. **A rejection reason is evidence about the judge, never a fact about the world.**
+    The planner reads what the round decided, and the thing it must not do is redesign
+    the search around a rejection pattern. When this judge had a duration bias, twelve of
+    twenty-five rejections cited runtime; a planner "learning" from that would have
+    removed short-form video from every later search permanently, and the redirect would
+    have looked like the system working. **Consistency is what a systematic error looks
+    like from the outside.** The brief is the authority, and the planner's question is
+    *what does the brief ask for that I have not found* — never *why do I keep rejecting
+    things*. Stated as a rule in `prompts/plan/round.md`, with that failure attached.
+
+    Two structural halves back the prompt up, because a rule living only in a prompt is
+    a rule enforced by a model. **The planner sees what was kept as well as what was
+    rejected** — a planner given only failures only ever learns to avoid. And **a planner
+    query may never carry `videoDuration`**: it is a main query by construction, so rule
+    16's validator refuses the band outright. The worst version of the failure cannot
+    happen whatever the prompt achieves.
+
+19. **Additions widen and are free; removals narrow and need evidence.** The territory
+    map may be revised between rounds — a wrong map inherited by every round is worse
+    than no map. Adding a concept or a term costs one query whose results are visible.
+    Removing one means a class of video that is never searched for again, which is
+    rule 8's invisible error at the search layer, so a removal must name a query that
+    actually ran and what came back, and at most three are accepted per round. Checked
+    in code, not asked for in the prompt.
+
+    **Every revision is versioned.** A revision creates map v2 with the diff, the reason
+    and the previous version's term lists all stored on the run. Same argument as storing
+    the map at all: a change you cannot inspect is one you cannot correct.
+
+20. **`coverage_satisfied` is never confused with running out of money.** The planner may
+    recommend stopping and is not the authority on it — every budget ceiling still
+    applies, and a planner declaring satisfaction in round one is a real failure mode.
+    What it gets is its own word in `stopped_because`, alongside `quota`, which fires
+    *before* a round rather than inside one: a round that dies halfway leaves the planner
+    reading half a round's evidence as though it were the whole thing.
+
 ## Structure
 
 ```
 src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
   core/     ids.py  ledger.py  library.py        identity, state, file layout
   providers/                                     the part guaranteed to break
-  brain/    judge.py  territory.py               reasoning; no I/O
+  brain/    judge.py  territory.py  planner.py   reasoning; no I/O
   flow/     search.py  discover.py               execution
   enrich/   note.py  timestamps.py               what happens after storage
 ```
@@ -221,7 +257,11 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
   parsing, then a pure **validator** deciding which proposed filters may execute, then
   the one call. The validator is the safety-critical half and it is a pure function of
   its arguments — including `today`, which is passed in so a date rule can be tested
-  without waiting for a month to pass. Keep that split; it is why the parsers are testable without a model.
+  without waiting for a month to pass. `brain/planner.py` is the same three parts again,
+  and it shares `parse_filters` and `tidy` with `territory.py` rather than restating
+  them: two parsers for one filter syntax is how the two drift, and the validator's
+  guarantees would then hold in only one of them. Keep that split; it is why the parsers
+  are testable without a model.
   `enrich/note.py` holds the same split internally: pure section parsing at the top, the
   drain loop at the bottom, and nothing in between that needs a model to test.
 - `print` appears only in `cli.py`. Everything else uses `logging`.
@@ -243,6 +283,19 @@ it between rounds is B5's planner, and a map re-run each round would be that arr
 by accident. The map's queries run *alongside* the brief's own expansion rather than
 replacing it, which is what lets `queries.origin` answer "did the map find anything the
 old expansion would not have?" from the ledger rather than from an opinion.
+
+**B5 adds the round planner**: `brain/planner.py`, `prompts/plan/round.md`, one call at
+the end of every round but the last, and `ORIGIN_PLANNER` as the `queries` table's third
+writer. Before it, the agent planned all of its searching before seeing a single result.
+It reads the round — queries and their result counts, videos kept and rejected with the
+judge's reasons, unexplained concepts, the counters, quota left — and returns a coverage
+assessment, the next round's queries, optional map revisions and a recommendation. Its
+queries run *first* in the next round and the brief's expansion still runs alongside
+them, for B4's reason: a new step that silently replaced a working one would make its own
+contribution unmeasurable.
+
+This completes the discovery-layer upgrade. What comes next should be decided by running
+it on real topics, not planned in advance.
 
 Do not add `/ask` or `ask.py`, ASR or Whisper, embeddings, retrieval or ranking over
 notes, or content fingerprinting (Gate 3) — each belongs to another milestone in

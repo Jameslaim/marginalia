@@ -47,6 +47,7 @@ from .contracts import (
     STATUS_HAS_TRANSCRIPT,
     Candidate,
     DiscoverRun,
+    RoundReport,
     SearchRun,
     TranscriptResult,
     VideoRow,
@@ -299,6 +300,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         if report.rejected_before:
             line += f", {report.rejected_before} previously rejected"
         lines.append(line)
+        lines.extend(_plan_lines(report))
     verb = "would store" if run.dry_run else "stored"
     lines.append(
         f"run:      {len(run.stored_ids)} {verb}, {run.judged} judged, "
@@ -309,6 +311,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
     # that silently drops what it cannot read is how `/ask` came to report 2
     # citations out of 104. Printed even at zero — "0 unparsed" is the line
     # that makes the count trustworthy on the day it is not zero.
+    lines.extend(_coverage_lines(run))
     read = sum(report.judged_here for report in run.rounds)
     unparsed = sum(report.unparsed for report in run.rounds)
     if read:
@@ -372,6 +375,63 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
     return lines
 
 
+def _plan_lines(report: RoundReport) -> list[str]:
+    """What the planner decided at the end of one round, in two lines at most.
+
+    Printed per round rather than only at the end because the interesting thing
+    is the *change*: round two searching for something round one did not is the
+    whole claim of this phase, and a reader should be able to see the gap that
+    produced it on the line above.
+    """
+    plan = report.plan
+    if plan is None:
+        return []
+
+    lines = []
+    gaps = plan.gaps
+    summary = f"{len(plan.satisfied)} of {len(plan.coverage)} brief items covered"
+    if gaps:
+        summary += f"; gap: {gaps[0].part}"
+        if len(gaps) > 1:
+            summary += f" (+{len(gaps) - 1} more)"
+    lines.append(f"  plan:   {summary} → {plan.recommendation}: {plan.reason}")
+
+    if plan.queries:
+        lines.append("  next:   " + ", ".join(query.text for query in plan.queries[:6]))
+    for revision in plan.revisions:
+        lines.append(f"  map:    {revision.line()}")
+    # Refusals are never silent, for the same reason a rejected filter is not:
+    # a proposal the code declined and nobody counted is indistinguishable from
+    # a proposal that was never made.
+    for revision, why in plan.refused_revisions:
+        lines.append(f"  map:    refused {revision.line()} — {why}")
+    if not plan.parsed and plan.problem:
+        lines.append(f"  plan:   reply had problems ({plan.problem})")
+    return lines
+
+
+def _coverage_lines(run: DiscoverRun) -> list[str]:
+    """The final coverage assessment: what the brief still has nothing against.
+
+    The last plan wins — it is the one that saw the most. Printed as its own
+    block because "which part of the brief did this run fail to satisfy?" is
+    the question a library is judged on, and it should not need the database.
+    """
+    plans = [report.plan for report in run.rounds if report.plan is not None]
+    if not plans:
+        return []
+    final = plans[-1]
+    if not final.coverage:
+        return []
+
+    lines = [f"coverage: assessed at the end of round {final.round_number}"]
+    for item in final.coverage:
+        mark = "yes" if item.satisfied else "NO "
+        detail = f" — {item.detail}" if item.detail else ""
+        lines.append(f"  {mark}  {item.part}{detail}")
+    return lines
+
+
 def _discover_json(run: DiscoverRun) -> dict[str, Any]:
     return {
         "run_id": run.run_id,
@@ -385,7 +445,8 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         # brief: when results look wrong the first question is what the run
         # thought this topic covered, and a list of queries is the conclusion
         # rather than the reasoning.
-        "territory_version": run.territory.version,
+        "territory_version": run.territory.label,
+        "territory_revision": run.territory.revision,
         "territory": json.loads(run.territory.as_json()),
         "territory_call": {
             "input_tokens": run.territory.input_tokens,
@@ -428,6 +489,12 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                     for query in report.planned
                 ],
                 "filters_rejected": report.filters_rejected,
+                # What the planner concluded at the end of this round, in full:
+                # its coverage assessment, the queries it wrote for the next
+                # round, the map revisions it proposed and the ones the code
+                # refused. `None` on the last round and on a dry run, where no
+                # plan was made rather than an empty one.
+                "plan": report.plan.as_dict() if report.plan else None,
                 # Which origins' queries returned each candidate, and the
                 # subset only the map returned — the phase's value, per round.
                 "surfaced_by": {

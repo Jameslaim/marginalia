@@ -9,6 +9,7 @@ request and say plainly whether parsing worked.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,14 @@ import pytest
 from marginalia.cli import EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
 from marginalia.contracts import (
     ORIGIN_BRIEF,
+    ORIGIN_PLANNER,
     ORIGIN_TERRITORY,
+    RECOMMEND_STOP,
+    REVISE_ADD,
+    REVISE_VOCABULARY,
+    CoverageItem,
+    RoundPlan,
+    TerritoryRevision,
     Brief,
     DiscoverRun,
     FilterRejection,
@@ -369,7 +377,11 @@ def test_the_json_carries_the_whole_map(stubbed, capsys) -> None:
     payload = json.loads(capsys.readouterr().out)
     assert payload["territory"]["vocabulary"] == ["cache_control", "KV cache"]
     assert payload["territory"]["recency"]["months"] == 6
-    assert payload["territory_version"] == "1"
+    # `1/v1` since B5: the prompt that wrote the map, and how many times the
+    # planner revised it. An unrevised map still says so rather than staying
+    # silent about a number that now exists.
+    assert payload["territory_version"] == "1/v1"
+    assert payload["territory_revision"] == 1
     assert "seconds" in payload["territory_call"]
 
 
@@ -403,3 +415,113 @@ def test_the_json_carries_each_query_with_its_origin(stubbed, capsys) -> None:
     assert planned["origin"] == ORIGIN_TERRITORY
     assert planned["origin_detail"] == "vocabulary: KV cache"
     assert planned["filters"] == {"order": "date"}
+
+
+# -- B5: the plan in the report ---------------------------------------------
+
+
+def _with_plan(**kwargs) -> DiscoverRun:
+    run = fake_run()
+    run.rounds[0].plan = RoundPlan(
+        round_number=1,
+        coverage=[
+            CoverageItem("shows API configuration", True, "two kept videos walk through it"),
+            CoverageItem("cache expiry and TTL", False, "nothing kept mentions expiry"),
+            CoverageItem("provider comparison", False, "every kept video covers one"),
+        ],
+        queries=[
+            PlannedQuery("prompt cache ttl expiry", ORIGIN_PLANNER, "gap - cache expiry")
+        ],
+        reason="two MUST CONTAIN items still have nothing against them",
+        **kwargs,
+    )
+    return run
+
+
+def test_the_report_names_the_gap_and_the_recommendation(stubbed, capsys) -> None:
+    """The interesting thing is the change: a reader should see the gap that
+    produced round two's queries on the line above them."""
+    stubbed["run"] = _with_plan()
+
+    main(["discover", "prompt caching"])
+
+    out = capsys.readouterr().out
+    assert "plan:   1 of 3 brief items covered; gap: cache expiry and TTL (+1 more)" in out
+    assert "→ continue: two MUST CONTAIN items" in out
+    assert "next:   prompt cache ttl expiry" in out
+
+
+def test_the_report_ends_with_the_coverage_assessment(stubbed, capsys) -> None:
+    """"Which part of the brief did this run fail to satisfy?" is the question a
+    library is judged on, and it should not need the database to answer."""
+    stubbed["run"] = _with_plan()
+
+    main(["discover", "prompt caching"])
+
+    out = capsys.readouterr().out
+    assert "coverage: assessed at the end of round 1" in out
+    assert "yes  shows API configuration" in out
+    assert "NO   cache expiry and TTL — nothing kept mentions expiry" in out
+
+
+def test_a_territory_revision_is_printed_with_its_reason(stubbed, capsys) -> None:
+    stubbed["run"] = _with_plan(
+        revisions=[TerritoryRevision(REVISE_ADD, REVISE_VOCABULARY, "TTL", "kept videos use it")]
+    )
+
+    main(["discover", "prompt caching"])
+
+    assert "map:    + vocabulary: TTL — kept videos use it" in capsys.readouterr().out
+
+
+def test_a_refused_revision_is_never_silent(stubbed, capsys) -> None:
+    """Same discipline as a rejected filter: a proposal the code declined and
+    nobody counted is indistinguishable from one that was never made."""
+    revision = TerritoryRevision("remove", REVISE_VOCABULARY, "semantic cache", "feels off")
+    stubbed["run"] = _with_plan()
+    stubbed["run"].rounds[0].plan = replace(
+        stubbed["run"].rounds[0].plan,
+        refused_revisions=[(revision, "a removal must name the queries")],
+    )
+
+    main(["discover", "prompt caching"])
+
+    out = capsys.readouterr().out
+    assert "refused - vocabulary: semantic cache" in out
+    assert "must name the queries" in out
+
+
+def test_a_run_with_no_plan_prints_no_plan_lines(stubbed, capsys) -> None:
+    """A dry run, a single-round run, and a run the budget stopped first all
+    made no plan — which is different from making an empty one."""
+    stubbed["run"] = fake_run()
+
+    main(["discover", "prompt caching"])
+
+    out = capsys.readouterr().out
+    assert "plan:" not in out
+    assert "coverage:" not in out
+
+
+def test_the_json_carries_the_whole_plan(stubbed, capsys) -> None:
+    stubbed["run"] = _with_plan(recommendation=RECOMMEND_STOP)
+
+    main(["discover", "prompt caching", "--json"])
+
+    plan = json.loads(capsys.readouterr().out)["rounds"][0]["plan"]
+    assert plan["recommendation"] == RECOMMEND_STOP
+    assert len(plan["coverage"]) == 3
+    assert plan["queries"][0]["origin"] == ORIGIN_PLANNER
+    assert plan["coverage"][1] == {
+        "part": "cache expiry and TTL",
+        "satisfied": False,
+        "detail": "nothing kept mentions expiry",
+    }
+
+
+def test_the_json_says_no_plan_rather_than_an_empty_one(stubbed, capsys) -> None:
+    stubbed["run"] = fake_run()
+
+    main(["discover", "prompt caching", "--json"])
+
+    assert json.loads(capsys.readouterr().out)["rounds"][0]["plan"] is None

@@ -65,6 +65,12 @@ __all__ = [
     "validate",
     "user_constraints",
     "UserConstraints",
+    # Shared with `planner.py`, which parses the same filter syntax out of a
+    # different reply. Public rather than duplicated: two parsers for one format
+    # is how the two drift apart, and a filter read one way here and another way
+    # there would make the validator's guarantees provable in only one of them.
+    "parse_filters",
+    "tidy",
 ]
 
 # In a subdirectory for the same reason `judge/full` is: mapping is going to
@@ -187,7 +193,7 @@ def parse_map(text: str, *, topic: str, version: str) -> TerritoryMap:
         nonlocal pending
         if pending is None:
             return
-        filters, reasons, bad = _parse_filters(pending.get("FILTERS", ""))
+        filters, reasons, bad = parse_filters(pending.get("FILTERS", ""))
         # A filter caught here is the same event as one caught by `validate`,
         # and it is counted the same way. An unsupported field name that only
         # became a note on the map would be a drop nobody could count.
@@ -198,9 +204,9 @@ def parse_map(text: str, *, topic: str, version: str) -> TerritoryMap:
             PlannedQuery(
                 text=pending["QUERY"],
                 origin=ORIGIN_TERRITORY,
-                origin_detail=_tidy(pending.get("FROM", ""), limit=_MAX_REASON),
+                origin_detail=tidy(pending.get("FROM", ""), limit=_MAX_REASON),
                 filters=filters,
-                variant_of=_tidy(pending.get("VARIANT-OF", ""), limit=_MAX_QUERY_WORDS * 20),
+                variant_of=tidy(pending.get("VARIANT-OF", ""), limit=_MAX_QUERY_WORDS * 20),
                 reasons=reasons,
             )
         )
@@ -215,7 +221,7 @@ def parse_map(text: str, *, topic: str, version: str) -> TerritoryMap:
 
         if label == "QUERY":
             close()
-            query = _tidy(body, limit=200)
+            query = tidy(body, limit=200)
             if not query or len(query.split()) > _MAX_QUERY_WORDS:
                 if query:
                     problems.append(f"query too long to be typed by a person: {query!r}")
@@ -290,7 +296,7 @@ def _parse_recency(body: str) -> tuple[Recency, str]:
         return Recency(reason="recency line unreadable; searching any time"), (
             "recency line unreadable"
         )
-    head, reason = match.group(1), _tidy(match.group(2), limit=_MAX_REASON)
+    head, reason = match.group(1), tidy(match.group(2), limit=_MAX_REASON)
     if head.upper() == "ANY":
         return Recency(months=None, reason=reason), ""
     months = int(head)
@@ -299,7 +305,7 @@ def _parse_recency(body: str) -> tuple[Recency, str]:
     return Recency(months=months, reason=reason), ""
 
 
-def _parse_filters(
+def parse_filters(
     body: str,
 ) -> tuple[SearchFilters, dict[str, str], list[tuple[str, str, str]]]:
     """``order=date (why); publishedAfter=2026-02-01 (why)`` -> a structure.
@@ -338,7 +344,7 @@ def _parse_filters(
             bad.append((name, value, "not a search parameter this system sends"))
             continue
         values[canonical] = value
-        reasons[canonical] = _tidy(reason or "", limit=_MAX_REASON)
+        reasons[canonical] = tidy(reason or "", limit=_MAX_REASON)
 
     return (
         SearchFilters(
@@ -409,7 +415,7 @@ def _terms(body: str, limit: int) -> list[str]:
     # Treating a bracket as another separator recovers every name in the group
     # *and* the term it qualified, which is what the model meant by writing it.
     for piece in re.split(r"[,;()]", body):
-        cleaned = _tidy(piece, limit=80).strip("*\"'.")
+        cleaned = tidy(piece, limit=80).strip("*\"'.")
         if not cleaned or len(cleaned.split()) > _MAX_TERM_WORDS:
             continue
         if cleaned.upper() in {"NONE", "N/A", "-"}:
@@ -424,7 +430,7 @@ def _terms(body: str, limit: int) -> list[str]:
     return terms
 
 
-def _tidy(raw: str, *, limit: int) -> str:
+def tidy(raw: str, *, limit: int) -> str:
     cleaned = " ".join(raw.split()).lstrip("-–—:*").strip().strip("*")
     if len(cleaned) > limit:
         cleaned = cleaned[: limit - 1].rstrip() + "…"

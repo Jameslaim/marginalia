@@ -55,7 +55,7 @@ from ..providers import (
 
 log = logging.getLogger(__name__)
 
-__all__ = ["run_search"]
+__all__ = ["run_search", "quota_headroom"]
 
 
 def run_search(
@@ -81,7 +81,9 @@ def run_search(
     which applies what it can.
     """
     normalised = normalise_topic(topic if topic is not None else query)
-    results, provider, fallbacks, units = _search(config, ledger, query, limit, filters)
+    results, provider, fallbacks, units, applied = _search(
+        config, ledger, query, limit, filters
+    )
 
     candidates = [
         _gate(ledger, result, normalised, log=log_decisions, run_id=run_id)
@@ -93,7 +95,14 @@ def run_search(
         provider=provider,
         candidates=candidates,
         fallbacks=fallbacks,
+        # What was *asked for*, and what the provider actually applied. They
+        # differ whenever the chain falls through to a provider that cannot
+        # filter, and B5 needs the difference recorded rather than assumed: the
+        # planner reads query history to choose what to try next, and a row
+        # claiming `order=date` ran when the search was plain would tell it an
+        # experiment happened that did not.
         filters=filters or SearchFilters(),
+        filters_applied=applied,
         quota_units=units,
     )
 
@@ -168,7 +177,7 @@ def _search(
     query: str,
     limit: int,
     filters: SearchFilters | None = None,
-) -> tuple[list[SearchResult], str | None, list[tuple[str, str]], int]:
+) -> tuple[list[SearchResult], str | None, list[tuple[str, str]], int, SearchFilters]:
     """Try each configured provider in order.
 
     Falls through on quota exhaustion, an unavailable provider, or a transient
@@ -208,14 +217,67 @@ def _search(
             continue
 
         log.info("search provider %s returned %d result(s)", name, len(results))
-        # The provider's own accounting of what that cost. `getattr` because
-        # the method arrived in B4 and a provider written against the older
-        # protocol is still a valid provider — the cost is then unknown, which
-        # is what 0 means for an unmetered one anyway.
+        # The provider's own accounting of what that cost, and of what of the
+        # request it could honour. `getattr` on both because each arrived in a
+        # later phase and a provider written against the older protocol is
+        # still a valid provider — the honest fallback for the first is 0, and
+        # for the second is "we do not know that any filter ran", which is the
+        # same conservative answer an unfiltered search deserves.
         units = int(getattr(provider, "units_spent", lambda: 0)())
-        return list(results), provider.name, fallbacks, units
+        applied = getattr(provider, "applied_filters", SearchFilters)()
+        if filters and applied.as_dict() != filters.as_dict():
+            dropped = sorted(set(filters.as_dict()) - set(applied.as_dict()))
+            log.warning(
+                "search: %s could not apply %s on %r; the query ran unfiltered",
+                name,
+                ", ".join(dropped),
+                query,
+            )
+        return list(results), provider.name, fallbacks, units, applied
 
     raise TransientError(
         "no search provider could answer: "
         + "; ".join(f"{name}: {why}" for name, why in fallbacks)
     )
+
+
+def quota_headroom(config: Config, ledger: Ledger) -> tuple[int | None, int]:
+    """``(units left, units one search costs)`` for the chain as configured.
+
+    ``None`` for the first value means **there is no ceiling to hit**, and that
+    is the answer whenever any provider in the chain is unmetered. It is not a
+    fudge: the overflow provider exists precisely so a run continues when the
+    metered one runs dry, so stopping a run for want of quota while a free
+    fallback sits in the chain would be inventing a limit that does not apply.
+
+    Only the chain matters, not the run. This asks what the *next* round can
+    afford before the round starts, because the alternative is discovering it
+    mid-round and recording half a round's evidence — and half a round is
+    exactly the input B5's planner must never be handed.
+    """
+    per_search = 0
+    remaining: int | None = None
+
+    for name in config.search_order:
+        try:
+            provider = get_search_provider(
+                name,
+                api_key=config.youtube_api_key,
+                quota=ledger,
+                daily_units=config.youtube_daily_units,
+            )
+        except (KeyError, ProviderUnavailable):
+            # An unconfigured or unknown provider cannot answer, so it cannot be
+            # the free fallback either. Skipped rather than treated as unmetered.
+            continue
+
+        left = provider.quota_remaining()
+        if left is None:
+            # An unmetered provider is in the chain and can answer. Nothing here
+            # runs out.
+            return None, 0
+        cost = int(getattr(provider, "units_per_search", lambda: 0)())
+        if remaining is None or left > remaining:
+            remaining, per_search = left, cost
+
+    return remaining, per_search

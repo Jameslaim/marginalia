@@ -55,7 +55,19 @@ __all__ = [
     "Recency",
     "PlannedQuery",
     "FilterRejection",
+    "MapSnapshot",
+    "TerritoryRevision",
     "TerritoryMap",
+    # planning
+    "RECOMMEND_CONTINUE",
+    "RECOMMEND_STOP",
+    "REVISE_ADD",
+    "REVISE_REMOVE",
+    "REVISE_CONCEPT",
+    "REVISE_VOCABULARY",
+    "JudgedVideo",
+    "CoverageItem",
+    "RoundPlan",
     # verdict vocabulary
     "VERDICT_YES",
     "VERDICT_NO",
@@ -348,16 +360,81 @@ class PlannedQuery:
             tuple(sorted(self.filters.as_dict().items())),
         )
 
-    def filters_json(self) -> str:
-        """``{"order": {"value": "date", "why": "..."}}`` — value and reason together."""
+    def filters_json(self, applied: SearchFilters | None = None) -> str:
+        """``{"order": {"value": "date", "why": "..."}}`` — value and reason together.
+
+        ``applied`` is what the provider actually ran, which is not always what
+        was asked for: the overflow provider takes no parameters at all. The
+        `queries` row stores what ran, because B5's planner reads that history
+        to decide what to try next and a row claiming an experiment that never
+        happened is worse than no row.
+        """
+        source = self.filters if applied is None else applied
         return json.dumps(
             {
                 name: {"value": value, "why": self.reasons.get(name, "")}
-                for name, value in self.filters.as_dict().items()
+                for name, value in source.as_dict().items()
             },
             ensure_ascii=False,
             sort_keys=True,
         )
+
+
+# What a revision does, and to which half of the map. Shared vocabulary: the
+# planner writes these, the code validating them reads them, and the report
+# prints them.
+REVISE_ADD = "add"
+REVISE_REMOVE = "remove"
+REVISE_CONCEPT = "concept"
+REVISE_VOCABULARY = "vocabulary"
+
+
+@dataclass(frozen=True)
+class TerritoryRevision:
+    """One change to the map, and the evidence for it.
+
+    **Additions and removals are not symmetric, and the type carries that.**
+    An addition widens the search: a concept the map missed, a tool name that
+    turned up in kept videos. It costs one query and shows up in the results.
+
+    A removal *narrows* it, which is the excluding direction, and this project
+    treats exclusion as the error nobody can see: a term removed in round two
+    is a set of videos that will never be searched for again, and nothing later
+    can notice. So a removal has to name the specific queries that carried the
+    term and what came back — ``evidence`` is required for one and optional for
+    the other, and the code enforces that rather than the prompt asking nicely.
+    """
+
+    action: str  # add | remove
+    kind: str  # concept | vocabulary
+    term: str
+    reason: str
+    # For a removal: which queries carried the term, and what they returned.
+    evidence: str = ""
+
+    @property
+    def removes(self) -> bool:
+        return self.action == REVISE_REMOVE
+
+    def line(self) -> str:
+        """One printable line, for the report and the log."""
+        sign = "+" if self.action == REVISE_ADD else "-"
+        return f"{sign} {self.kind}: {self.term} — {self.reason}"
+
+
+@dataclass(frozen=True)
+class MapSnapshot:
+    """A map revision's term lists, kept after the revision that replaced it.
+
+    Stored so that "both versions stay on the run" is literally true rather
+    than reconstructible-in-principle. A revision you cannot see the before of
+    is a change you cannot judge — which is the same argument that put the map
+    on the run in the first place.
+    """
+
+    revision: int
+    concepts: list[str]
+    vocabulary: list[str]
 
 
 @dataclass(frozen=True)
@@ -392,9 +469,28 @@ class TerritoryMap:
     input_tokens: int = 0
     output_tokens: int = 0
     latency_s: float = 0.0
+    # B5. The map may be revised between rounds — a wrong map inherited by every
+    # round is worse than no map. `revision` counts from 1, `revisions` holds
+    # every change applied to reach this one, and `history` keeps the term lists
+    # each earlier revision had.
+    revision: int = 1
+    revisions: list[TerritoryRevision] = field(default_factory=list)
+    history: list[MapSnapshot] = field(default_factory=list)
 
     def __bool__(self) -> bool:
         return bool(self.concepts or self.vocabulary or self.queries)
+
+    @property
+    def label(self) -> str:
+        """``1/v2`` — the prompt that wrote it, and how many times it changed."""
+        return f"{self.version}/v{self.revision}"
+
+    def snapshot(self) -> MapSnapshot:
+        return MapSnapshot(
+            revision=self.revision,
+            concepts=list(self.concepts),
+            vocabulary=list(self.vocabulary),
+        )
 
     @property
     def terms(self) -> list[str]:
@@ -448,10 +544,176 @@ class TerritoryMap:
                 ],
                 "parsed": self.parsed,
                 "problem": self.problem,
+                # B5, and additive on purpose: a reader written against the
+                # shape B4 stored still finds every key it knew about. An
+                # unrevised map carries `revision: 1` and two empty lists,
+                # which is the honest description of a map nothing changed.
+                "revision": self.revision,
+                "revisions": [
+                    {
+                        "action": revision.action,
+                        "kind": revision.kind,
+                        "term": revision.term,
+                        "reason": revision.reason,
+                        "evidence": revision.evidence,
+                    }
+                    for revision in self.revisions
+                ],
+                "history": [
+                    {
+                        "revision": snapshot.revision,
+                        "concepts": snapshot.concepts,
+                        "vocabulary": snapshot.vocabulary,
+                    }
+                    for snapshot in self.history
+                ],
             },
             ensure_ascii=False,
             indent=2,
         )
+
+
+# -- planning -----------------------------------------------------------------
+
+# What the planner recommends the loop do next. Two words, because a third
+# would be a hedge and the loop has to act on one of them.
+RECOMMEND_CONTINUE = "continue"
+RECOMMEND_STOP = "stop"
+
+
+@dataclass(frozen=True)
+class JudgedVideo:
+    """One video the round decided about, as the planner is shown it.
+
+    Deliberately thin: an id, a title, which stage decided, and the reason the
+    judge gave. **No transcript, no description, no note** — the planner is
+    reasoning about coverage, not re-judging, and a structure that could carry
+    transcript text is one that eventually will.
+
+    ``reason`` is the load-bearing field and also the dangerous one. It is the
+    judge's account of its own decision, which makes it evidence about the
+    judge and not about YouTube. The prompt says so in as many words, because
+    the failure it prevents has happened here: when the judge had a duration
+    bias, 12 of 25 rejections cited runtime, and a planner reading that pattern
+    would have concluded that short videos were not worth searching for.
+    """
+
+    video_id: str
+    title: str
+    stage: str  # metadata | full
+    verdict: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class CoverageItem:
+    """One part of the brief, and whether anything found this round satisfies it.
+
+    ``satisfied`` is a claim the planner makes and the report prints. ``detail``
+    is what makes it checkable — for a satisfied item, which videos cover it;
+    for a gap, what is missing. "More depth needed" is not a gap; "nothing
+    found on cache expiry and TTL" is.
+    """
+
+    part: str
+    satisfied: bool
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class RoundPlan:
+    """What the planner concluded at the end of one round.
+
+    The loop reads three things from this: the queries to run next, the map
+    revisions to apply, and whether to keep going. Everything else is for the
+    report and the ledger — but "everything else" is where the coverage
+    assessment lives, and a coverage claim nobody can read is a claim nobody
+    can check.
+
+    ``recommendation`` is advisory. The planner is not the sole authority on
+    stopping: every budget ceiling still applies, and a planner declaring
+    satisfaction in round one is a real failure mode rather than a hypothetical
+    one. What it *does* get is its own stop reason, so `coverage_satisfied` is
+    never confused with running out of money.
+    """
+
+    round_number: int
+    coverage: list[CoverageItem] = field(default_factory=list)
+    queries: list[PlannedQuery] = field(default_factory=list)
+    revisions: list[TerritoryRevision] = field(default_factory=list)
+    recommendation: str = RECOMMEND_CONTINUE
+    reason: str = ""
+    # Revisions and filters the code refused. Counted for the same reason every
+    # other refusal here is: a drop nobody counts is indistinguishable from a
+    # proposal that was never made.
+    rejected_filters: list[FilterRejection] = field(default_factory=list)
+    refused_revisions: list[tuple[TerritoryRevision, str]] = field(default_factory=list)
+    parsed: bool = True
+    problem: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    latency_s: float = 0.0
+
+    @property
+    def gaps(self) -> list[CoverageItem]:
+        return [item for item in self.coverage if not item.satisfied]
+
+    @property
+    def satisfied(self) -> list[CoverageItem]:
+        return [item for item in self.coverage if item.satisfied]
+
+    @property
+    def wants_to_stop(self) -> bool:
+        return self.recommendation == RECOMMEND_STOP
+
+    def as_dict(self) -> dict:
+        """What `--json` carries and what the report reads."""
+        return {
+            "round": self.round_number,
+            "recommendation": self.recommendation,
+            "reason": self.reason,
+            "coverage": [
+                {"part": item.part, "satisfied": item.satisfied, "detail": item.detail}
+                for item in self.coverage
+            ],
+            "queries": [
+                {
+                    "text": query.text,
+                    "origin": query.origin,
+                    "origin_detail": query.origin_detail,
+                    "filters": query.filters.as_dict(),
+                }
+                for query in self.queries
+            ],
+            "revisions": [
+                {
+                    "action": revision.action,
+                    "kind": revision.kind,
+                    "term": revision.term,
+                    "reason": revision.reason,
+                    "evidence": revision.evidence,
+                }
+                for revision in self.revisions
+            ],
+            "refused_revisions": [
+                {"term": revision.term, "action": revision.action, "why": why}
+                for revision, why in self.refused_revisions
+            ],
+            "rejected_filters": [
+                {
+                    "query": rejection.query,
+                    "field": rejection.field,
+                    "value": rejection.value,
+                    "reason": rejection.reason,
+                }
+                for rejection in self.rejected_filters
+            ],
+            "parsed": self.parsed,
+            "problem": self.problem,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "seconds": round(self.latency_s, 2),
+        }
 
 
 # -- verdicts ---------------------------------------------------------------
@@ -729,6 +991,20 @@ class RoundReport:
     # about all the queries that surfaced a video, and recording only the first
     # would answer it with whichever set happened to run earlier.
     surfaced_by: dict[str, set[str]] = field(default_factory=dict)
+    # B5. What the round actually decided about, with the judge's own reasons.
+    # The counters above say how many; these say which, and the planner cannot
+    # reason about coverage from an integer.
+    #
+    # Kept and rejected are both here, and both are shown to the planner. A
+    # planner given only failures only ever learns what to avoid — it would
+    # have no way to say "this part of the brief is already covered", which is
+    # half of what it is for.
+    kept: list[JudgedVideo] = field(default_factory=list)
+    rejected: list[JudgedVideo] = field(default_factory=list)
+    # The plan this round ended with, if one was made. `None` on the final
+    # round, on a dry run, and whenever the budget stopped the loop first —
+    # planning a round that cannot happen is a request spent on nothing.
+    plan: RoundPlan | None = None
 
     @property
     def judged_here(self) -> int:
@@ -818,6 +1094,11 @@ class SearchRun:
     # search for that?" is only half the question, and "what did that buy?" is
     # the other half.
     filters: SearchFilters = SearchFilters()
+    # What the provider actually applied, which is not always what it was given:
+    # the overflow provider takes no parameters at all. Recorded separately
+    # because the `queries` row stores this one, and a row saying a filter ran
+    # when the search was plain is a false record of an experiment.
+    filters_applied: SearchFilters = SearchFilters()
     quota_units: int = 0
 
     def of(self, verdict: str) -> list[Candidate]:

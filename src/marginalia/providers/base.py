@@ -123,6 +123,26 @@ class SearchProvider(Protocol):
         """Units left today, or ``None`` for providers with no quota concept."""
         ...
 
+    def units_per_search(self) -> int:
+        """What one :meth:`search` will cost, before it is made.
+
+        Asked *before* a round, so the loop can stop cleanly rather than run
+        out of quota halfway through and record half a round's evidence. Zero
+        for a provider with no allowance to run out of.
+        """
+        ...
+
+    def applied_filters(self) -> SearchFilters:
+        """Which of the last search's filters this provider actually applied.
+
+        Not the ones it was handed. A provider that cannot filter runs the query
+        unfiltered — the safe direction, since the filters that matter exclude —
+        but the `queries` row must then say so. B5's planner reads query history
+        to decide what to try next, and a row claiming a filter ran when it did
+        not is a row that will mislead it about what has already been tried.
+        """
+        ...
+
     def units_spent(self) -> int:
         """What the last :meth:`search` cost this provider, in its own units.
 

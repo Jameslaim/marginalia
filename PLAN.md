@@ -1062,6 +1062,200 @@ Without these, *"why did it search for that?"* has no answer — and it is the f
 question asked when a round goes wrong. The same argument as storing the brief: the
 queries are the conclusion, and the map is the reasoning that produced them.
 
+### B5 — the round planner
+
+Until this phase the agent planned all of its searching before seeing a single result: a
+brief, a map, then three rounds of the same idea rephrased. One call at the end of each
+round now reads everything the round produced and answers two questions — *what is the
+brief still missing*, and *how should I look for it?*
+
+It sees the queries that ran with their origins and result counts, every video kept and
+rejected with the judge's own reason and the stage that decided, the concepts stage 2
+found mentioned but unexplained, the round's counters, and the quota left. It returns a
+coverage assessment against the brief, the next round's queries, optional map revisions,
+and a recommendation to continue or stop.
+
+Its queries run **first** in the next round — they were written against the gaps that
+round actually left open, while expansion is still working from the brief alone — and the
+brief's expansion still runs alongside them, for B4's reason: a new step that silently
+replaced a working one would make its own contribution unmeasurable. `queries.origin`
+gets its third writer, and "did the planner change anything?" becomes a query against the
+ledger rather than an impression.
+
+### The risk, and why it is the whole design
+
+**Rejection reasons come from another model's judgement, not from the world.** The
+concrete case is in this project's own history: when the judge had a duration bias,
+twelve of twenty-five rejections in one round cited runtime. A planner reading that
+pattern would conclude *"we keep rejecting short videos, so stop searching for them"* —
+which reads as intelligent adaptation, and would have permanently blinded the library to
+short-form content because of a bug in a different component. The redirect would have
+looked like the system working.
+
+**Consistency is what a systematic error looks like from the outside.**
+
+So the prompt states, as a rule with that failure attached: a rejection reason is evidence
+about what the judge decided and not a fact about what exists on YouTube; the brief is the
+authority; the primary question is what the brief asks for that has not been found, never
+why things keep being rejected.
+
+Two structural halves back it up, because a rule that lives only in a prompt is a rule
+enforced by a model. The planner is shown **what was kept as well as what was rejected** —
+a planner given only failures only ever learns to avoid, and coverage is a claim about
+what the library holds, which cannot be made from failures. And **a planner query may
+never carry `videoDuration`**: it is a main query by construction, so B4's validator
+refuses the band outright. The worst version of the failure cannot happen whatever the
+prompt achieves.
+
+**Tested rather than reasoned about.** A synthetic round was built with twenty of
+twenty-five rejections citing runtime — worse than the historical case — and handed to
+the real planner. Three samples, and every one of them held. It named six coverage items
+against the brief, three of them gaps, proposed five queries aimed at those gaps, and
+proposed no duration filter and no length-based strategy at all. It also said what the
+pattern was, unprompted:
+
+> continue — cache expiry/TTL and cross-provider comparison still have nothing against
+> them, and the heavy runtime-based rejection pattern in round one is more likely judge
+> bias than evidence that short videos are irrelevant.
+
+and, on the second sample:
+
+> note that 15 of 25 rejections in round 1 were runtime-based, which looks like judge
+> bias rather than a property of the subject, so I have not filtered by length in any
+> query
+
+The only duration-shaped words anywhere in either plan were in those two sentences. (The
+second miscounts 20 as 15 — an arithmetic slip, not a reasoning one.)
+
+### Revising the map
+
+A wrong map inherited by every round is worse than no map, so the planner may change it —
+under the asymmetry this project applies everywhere.
+
+**Additions are free.** A concept the map missed, a term the kept videos keep using. The
+worst case is one query whose results are visible.
+
+**Removals require evidence**, checked in code rather than asked for in the prompt.
+Removing a term narrows every later search, and a class of video that stops being searched
+for is one nobody notices the absence of — rule 8's invisible error, moved to the search
+layer. So a removal must name a term the map actually holds, quote a query that really
+ran, and be one of at most three that round. The check is deliberately mechanical: it
+cannot know whether reasoning is sound, but it can know whether the claim is about
+searches that happened. *"This term feels off topic"* is refused; *"the query `prompt
+caching vs semantic caching` returned ten results, all rejected"* is accepted.
+
+**Every revision is versioned.** A revision produces map v2, and v1's term lists stay
+beside it on the run along with the diff and the reason. Same argument as storing the map
+at all: a change you cannot see the before of is one nobody can judge.
+
+### Stopping, and telling the reasons apart
+
+```
+stopped_because = coverage_satisfied | no_new_videos | max_rounds
+                | max_videos | max_requests | max_cost | quota
+```
+
+`coverage_satisfied` is its own word and that is the point. A run that stopped because
+the brief was covered and a run that stopped because it ran out of money are opposite
+outcomes, and one label holding both would hide the interesting one. The planner is
+advisory, never sovereign: every budget ceiling is checked before it is consulted, and a
+planner declaring satisfaction in round one is a real failure mode that is only findable
+because it is labelled.
+
+`quota` fires **before** a round, not inside one. A round that runs out of allowance
+halfway leaves the planner reading half a round's evidence as though it were the whole
+thing — which is the one input this design must never produce. It only fires when every
+provider in the chain is metered: an unmetered overflow provider means there is no ceiling
+to hit, and stopping then would be inventing a limit that does not apply.
+
+### Two fixes carried from B4
+
+**`ytdlp_search` no longer records filters it did not apply.** The fallback runs the query
+unfiltered, which is the right direction — the two filters that matter *exclude*, so
+ignoring them returns a superset — but the `queries` row still stored the proposal. The
+planner now reads that history to decide what to try next, and *"we already searched this
+with `order=date`"* is false when the search that ran was plain. Providers report
+`applied_filters()`, and the row records what ran.
+
+**A quota guard.** Fourteen searches at ~101 units is ~1,400 per run and the planner adds
+rounds on top. `quota_headroom` asks the chain what it has left and what a search costs,
+before the round starts.
+
+### What a real run looks like
+
+`marg discover "postgres connection pooling" --max-rounds 3 --max-videos 14` — a fresh
+topic, three rounds, ten videos stored, 49 requests, **$0.048 and 7.2 minutes**.
+
+| round | queries | candidates | stored | what the plan said |
+|---|---|---|---|---|
+| 1 | 6 brief + 9 territory | 141 | 6 | 5 of 8 brief items covered; 3 named gaps |
+| 2 | **4 planner** + 6 thread | 66 | 3 | 1 of 7; added `PgCat` to the map |
+| 3 | **6 planner**, nothing else | 27 | 1 | — (last round is never planned) |
+
+**By round three the planner was the only source of new searching.** Query expansion
+still ran and produced nothing that was not already a duplicate; every query that
+executed came from the plan.
+
+The round-one coverage assessment is what the phase is for. It named videos against brief
+items — *"both videos reproduce the exact error by connecting many clients directly"* —
+and its three gaps were specific enough to write queries from:
+
+> **NO** transaction vs session pooling with SET/LISTEN/NOTIFY pitfalls — prepared
+> statements are covered, but no kept video explicitly names SET or LISTEN/NOTIFY
+> breakage or workarounds.
+>
+> **NO** pool sizing rule of thumb — no kept video mentions a formula like cores*2+disk.
+
+which became `pgbouncer set session state transaction pooling` and `pgbouncer pool size
+calculation rule of thumb`.
+
+**The clearest evidence that this is not the brief restated** came from a second run,
+`sqlite wal mode`, where the planner read a *result count*:
+
+> `sqlite checkpointing` — from: gap — checkpointing is a MUST CONTAIN item; the round 1
+> query "SQLite checkpoint wal_autocheckpoint" returned 0 results, so the concept needs a
+> different phrasing
+
+Nothing in the brief or the map could produce that. It required seeing what round one
+returned.
+
+**Honestly, though**: the planner rarely introduces new *subject* vocabulary into query
+text. Its round-two and round-three queries recombine terms the map already held against
+gaps it named, and the only words appearing in neither brief nor map were "tutorial",
+"comparison", "calculation", "example". That is a consequence of B4 working — the postgres
+map already listed PgBouncer, Pgpool-II, Odyssey, RDS Proxy and Supabase pooler before
+anything was searched — and it is where new vocabulary now enters instead: stage 2
+surfaced `PgCat` as mentioned-but-unexplained, a thread query used it, and the planner
+noticed it was missing from the map and added it. Three mechanisms, one term.
+
+The one territory revision across both runs was that addition, recorded with its reason
+and versioned to `1/v2`, with revision 1's term lists kept beside it. **No removal was
+proposed in any run**, so the evidence rule was never exercised outside its tests — which
+is a result rather than a gap, and the safer of the two directions to have gone untested.
+
+### What the planning call costs, and the fourth ladder
+
+**One request per round, ~2,600 in and ~2,500 out, 22–31s, $0.0011.**
+
+Effort was measured, not chosen, and this is the fourth non-monotonic ladder on this
+provider. Same input each time:
+
+| effort | finish | output | latency | result |
+|---|---|---|---|---|
+| low | stop | 2,618 | 30.6s | valid — 5 queries, 6 coverage items |
+| low | stop | 2,338 | 22.0s | valid — 5 queries, 6 coverage items |
+| high | stop | 7,670 | 75.7s | valid, 522 tokens under the ceiling |
+| high | **length** | 8,192 | 70.7s | **truncated, discarded** |
+
+`high` is not merely expensive here, it is *unreliable*: it converged once with 6%
+headroom and hit the ceiling on the next identical call — and that was a small round, so a
+real one has less margin. The truncation guard held both times, discarding the fragment
+rather than parsing it, because a half-read coverage assessment reads as a complete
+account of what the brief is missing.
+
+Four times out of four now, on this provider, "the most important call deserves the most
+thinking" has been the wrong instinct whenever the output is long and structured.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

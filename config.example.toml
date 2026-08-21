@@ -230,6 +230,36 @@ extra = { reasoning_effort = "low" }
 # gesture. Escalating to deepseek-v4-pro does not help: pro at max effort
 # reasoned 10,159 tokens and returned an empty message, so the failure is max
 # thinking on a long structured output, not flash running out of capacity.
+# B5. Once at the end of every round but the last. It reads what the round found
+# and decides what the next one should look for.
+#
+# `low`, and the fourth measurement of the same shape rather than a guess. This
+# writes a long structured document — a coverage assessment, map revisions and
+# a set of queries — which is precisely the shape write_note, review_brief and
+# map_territory all failed at above `low` on this provider.
+#
+# Measured on one real round (25 rejections, 2 kept), same input each time:
+#
+#   effort   finish    output   latency   result
+#   low      stop       2,618     30.6s   valid, 5 queries, 6 coverage items
+#   low      stop       2,338     22.0s   valid, 5 queries, 6 coverage items
+#   high     stop       7,670     75.7s   valid — 522 tokens under the ceiling
+#   high     length     8,192     70.7s   TRUNCATED, discarded
+#
+# `high` is not merely expensive here, it is *unreliable*: it converged once
+# with 6% headroom and hit the ceiling on the next identical call. And that was
+# a small round — a real one carries more rejections, so the margin only gets
+# worse. The truncation guard held both times (a fragment is discarded rather
+# than parsed, because a half-read coverage assessment reads as a complete
+# account of what the brief is missing), so the cost of being wrong here is a
+# round that falls back to expansion rather than a wrong plan.
+#
+# Fourth non-monotonic ladder on this provider. "The most important call
+# deserves the most thinking" has now been wrong four times out of four
+# whenever the output is long and structured.
+[llm.tasks.plan_round]
+extra = { reasoning_effort = "low" }
+
 [llm.tasks.write_note]
 extra = { reasoning_effort = "low" }
 
@@ -283,6 +313,13 @@ results_per_query = 10
 # is 100 units out of 10,000 a day — so this adds to the round rather than
 # replacing part of it. Set it to 1 to keep the mechanism and shrink the bill.
 territory_queries = 8
+
+# B5. Queries the planner writes at the end of each round, for the next one.
+# They run *first* in that round — they were written against the gaps the last
+# round actually left open — and `queries_per_round` still runs alongside them,
+# so the ledger can answer whether the planner found anything expansion would
+# not have.
+planner_queries = 6
 
 [note]
 # The note pass reads whole transcripts, so its ceiling is a different number

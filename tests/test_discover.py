@@ -33,16 +33,28 @@ from marginalia.contracts import (
     FullVerdict,
     MetadataVerdict,
     ORIGIN_BRIEF,
+    ORIGIN_PLANNER,
     ORIGIN_TERRITORY,
     ORIGIN_THREAD,
+    RECOMMEND_CONTINUE,
+    RECOMMEND_STOP,
+    REVISE_ADD,
+    REVISE_VOCABULARY,
+    CoverageItem,
+    FilterRejection,
     PlannedQuery,
     Recency,
+    RoundPlan,
+    RoundReport,
     SearchFilters,
     TerritoryMap,
+    TerritoryRevision,
     Usage,
 )
 from marginalia.flow.discover import (
+    STOP_COVERAGE_SATISFIED,
     STOP_DRY_RUN,
+    STOP_QUOTA,
     STOP_MAX_REQUESTS,
     STOP_MAX_ROUNDS,
     STOP_MAX_VIDEOS,
@@ -228,8 +240,11 @@ def searches(monkeypatch: pytest.MonkeyPatch):
         class P:
             name = "fake"
 
+            last_filters = None
+
             def search(self, query, limit=25, filters=None):
                 calls.append(query)
+                self.last_filters = filters
                 return list(table.get(query, table.get("*", [])))
 
             def quota_remaining(self):
@@ -237,6 +252,15 @@ def searches(monkeypatch: pytest.MonkeyPatch):
 
             def units_spent(self):
                 return 101
+
+            def units_per_search(self):
+                return 101
+
+            def applied_filters(self):
+                # This fake stands in for a provider that can filter. The
+                # overflow provider cannot, and says so — which is the whole
+                # point of the method existing.
+                return self.last_filters or SearchFilters()
 
         return P()
 
@@ -278,10 +302,13 @@ def mapped(*queries: str, concepts=("caching",), vocabulary=("kv cache",), **kwa
     )
 
 
-def run(config, ledger, library, client, judge, provider=None, topic=TOPIC, mapper=None, **kwargs):
+def run(
+    config, ledger, library, client, judge,
+    provider=None, topic=TOPIC, mapper=None, planner=None, **kwargs,
+):
     return discover(
         config, ledger, library, client, topic,
-        judge=judge, mapper=mapper or FakeMapper(),
+        judge=judge, mapper=mapper or FakeMapper(), planner=planner or FakePlanner(),
         provider=provider or FakeTranscripts(), **kwargs,
     )
 
@@ -1518,3 +1545,428 @@ def test_credit_is_not_first_past_the_post(
                   mapper=FakeMapper(mapped("kv cache reuse llm")))
 
     assert outcome.rounds[0].only_from(ORIGIN_TERRITORY) == []
+
+
+# -- B5: the planner drives the next round ---------------------------------
+
+
+class FakePlanner:
+    """A scripted plan per round, or none at all.
+
+    ``None`` is the default and it matters for the same reason `FakeMapper`'s
+    empty map does: every test written before B5 ran without a planner, and each
+    must keep passing unchanged. A planner that proposes nothing has to leave
+    the loop exactly as it was.
+    """
+
+    def __init__(self, plans=None) -> None:
+        self._plans = list(plans or [])
+        self.calls: list[int] = []
+        self.seen: list[RoundReport] = []
+        self.quota_seen: list[object] = []
+        self.rounds_left_seen: list[object] = []
+
+    def plan(self, brief, territory, report, **kwargs):
+        self.calls.append(report.number)
+        self.seen.append(report)
+        self.quota_seen.append(kwargs.get("quota_remaining"))
+        self.rounds_left_seen.append(kwargs.get("rounds_left"))
+        if self._plans:
+            return self._plans.pop(0)
+        return RoundPlan(round_number=report.number)
+
+
+def planned(*texts, recommendation=RECOMMEND_CONTINUE, revisions=(), coverage=()):
+    return RoundPlan(
+        round_number=1,
+        coverage=list(coverage) or [CoverageItem("shows code", False, "nothing yet")],
+        queries=[
+            PlannedQuery(text=text, origin=ORIGIN_PLANNER, origin_detail="gap - shows code")
+            for text in texts
+        ],
+        revisions=list(revisions),
+        recommendation=recommendation,
+        reason="scripted",
+    )
+
+
+def test_the_planner_runs_once_per_round_except_the_last(
+    config, ledger, library, client, searches
+) -> None:
+    """Planning the end of the final round spends a request on advice nobody
+    will read — the same discipline as checking the ceilings before a round."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"], ["q3"]]),
+        max_rounds=3, mapper=FakeMapper(), planner=planner)
+
+    assert planner.calls == [1, 2]
+
+
+def test_a_round_two_query_comes_from_the_planner(
+    config, ledger, library, client, searches
+) -> None:
+    """Gate 1, in code. The query has to reach the search *and* be recorded as
+    the planner's, or "why did it search for that?" has no answer."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner([planned("prompt cache ttl expiry")])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    rows = ledger.queries_for_run(outcome.run_id)
+    planner_rows = [row for row in rows if row.origin == ORIGIN_PLANNER]
+    assert [row.query for row in planner_rows] == ["prompt cache ttl expiry"]
+    assert planner_rows[0].round == 2
+    assert planner_rows[0].origin_detail == "gap - shows code"
+
+
+def test_the_planner_s_queries_run_before_the_expansion_s(
+    config, ledger, library, client, searches
+) -> None:
+    """They were written against the gaps this run actually left open; the
+    expansion is still working from the brief alone."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner([planned("from the planner")])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert outcome.rounds[1].queries[0] == "from the planner"
+    assert "q2" in outcome.rounds[1].queries, "expansion still runs alongside it"
+
+
+def test_the_planner_sees_what_the_round_kept_and_rejected(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa", "A kept video"), result("bbbbbbbbbbb", "A reject")]
+    judge = FakeJudge(
+        metadata={
+            "aaaaaaaaaaa": (VERDICT_MAYBE, "unclear"),
+            "bbbbbbbbbbb": (VERDICT_NO, "vendor marketing"),
+        },
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "walks through the config", [])},
+    )
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, judge, max_rounds=2,
+        mapper=FakeMapper(), planner=planner)
+
+    report = planner.seen[0]
+    assert [video.title for video in report.kept] == ["A kept video"]
+    assert [video.title for video in report.rejected] == ["A reject"]
+    assert report.rejected[0].reason == "vendor marketing"
+
+
+def test_a_stage_two_rejection_reaches_the_planner_with_its_stage(
+    config, ledger, library, client, searches
+) -> None:
+    """Which stage decided is part of the evidence: a metadata NO saw a title
+    and a full NO read every word, and they are not the same claim."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "never pays off the opening", [])},
+    )
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, judge, max_rounds=2,
+        mapper=FakeMapper(), planner=planner)
+
+    assert planner.seen[0].rejected[0].stage == STAGE_FULL
+
+
+def test_the_plan_is_kept_on_the_round_that_produced_it(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner([planned("next query")])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert outcome.rounds[0].plan is not None
+    assert outcome.rounds[1].plan is None, "the last round is never planned"
+
+
+# -- B5: stopping ----------------------------------------------------------
+
+
+def test_coverage_satisfied_is_its_own_stop_reason(
+    config, ledger, library, client, searches
+) -> None:
+    """A run that stopped because the brief was covered and one that ran out of
+    money are opposite outcomes. One word for both would hide the interesting
+    one — and a planner declaring satisfaction in round one is a real failure
+    mode that is only findable if it is labelled."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner([planned(recommendation=RECOMMEND_STOP)])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"], ["q3"]]),
+                  max_rounds=3, mapper=FakeMapper(), planner=planner)
+
+    assert outcome.stopped_because == STOP_COVERAGE_SATISFIED
+    assert len(outcome.rounds) == 1
+    assert ledger.get_run(outcome.run_id).stopped_because == STOP_COVERAGE_SATISFIED
+
+
+def test_the_planner_cannot_outvote_a_budget_ceiling(
+    config, ledger, library, client, searches
+) -> None:
+    """Advisory, never sovereign. `max_videos` fires inside the round, before
+    the planner is consulted at all."""
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    planner = FakePlanner([planned("more please")])
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=3,
+                  max_videos=1, mapper=FakeMapper(), planner=planner)
+
+    assert outcome.stopped_because == STOP_MAX_VIDEOS
+    assert planner.calls == []
+
+
+def test_a_planner_that_failed_does_not_stop_the_loop(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    class Exploding(FakePlanner):
+        def plan(self, brief, territory, report, **kwargs):
+            return RoundPlan(round_number=report.number, parsed=False, problem="call failed")
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=Exploding())
+
+    assert outcome.stopped_because == STOP_MAX_ROUNDS
+    assert len(outcome.rounds) == 2
+
+
+# -- B5: territory revision -------------------------------------------------
+
+
+def test_a_revision_is_applied_and_versioned_on_the_run(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    revision = TerritoryRevision(REVISE_ADD, REVISE_VOCABULARY, "TTL", "kept videos use it")
+    planner = FakePlanner([planned("next", revisions=[revision])])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(mapped("kv cache reuse llm")), planner=planner)
+
+    assert outcome.territory.revision == 2
+    assert "TTL" in outcome.territory.vocabulary
+    row = ledger.get_run(outcome.run_id)
+    assert row.territory_version == "1/v2"
+    assert "TTL" in row.territory_map
+    assert '"history"' in row.territory_map, "the previous version stays on the run"
+
+
+def test_a_run_with_no_revision_keeps_revision_one(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(mapped("kv cache")), planner=FakePlanner())
+
+    assert outcome.territory.revision == 1
+    assert ledger.get_run(outcome.run_id).territory_version == "1"
+
+
+# -- B5: the quota guard ---------------------------------------------------
+
+
+def test_a_round_that_quota_cannot_pay_for_stops_cleanly(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    """Gate 5. Before the round, not inside it — a round that dies halfway
+    leaves the planner reading half a round as though it were the whole one."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    monkeypatch.setattr(
+        "marginalia.flow.discover.quota_headroom", lambda config, ledger: (50, 101)
+    )
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=FakePlanner())
+
+    assert outcome.stopped_because == STOP_QUOTA
+    assert outcome.rounds == [], "no round row for a round that never ran"
+    assert ledger.queries_for_run(outcome.run_id) == []
+
+
+def test_an_unmetered_provider_in_the_chain_is_not_a_shortage(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    """The overflow provider exists so a run continues when the metered one runs
+    dry. Stopping for want of quota while a free fallback sits in the chain
+    would be inventing a ceiling that does not apply."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    monkeypatch.setattr(
+        "marginalia.flow.discover.quota_headroom", lambda config, ledger: (None, 0)
+    )
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]),
+                  max_rounds=1, mapper=FakeMapper(), planner=FakePlanner())
+
+    assert outcome.stopped_because == STOP_MAX_ROUNDS
+
+
+def test_quota_is_enough_for_the_round_that_was_planned(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    monkeypatch.setattr(
+        "marginalia.flow.discover.quota_headroom", lambda config, ledger: (5000, 101)
+    )
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]),
+                  max_rounds=1, mapper=FakeMapper(), planner=FakePlanner())
+
+    assert outcome.stopped_because == STOP_MAX_ROUNDS
+    assert outcome.rounds[0].candidates == 1
+
+
+def test_the_planner_is_told_what_quota_is_left(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    monkeypatch.setattr(
+        "marginalia.flow.discover.quota_headroom", lambda config, ledger: (4000, 101)
+    )
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+        max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert planner.quota_seen == [4000]
+
+
+# -- B5: the queries row records what actually ran -------------------------
+
+
+def test_a_filter_the_provider_could_not_apply_is_not_recorded_as_applied(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    """The B4 defect, closed. The fallback ran the query unfiltered — the right
+    direction — but the row said `order=date` ran. The planner reads that
+    history to choose what to try next, and a record of an experiment that did
+    not happen is worse than no record."""
+    def unfiltered_provider(name, **_):
+        class P:
+            name = "cannot_filter"
+
+            def search(self, query, limit=25, filters=None):
+                return [result("aaaaaaaaaaa")]
+
+            def quota_remaining(self):
+                return None
+
+            def units_spent(self):
+                return 0
+
+            def applied_filters(self):
+                return SearchFilters()
+
+        return P()
+
+    monkeypatch.setattr("marginalia.flow.search.get_search_provider", unfiltered_provider)
+    territory = mapped("kv cache reuse llm")
+    territory = replace(
+        territory,
+        queries=[replace(territory.queries[0], filters=SearchFilters(order="date"))],
+    )
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[[]]), max_rounds=1,
+                  mapper=FakeMapper(territory), planner=FakePlanner())
+
+    row = ledger.queries_for_run(outcome.run_id)[0]
+    assert row.filters_json is None, "nothing ran, so nothing is recorded as having run"
+
+
+def test_a_kept_video_carries_the_reason_of_the_stage_that_decided_it(
+    config, ledger, library, client, searches
+) -> None:
+    """The planner builds coverage claims out of these sentences.
+
+    A video routed through stage 2 was kept on what the transcript said, not on
+    what its title suggested — and the two reasons are not interchangeable.
+    Recording the stage-1 reason for a stage-2 keep would hand the planner "the
+    title looks right" as evidence that part of the brief is satisfied. This
+    test exists because that is exactly what the first version did.
+    """
+    searches["*"] = [result("aaaaaaaaaaa", "A video")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "title is ambiguous")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "the transcript shows the config", [])},
+    )
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, judge, max_rounds=2,
+        mapper=FakeMapper(), planner=planner)
+
+    kept = planner.seen[0].kept[0]
+    assert kept.reason == "the transcript shows the config"
+    assert kept.stage == STAGE_FULL
+
+
+def test_a_stage_one_keep_says_it_was_decided_on_metadata(
+    config, ledger, library, client, searches
+) -> None:
+    """The other half. A YES at stage 1 is stored without stage 2 ever running,
+    and calling that a full-transcript judgement would overstate the evidence
+    behind every coverage claim built on it."""
+    searches["*"] = [result("aaaaaaaaaaa", "A video")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "clearly on brief")})
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, judge, max_rounds=2,
+        mapper=FakeMapper(), planner=planner)
+
+    kept = planner.seen[0].kept[0]
+    assert kept.reason == "clearly on brief"
+    assert kept.stage == STAGE_METADATA
+
+
+def test_the_planner_is_told_how_much_room_is_left_in_this_run(
+    config, ledger, library, client, searches
+) -> None:
+    """From the ceiling the run is actually working to, not the configured one.
+
+    `--max-rounds 2` against a config that says 3 means one more round, and a
+    planner told it has two is writing for a round that will never happen.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"], ["q3"]]),
+        max_rounds=3, mapper=FakeMapper(), planner=planner)
+
+    assert planner.rounds_left_seen == [2, 1]
+
+
+def test_a_filter_the_planner_proposed_and_lost_is_counted_on_the_run_not_the_round(
+    config, ledger, library, client, searches
+) -> None:
+    """It was rejected between rounds, for a query the next round would have run.
+
+    Folding it into "filters rejected on the queries this round ran" would put
+    two meanings in one integer — the thing every counter here is separated to
+    avoid.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+    plan = RoundPlan(
+        round_number=1,
+        coverage=[CoverageItem("a", False, "x")],
+        queries=[PlannedQuery("next query", ORIGIN_PLANNER)],
+        rejected_filters=[
+            FilterRejection("next query", "videoDuration", "long", "never on a main query")
+        ],
+    )
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=FakePlanner([plan]))
+
+    assert outcome.rounds[0].filters_rejected == 0
+    assert [r.field for r in outcome.rejected_filters] == ["videoDuration"]

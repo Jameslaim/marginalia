@@ -76,6 +76,13 @@ DEFAULT_RESULTS_PER_QUERY = 10
 # is 100 quota units out of 10,000 a day, so this number and
 # `queries_per_round` add rather than replace.
 DEFAULT_TERRITORY_QUERIES = 8
+# B5. Queries the round planner is asked for, at the end of every round but the
+# last. They go *first* in the next round — they were written against the gaps
+# that round actually left open, while expansion is still working from the brief
+# alone — and the expansion still runs alongside them, so `queries.origin`
+# answers "did the planner find anything expansion would not have?" from the
+# ledger rather than from an opinion.
+DEFAULT_PLANNER_QUERIES = 6
 # Whether to believe `contentDetails.caption` when it says a video has no
 # captions, and skip the fetch.
 #
@@ -215,6 +222,9 @@ class DiscoverConfig:
     # B4. How many queries the territory map is asked to write. Added to
     # `queries_per_round` in round one, never substituted for it.
     territory_queries: int = DEFAULT_TERRITORY_QUERIES
+    # B5. How many the planner is asked for at the end of each round. Added to
+    # `queries_per_round` from round two, never substituted for it.
+    planner_queries: int = DEFAULT_PLANNER_QUERIES
 
 
 @dataclass(frozen=True)
@@ -475,6 +485,9 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         ),
         territory_queries=_positive(
             section, "territory_queries", DEFAULT_TERRITORY_QUERIES, config_path, "discover"
+        ),
+        planner_queries=_positive(
+            section, "planner_queries", DEFAULT_PLANNER_QUERIES, config_path, "discover"
         ),
     )
 

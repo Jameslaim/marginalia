@@ -104,6 +104,7 @@ class YouTubeApiProvider:
         self._daily_units = daily_units
         self._get = transport or _urlopen
         self._units_spent = 0
+        self._applied = SearchFilters()
 
     # -- public API --------------------------------------------------------
 
@@ -119,6 +120,7 @@ class YouTubeApiProvider:
         # which is the number a queries row records. Running totals are the
         # quota table's job and are already kept there.
         self._units_spent = 0
+        self._applied = filters or SearchFilters()
         wanted = max(1, int(limit))
         if wanted > _MAX_PAGE:
             log.warning(
@@ -152,6 +154,14 @@ class YouTubeApiProvider:
         if self._quota is None:
             return None
         return max(0, self._daily_units - self._quota.quota_used(self.name))
+
+    def units_per_search(self) -> int:
+        """One ``search.list`` plus the batched ``videos.list`` that follows it."""
+        return SEARCH_COST + VIDEOS_COST
+
+    def applied_filters(self) -> SearchFilters:
+        """Everything it was given. This provider applies all four."""
+        return self._applied
 
     def units_spent(self) -> int:
         """What the last search cost. 100 for the search, plus 1 if details ran.

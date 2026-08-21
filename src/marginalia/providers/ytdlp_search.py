@@ -79,6 +79,24 @@ class YtDlpSearchProvider:
         """``None``: this provider has no quota concept. That is the point."""
         return None
 
+    def units_per_search(self) -> int:
+        """``0``. There is no allowance here to plan a round against."""
+        return 0
+
+    def applied_filters(self) -> SearchFilters:
+        """Always empty. ``ytsearch:`` takes no parameters, so none of them ran.
+
+        Reported rather than assumed, and this is the B4 defect it closes. The
+        fallback ran the query unfiltered — the right direction, since the two
+        filters that matter *exclude* and ignoring them returns a superset — but
+        the `queries` row still recorded the filters as though they had been
+        applied. B5's planner reads that history to choose what to try next, and
+        "we already searched this with order=date" is false when the search that
+        ran was plain. A record of an experiment that did not happen is worse
+        than no record at all.
+        """
+        return SearchFilters()
+
     def units_spent(self) -> int:
         """``0``, and that is a fact rather than a placeholder — this is free."""
         return 0
