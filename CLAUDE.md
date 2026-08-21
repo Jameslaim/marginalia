@@ -14,6 +14,14 @@ not drift.
    and thirty-six of them still fill a context window, so a skill that printed one
    back would rebuild the exact cost curve this avoids. Reading notes is M6's job,
    deliberately, and it happens once per question rather than once per command.
+   **The rule does not stop at stdout.** `answers/`, `exports/` and `logs/` are three
+   more surfaces and are held to it identically — a log file is the worst place to
+   leak, because it accumulates every run and nobody opens it until something is
+   already wrong. This is why the log handler is attached to the `marginalia` logger
+   rather than the root: at DEBUG the root collects the HTTP client's records, and
+   those carry request bodies, which here means every transcript and note the model
+   was ever shown. An answer file names the notes it was written from and never
+   quotes them.
 
 2. **Never write into the library directory directly — always go through the CLI.**
    No `Write`, no `Edit`, no shell redirection into the library path. The ledger and
@@ -110,10 +118,20 @@ not drift.
     perfectly good video about Redis and one column cannot hold both claims. There is
     no `rejected` state and there must not be one again.
 
-    **`seen` and `pending` stay distinct.** `pending` means a fetch started and did not
-    finish — the entire payoff of rule 6's write-before-fetch ordering. Collapsing it
-    into `seen` would turn every candidate we merely looked at into a phantom crash and
-    delete the one signal that says a fetch died here.
+    **`seen` is legacy. Nothing produces it.** B2 noticed `mark_seen` had no production
+    caller; the cleanup phase traced it and the answer is that no `videos` row is
+    created at all when stage 1 says NO. `mark_pending` holds the only `INSERT INTO
+    videos` in the system, and it runs immediately before a fetch — so a candidate that
+    was judged and declined without being fetched exists in `decisions` and nowhere
+    else. Measured on the real library: 235 stage-1 NOs have no `videos` row, and all
+    15 rows carrying `seen` were written by B1's migration of the old `rejected` status
+    on a single day. Treat `seen` as a state the schema can hold and the code does not
+    write. Do not build on it, and do not assume a declined candidate has a row.
+
+    **If `seen` ever gains a writer, it must stay distinct from `pending`.** `pending`
+    means a fetch started and did not finish — the entire payoff of rule 6's
+    write-before-fetch ordering. Collapsing the two would turn every candidate we merely
+    looked at into a phantom crash and delete the one signal that says a fetch died here.
 
     **A video is in the library if it has a note**, and `in_library()` is the only place
     that decides. Notes are what `/ask` loads, so note existence *is* membership;
@@ -235,6 +253,21 @@ not drift.
     *before* a round rather than inside one: a round that dies halfway leaves the planner
     reading half a round's evidence as though it were the whole thing.
 
+21. **`answers/` is a record; `exports/` is a view.** An answer is written once and
+    never overwritten — a collision gets a counter — because the earlier answer to the
+    same question is what you compare against when a prompt change was supposed to have
+    improved something, and regenerating one costs a model call over the whole library.
+    An export is the opposite: derived entirely from the ledger, overwritten freely, and
+    safe to delete. Nothing is exported automatically and nothing is written back. The
+    moment an export holds something the ledger does not, there are two sources of truth
+    and no way to tell which is stale.
+
+    **A run export reconstructs rounds; it does not read them.** `queries` carries a
+    round number and `decisions` does not, so a decision is attributed to the last round
+    whose queries had already started. That is sound — the loop is sequential — and it
+    is an inference, so `report.md` states the method in the file rather than presenting
+    it as recorded fact.
+
 ## Structure
 
 ```
@@ -242,7 +275,7 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
   core/     ids.py  ledger.py  library.py        identity, state, file layout
   providers/                                     the part guaranteed to break
   brain/    judge.py  territory.py  planner.py   reasoning; no I/O
-  flow/     search.py  discover.py               execution
+  flow/     search.py  discover.py  export.py   execution
   enrich/   note.py  timestamps.py               what happens after storage
 ```
 
@@ -250,7 +283,12 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
   line it returns. Logic never lives in a `SKILL.md` — the ingest skill routes on
   whether the argument parses as a video ID, and does nothing else.
 - `core/library.py` builds every library path. No other module constructs one; `cli.py`
-  reads `config.library_path` solely to hand it over.
+  reads `config.library_path` solely to hand it over. That now includes `answers/`,
+  `exports/<run_id>/` and `logs/`, none of which is created until something writes into
+  it — a library that has never been asked a question has no `answers/`.
+- `flow/export.py` renders one run as a folder. It reads the ledger and writes files and
+  reasons about neither, which is why it is in `flow/`; the rendering functions above the
+  one entry point are pure and take rows rather than a `Ledger`.
 - `llm.py` makes calls and knows nothing about verdicts. `brain/judge.py` turns replies
   into verdicts and knows nothing about the loop. `flow/discover.py` runs the loop and
   parses nothing. `brain/territory.py` splits the same way and adds a third part: pure
@@ -335,7 +373,9 @@ marg search "<q>" [--limit N]      find candidates; --topic T, --json
 marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requests
 marg note [<video_id>...]          write notes; --limit N, --regenerate [--all], --status
 marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --dry-run
-marg ask "<question>"               answer from every note; --deep <id>, --json
+marg ask "<question>"              answer from every note; --deep <id>, --json,
+                                   --no-save (saving to answers/ is the default)
+marg run export <run_id>           write exports/<run_id>/ from the ledger
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list [--status S]             list videos by asset state (default has_transcript)

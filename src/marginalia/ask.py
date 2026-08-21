@@ -54,6 +54,7 @@ __all__ = [
     "parse_citations",
     "scan_citations",
     "parse_escalations",
+    "render_answer",
     "render_links",
 ]
 
@@ -246,6 +247,69 @@ def render_links(citations: Sequence[AnswerCitation], titles: dict[str, str]) ->
         stamp = f"{citation.seconds // 60:02d}:{citation.seconds % 60:02d}"
         lines.append(f"{citation.raw}  {stamp}  {title}\n    {deep_link(*key)}")
     return lines
+
+
+def render_answer(answer: Answer, *, asked_at: str) -> str:
+    """One answer as a file. Pure: no clock, no disk, no config.
+
+    What goes in is everything needed to judge the answer later without the
+    terminal it was printed to. The answer text **verbatim** — reformatting it
+    would make the stored copy differ from the one the user read, and the point
+    of keeping it is comparison. Then the citations resolved to links, which
+    notes were loaded, whether a transcript was opened and the model's own
+    reason for opening it, and what the whole thing cost.
+
+    ``version`` is here for the reason every other version field in this project
+    is: an answer that looks wrong six weeks from now is a question about which
+    prompt wrote it, and that is unanswerable from prose.
+
+    **No note text and no transcript text.** Only video IDs and titles, which is
+    the same line hard rule 1 draws at every other surface. A file that quoted
+    the notes it read would be a copy of a tenth of the library per question.
+    """
+    lines = [
+        f"# {answer.question}",
+        "",
+        f"- asked: {asked_at}",
+        f"- notes loaded: {answer.notes_loaded}",
+        f"- prompt: answer v{answer.version}",
+        f"- requests: {answer.requests}"
+        f" ({answer.input_tokens} in, {answer.output_tokens} out)",
+        f"- cost: ${answer.cost_usd:.4f}",
+        f"- duration: {answer.elapsed_s:.1f}s",
+        "",
+        "## Answer",
+        "",
+        answer.text.strip() or "(the model returned nothing)",
+        "",
+        "## Citations",
+        "",
+    ]
+    links = render_links(answer.citations, answer.titles)
+    lines.extend(links or ["(none)"])
+    if answer.unparsed:
+        # Kept, for the same reason the counter is printed: a citation the
+        # parser could not read is the next shape to teach it, and it is
+        # unrecoverable once the answer scrolls away.
+        lines.extend(["", "Citation-shaped but unreadable:"])
+        lines.extend(f"  {fragment}" for fragment in answer.unparsed)
+
+    lines.extend(["", "## Notes read", ""])
+    if answer.titles:
+        lines.extend(
+            f"- {video_id}  {answer.titles.get(video_id, '')}".rstrip()
+            for video_id in sorted(answer.titles)
+        )
+    else:
+        lines.append("(none)")
+
+    lines.extend(["", "## Transcripts opened", ""])
+    if answer.opened:
+        lines.extend(f"- {video_id} — {why}" for video_id, why in answer.opened)
+    else:
+        lines.append("(none — the notes were enough)")
+
+    return "\n".join(lines) + "\n"
 
 
 # -- loading -----------------------------------------------------------------

@@ -33,6 +33,8 @@ from marginalia.brain.planner import (
     validate_revisions,
 )
 from marginalia.contracts import (
+    EVIDENCE_CLEAR,
+    EVIDENCE_DEGRADED,
     ORIGIN_PLANNER,
     RECOMMEND_CONTINUE,
     RECOMMEND_STOP,
@@ -90,13 +92,16 @@ def _round(number=1, **kwargs) -> RoundReport:
     return report
 
 
-def _video(title, reason, *, stage="metadata", verdict="no") -> JudgedVideo:
+def _video(
+    title, reason, *, stage="metadata", verdict="no", evidence=EVIDENCE_CLEAR
+) -> JudgedVideo:
     return JudgedVideo(
         video_id=title[:11].ljust(11, "x"),
         title=title,
         stage=stage,
         verdict=verdict,
         reason=reason,
+        evidence=evidence,
     )
 
 
@@ -627,3 +632,61 @@ def test_a_removal_proposed_against_a_query_that_ran_is_accepted_end_to_end() ->
 
     assert [revision.term for revision in plan.revisions] == ["semantic cache"]
     assert not plan.refused_revisions
+
+
+# -- a degraded keeper is not coverage ---------------------------------------
+
+
+def test_an_unreadable_keeper_is_listed_apart_from_the_keepers() -> None:
+    """`DEGRADED` means stage 2 could not read the transcript. The video is
+    stored and gets no note, so nothing will ever be answered from it — and a
+    planner reading it inside KEPT would count it as coverage and stop looking
+    for the video that would actually have covered that part of the brief.
+
+    Split rather than annotated: an adjective inside a list is something a model
+    may or may not weigh, and a heading that says *these do not count* is not.
+    """
+    report = _round(
+        kept=[
+            _video("Readable one", "walks through the config", verdict="yes"),
+            _video(
+                "Garbled one",
+                "captions are unreadable",
+                verdict="yes",
+                evidence=EVIDENCE_DEGRADED,
+            ),
+        ]
+    )
+
+    rendered = render_round(report)
+
+    assert "KEPT (1):" in rendered
+    assert "KEPT BUT UNREADABLE (1)" in rendered
+    assert "do NOT count toward coverage" in rendered
+    # The video is still named. It was found and stored, and hiding it entirely
+    # would invite the planner to keep searching for a video it already has.
+    assert "Garbled one" in rendered
+    kept_block = rendered.split("KEPT (1):")[1].split("KEPT BUT UNREADABLE")[0]
+    assert "Garbled one" not in kept_block
+    assert "Readable one" in kept_block
+
+
+def test_a_round_with_nothing_degraded_says_none() -> None:
+    """The heading is always present, and empty is the normal case. A section
+    that appears only when something went wrong teaches the planner to read its
+    absence as reassurance, which is not what an absence means."""
+    report = _round(kept=[_video("Readable one", "good", verdict="yes")])
+
+    rendered = render_round(report)
+
+    unreadable = rendered.split("KEPT BUT UNREADABLE")[1].split("REJECTED")[0]
+    assert "(0)" in unreadable
+    assert "- none" in unreadable
+
+
+def test_the_planner_prompt_says_an_unreadable_video_satisfies_nothing() -> None:
+    """The render splits them; the prompt has to say what the split means.
+    Either half alone is a rule enforced by a coincidence."""
+    text = " ".join(load_prompt(PLAN_PROMPT, directory=prompts_dir()).text.split())
+    assert "KEPT BUT UNREADABLE" in text
+    assert "Only videos under KEPT can satisfy anything" in text

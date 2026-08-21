@@ -48,6 +48,7 @@ from ..brain.planner import Planner, apply_revisions
 from ..brain.territory import Mapper, validate
 from ..config import Config
 from ..contracts import (
+    EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
     NEW,
     ORIGIN_BRIEF,
@@ -800,6 +801,7 @@ def _store(
             "video_id": candidate.video_id,
             "title": result.title or candidate.title,
             "channel": result.channel or candidate.channel,
+            "channel_id": result.channel_id or None,
             "duration_s": result.duration_s,
             "language": result.language,
             "upload_date": result.upload_date,
@@ -817,6 +819,10 @@ def _store(
         source=result.source,
         caption_kind=result.caption_kind,
         provider=config.transcript_order[0],
+        # Free with the fetch, and one network call per video to backfill later.
+        # `None` rather than `""` so the ledger's COALESCE preserves an earlier
+        # value instead of overwriting it with an absence.
+        channel_id=result.channel_id or None,
     )
 
 
@@ -828,6 +834,12 @@ def _judged(candidate: SearchResult, stage: str, verdict) -> JudgedVideo:
     that sentence is the entire evidence the planner gets about the video. What
     keeps hard rule 1 true here is that :class:`JudgedVideo` has nowhere to put
     anything larger.
+
+    ``evidence`` comes across too, and only stage 2 has one to give: a
+    ``MetadataVerdict`` never read a transcript and so never claims its evidence
+    was clear or damaged. Defaulting a stage-1 verdict to ``CLEAR`` is the
+    honest reading — the metadata was legible — and it keeps the discriminator
+    meaning one thing, which is *stage 2 could not read the transcript*.
     """
     return JudgedVideo(
         video_id=candidate.video_id,
@@ -835,6 +847,7 @@ def _judged(candidate: SearchResult, stage: str, verdict) -> JudgedVideo:
         stage=stage,
         verdict=verdict.verdict,
         reason=verdict.reason,
+        evidence=getattr(verdict, "evidence", EVIDENCE_CLEAR),
     )
 
 

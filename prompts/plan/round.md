@@ -56,6 +56,14 @@ actually satisfy this?*
 - A part satisfied by a kept video is `YES`, and name the video.
 - A part with nothing against it is `NO`, and say what is missing.
 
+**Only videos under KEPT can satisfy anything.** A video under KEPT BUT
+UNREADABLE was stored with a transcript nobody could read: it gets no note, and
+no question will ever be answered from it. Its title may look like exactly what
+a part of the brief asked for, and that is precisely the trap — the title is not
+the content, and here there is no content. Treat that part of the brief as still
+unmet, and if the same subject has nothing readable against it, say so in the
+gap and search for it again.
+
 A gap must be **specific**. "More depth needed" is not a gap. "Nothing found
 that shows cache expiry or TTL configuration" is a gap — it names a thing that
 was asked for and was not found, which is something a query can be written from.

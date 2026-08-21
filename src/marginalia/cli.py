@@ -6,6 +6,7 @@
     marg note               write understanding notes for stored videos
     marg snap-timestamps    align cited timestamps in notes to the transcript
     marg ask "<question>"   answer a question from every note at once
+    marg run export <id>    render one discovery run as a readable folder
     marg llm-check          one request to the configured model provider
     marg status <url|id>    show ledger state for one video
     marg list               list stored videos
@@ -45,6 +46,7 @@ from .contracts import (
     REJECTED,
     SKIPPED,
     STATUS_HAS_TRANSCRIPT,
+    Answer,
     Candidate,
     DiscoverRun,
     RoundReport,
@@ -54,11 +56,12 @@ from .contracts import (
 )
 from .core.ids import extract_video_id
 from .flow.discover import discover
+from .flow.export import export_run
 from .llm import LlmClient, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
 from .enrich.note import note_version, write_notes
-from .ask import answer_question, deep_link, render_links
+from .ask import answer_question, deep_link, render_answer, render_links
 from .enrich.timestamps import snap_library
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider
@@ -84,11 +87,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO if args.verbose else logging.WARNING,
-        format="%(levelname)s %(name)s: %(message)s",
-        stream=sys.stderr,
-    )
+    _configure_console(verbose=args.verbose)
 
     try:
         return int(args.handler(args))
@@ -153,6 +152,10 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             source=result.source,
             caption_kind=result.caption_kind,
             provider=provider.name,
+            # Empty becomes None so the ledger's COALESCE keeps whatever a
+            # previous store recorded: a provider that stopped reporting the
+            # channel must not erase one that did.
+            channel_id=result.channel_id or None,
         )
         _report(
             "has-transcript",
@@ -691,11 +694,18 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             config, library, client, question, ledger=ledger, deep=deep
         )
 
+    # Saved before anything is printed, and saved even when the answer is empty
+    # or the model call failed. A failed answer is the one you most want a
+    # record of: it carries the cost, the prompt version and the notes that were
+    # loaded, which is the whole of what you would otherwise be guessing at.
+    saved = _save_answer(library, answer, no_save=args.no_save)
+
     if args.json:
         print(
             json.dumps(
                 {
                     "question": answer.question,
+                    "saved_to": str(saved) if saved else None,
                     "answer": answer.text,
                     "prompt_version": answer.version,
                     "model": answer.model,
@@ -724,6 +734,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         return EXIT_FAILED if not answer.text else EXIT_OK
 
     if not answer.text:
+        if saved is not None:
+            log.warning("ask: the empty answer was recorded at %s", saved)
         return _error("the model returned an empty answer", EXIT_FAILED)
 
     print(answer.text)
@@ -746,6 +758,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         f"{answer.requests} requests, ${answer.cost_usd:.4f}, {_elapsed(answer.elapsed_s)}"
         f", v{answer.version}"
     )
+    if saved is not None:
+        print(f"saved:    {saved}")
     if answer.unparsed:
         # Named, not merely counted. A number tells you something was lost; the
         # fragment tells you which shape to teach the parser next.
@@ -753,6 +767,79 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         for fragment in answer.unparsed:
             log.debug("ask: unreadable citation: %s", fragment)
     return EXIT_OK
+
+
+def _save_answer(library: Library, answer: Answer, *, no_save: bool) -> Path | None:
+    """Write the answer under ``answers/``, and never fail a question over it.
+
+    Saving is the default and `--no-save` is the exception, because an answer
+    that exists only until the terminal scrolls is the thing this was added to
+    stop. But the answer has already been produced and paid for by the time this
+    runs: a full disk or a permission error must cost the record, not the
+    answer. Logged rather than raised, and loudly enough to notice.
+    """
+    if no_save:
+        return None
+    try:
+        return library.write_answer(
+            answer.question,
+            render_answer(answer, asked_at=_now()),
+            day=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        )
+    except (OSError, ValueError) as exc:
+        log.warning("ask: the answer could not be saved (%s)", exc)
+        return None
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _cmd_run_export(args: argparse.Namespace) -> int:
+    """Render one discovery run as a folder of readable files.
+
+    On demand only. Nothing is exported automatically and nothing is written
+    back: the ledger stays the single source of truth and this is a view of it,
+    which is what makes it safe to delete or regenerate at any time.
+    """
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+
+    with Ledger(library.ledger_path) as ledger:
+        try:
+            exported = export_run(config, ledger, library, args.run_id)
+        except LookupError:
+            # The error names what does exist. Finding a run ID was the other
+            # half of "diagnosing a run means writing SQL", and an error that
+            # said only "no such run" would leave that half unsolved.
+            return _error(
+                f"no run {args.run_id!r}. Recent runs:\n"
+                + "\n".join(_recent_runs(ledger)),
+                EXIT_USAGE,
+            )
+        except ValueError as exc:
+            return _error(str(exc), EXIT_USAGE)
+
+    for path in exported.files:
+        print(f"wrote     {path}")
+    print(
+        f"export:   run {exported.run_id}, {exported.rounds} rounds, "
+        f"{exported.queries} queries, {exported.decisions} decisions "
+        f"-> {exported.directory}"
+    )
+    return EXIT_OK
+
+
+def _recent_runs(ledger: Ledger, limit: int = 10) -> list[str]:
+    runs = ledger.list_runs()[-limit:]
+    if not runs:
+        return ["  (none — no discovery run has been recorded)"]
+    return [
+        f"  {run.run_id}  {run.started_at[:10]}  {run.topic}  "
+        f"({run.videos_stored} stored, {run.stopped_because or '?'})"
+        for run in reversed(runs)
+    ]
 
 
 def _cmd_snap_timestamps(args: argparse.Namespace) -> int:
@@ -934,6 +1021,7 @@ def _store(
             "video_id": video_id,
             "title": result.title,
             "channel": result.channel,
+            "channel_id": result.channel_id or None,
             "duration_s": result.duration_s,
             "language": result.language,
             "upload_date": result.upload_date,
@@ -1032,8 +1120,57 @@ def _load(args: argparse.Namespace) -> Config:
     config = load_config()
     if config.created:
         print(f"created config {config.path} (edit it to change the library path)", file=sys.stderr)
+    _configure_file_log(Library(config.library_path))
     log.info("library: %s", config.library_path)
     return config
+
+
+def _configure_console(*, verbose: bool) -> None:
+    """stderr gets INFO or WARNING. The file gets DEBUG.
+
+    The handler's own level is set, not just the root logger's, and that is the
+    load-bearing detail. `marginalia` is put at DEBUG so debug records reach the
+    file at all, and a record that passes its originating logger's level is
+    handed to every handler up the chain — so a root handler left at level 0
+    would print every DEBUG line to the terminal. Setting the level on the
+    handler is what keeps the two destinations independent.
+    """
+    console = logging.StreamHandler(stream=sys.stderr)
+    console.setLevel(logging.INFO if verbose else logging.WARNING)
+    console.setFormatter(logging.Formatter("%(levelname)s %(name)s: %(message)s"))
+    logging.basicConfig(level=logging.WARNING, handlers=[console], force=True)
+    log.setLevel(logging.DEBUG)
+
+
+def _configure_file_log(library: Library) -> None:
+    """Send `marginalia`'s own DEBUG records to ``logs/marg-<date>.log``.
+
+    Attached to the `marginalia` logger rather than the root, which is a
+    deliberate narrowing rather than tidiness. At DEBUG the root logger collects
+    the HTTP client's records too — and those carry request bodies, which on
+    this project means every note and every transcript the model was ever shown.
+    A log file is a surface like any other, and hard rule 1 does not stop
+    applying because the destination is a file nobody reads. Only this package's
+    own loggers reach here, and none of them is given content to log.
+
+    **Never fatal.** An unwritable library must not stop a command that was
+    about to work; the failure goes to stderr once and the command continues.
+    """
+    path = library.log_path(datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+    for existing in log.handlers:
+        if getattr(existing, "baseFilename", None) == str(path):
+            return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(path, encoding="utf-8", delay=True)
+    except OSError as exc:
+        print(f"warning: could not open the log file at {path} ({exc})", file=sys.stderr)
+        return
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)-7s %(name)s: %(message)s")
+    )
+    log.addHandler(handler)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1117,8 +1254,21 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="VIDEO",
         help="force a transcript open (repeatable); the model may still open more",
     )
+    ask.add_argument(
+        "--no-save",
+        action="store_true",
+        help="do not write the answer to the library's answers/ folder",
+    )
     ask.add_argument("--json", action="store_true", help="machine-readable output")
     ask.set_defaults(handler=_cmd_ask)
+
+    runs = subparsers.add_parser("run", help="inspect a past discovery run")
+    run_actions = runs.add_subparsers(dest="run_command", required=True)
+    run_export = run_actions.add_parser(
+        "export", help="write a readable folder for one run under exports/"
+    )
+    run_export.add_argument("run_id", help="the run ID, as `marg discover` reported it")
+    run_export.set_defaults(handler=_cmd_run_export)
 
     snap = subparsers.add_parser(
         "snap-timestamps", help="align cited timestamps in notes to the transcript"

@@ -1,0 +1,490 @@
+"""One discovery run, rendered as a folder you can read.
+
+::
+
+    exports/<run_id>/
+    ├── report.md       what happened, round by round
+    ├── brief.md
+    ├── territory.md    including revisions, with diffs and reasons
+    ├── queries.tsv     query, origin, filters, results, quota
+    └── decisions.tsv   video, stage, verdict, evidence, reason
+
+Generated on demand and never automatically. **The ledger stays the single
+source of truth** — everything here is derived, nothing is stored back, and a
+second export of the same run overwrites the first. That is the difference
+between a view and a copy, and it is the reason this can be deleted at any time
+without losing anything.
+
+What it replaces is writing SQL by hand. Diagnosing a run meant five joins
+against a schema you had to remember, which in practice meant runs went
+undiagnosed. This is also deliberately readable by a model: hand the folder over
+and ask what went wrong.
+
+**Rounds are reconstructed, not stored.** `queries` carries a round number;
+`decisions` does not. The loop is strictly sequential — round N's queries all run
+before round N+1's first query — so a decision is attributed to the last round
+whose queries had already started when it was made. That inference is stated in
+``report.md`` itself rather than presented as a recorded fact, because a report
+that quietly invents precision is worse than one that admits its method.
+
+No transcript text and no note text, here as everywhere. A decision's ``reason``
+is the judge's own sentence about a video, which is the same thing the planner
+is shown and the largest piece of content that travels anywhere in this system.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from typing import Any, Iterable, Sequence
+
+from ..config import Config
+from ..contracts import EVIDENCE_DEGRADED, ExportedRun
+from ..core.ledger import DecisionRow, Ledger, QueryRow, RunRow
+from ..core.library import Library
+
+log = logging.getLogger(__name__)
+
+# `render_map` rather than `render_territory`: `brain/planner.py` already has a
+# `render_territory`, and it renders the map *for a model* while this one renders
+# it for a person. Two functions with one name doing different things is how this
+# project ended up with two `Citation` types nothing could tell apart.
+__all__ = ["export_run", "render_report", "render_map", "MISSING"]
+
+# What an empty cell says in a TSV. Not the empty string: a run of tabs tells
+# you a column exists and says nothing about whether anyone ever wrote to it,
+# and these files are read in a terminal as often as in a spreadsheet.
+MISSING = "-"
+
+
+def export_run(config: Config, ledger: Ledger, library: Library, run_id: str) -> ExportedRun:
+    """Write the folder for one run. Raises ``LookupError`` if it does not exist."""
+    run = ledger.get_run(run_id)
+    if run is None:
+        raise LookupError(run_id)
+
+    queries = ledger.queries_for_run(run_id)
+    decisions = ledger.decisions_for_run(run_id)
+    territory = _territory(run)
+
+    written = [
+        library.write_export(run_id, "report.md", render_report(config, run, queries, decisions)),
+        library.write_export(run_id, "brief.md", _render_brief(run)),
+        library.write_export(run_id, "territory.md", render_map(run, territory)),
+        library.write_export(run_id, "queries.tsv", _render_queries(queries)),
+        library.write_export(run_id, "decisions.tsv", _render_decisions(decisions)),
+    ]
+    log.info("export: wrote %d files for run %s", len(written), run_id)
+    return ExportedRun(
+        run_id=run_id,
+        directory=library.export_dir(run_id),
+        files=written,
+        rounds=run.rounds,
+        queries=len(queries),
+        decisions=len(decisions),
+    )
+
+
+# -- report -------------------------------------------------------------------
+
+
+def render_report(
+    config: Config,
+    run: RunRow,
+    queries: Sequence[QueryRow],
+    decisions: Sequence[DecisionRow],
+) -> str:
+    """The run in prose and tables. Pure: everything it needs is an argument."""
+    rounds = sorted({query.round for query in queries})
+    lines = [
+        f"# {run.topic}",
+        "",
+        f"Run `{run.run_id}`, {run.rounds} round(s).",
+        "",
+        "| | |",
+        "|---|---|",
+        f"| started | {run.started_at} |",
+        f"| finished | {run.finished_at or '**never — the run did not complete**'} |",
+        f"| stopped because | {run.stopped_because or MISSING} |",
+        f"| model | {run.model or MISSING} |",
+        f"| brief prompt | v{run.brief_version or MISSING} |",
+        f"| territory map | {run.territory_version or 'none built'} |",
+        f"| candidates seen | {run.candidates_seen} |",
+        f"| videos stored | {run.videos_stored} |",
+        f"| model requests | {run.requests_made} |",
+        f"| tokens | {run.input_tokens} in, {run.output_tokens} out |",
+        f"| estimated cost | ${config.llm.cost_usd(run.input_tokens, run.output_tokens):.4f} |",
+        "",
+    ]
+
+    if not run.finished_at:
+        # Said once, loudly, at the top. Every count below it is a partial
+        # count, and a reader who misses that will diagnose the wrong thing.
+        lines.extend(
+            [
+                "> This run has no `finished_at`. It crashed or was interrupted, so",
+                "> every number above is whatever had been reached at that moment.",
+                "",
+            ]
+        )
+
+    lines.extend(["## Rounds", ""])
+    if not rounds:
+        lines.extend(
+            [
+                "No queries were recorded against this run. Either it stopped before",
+                "searching, or it predates the `queries` table gaining a writer in B4.",
+                "",
+            ]
+        )
+    else:
+        boundaries = _round_boundaries(queries, rounds)
+        lines.append(
+            "Decisions are attributed to a round by timestamp: the loop is "
+            "sequential, so a decision belongs to the last round whose queries had "
+            "already started. The `queries` table records its round directly; the "
+            "`decisions` table does not."
+        )
+        lines.append("")
+        for number in rounds:
+            lines.extend(
+                _round_section(
+                    number,
+                    [query for query in queries if query.round == number],
+                    _decisions_in(decisions, boundaries, number),
+                )
+            )
+
+    lines.extend(["## Decisions in total", ""])
+    lines.extend(_verdict_table(decisions))
+    degraded = [
+        row for row in decisions if (row.evidence or "").upper() == EVIDENCE_DEGRADED
+    ]
+    if degraded:
+        lines.extend(
+            [
+                "",
+                f"**{len(degraded)} verdict(s) rested on degraded evidence** — the "
+                "transcript could not be read. A degraded keeper gets no note, so "
+                "nothing can be answered from it and it satisfies no part of the brief:",
+                "",
+            ]
+        )
+        lines.extend(
+            f"- `{row.video_id}` [{row.stage}/{row.verdict}] {_flat(row.reason)}"
+            for row in degraded
+        )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _round_section(
+    number: int, queries: Sequence[QueryRow], decisions: Sequence[DecisionRow]
+) -> list[str]:
+    found = sum(query.results_count or 0 for query in queries)
+    quota = sum(query.quota_units or 0 for query in queries)
+    lines = [
+        f"### Round {number}",
+        "",
+        f"{len(queries)} quer(ies), {found} result(s), {quota} quota unit(s), "
+        f"{len(decisions)} decision(s).",
+        "",
+    ]
+    for query in queries:
+        detail = f" ({query.origin_detail})" if query.origin_detail else ""
+        results = MISSING if query.results_count is None else str(query.results_count)
+        filters = _filters(query.filters_json)
+        suffix = f" — filters: {filters}" if filters != MISSING else ""
+        lines.append(f"- `{query.origin}`{detail} **{query.query}** → {results} results{suffix}")
+    lines.append("")
+    if decisions:
+        lines.extend(_verdict_table(decisions))
+        lines.append("")
+    return lines
+
+
+def _verdict_table(decisions: Sequence[DecisionRow]) -> list[str]:
+    """Counts per stage and verdict. Every stage that appears, in ledger order."""
+    if not decisions:
+        return ["No decisions."]
+    stages: dict[str, dict[str, int]] = {}
+    for row in decisions:
+        stages.setdefault(row.stage, {})
+        stages[row.stage][row.verdict] = stages[row.stage].get(row.verdict, 0) + 1
+    verdicts = sorted({verdict for counts in stages.values() for verdict in counts})
+    lines = [
+        "| stage | " + " | ".join(verdicts) + " | total |",
+        "|---|" + "---|" * (len(verdicts) + 1),
+    ]
+    for stage, counts in stages.items():
+        cells = [str(counts.get(verdict, 0)) for verdict in verdicts]
+        lines.append(f"| {stage} | " + " | ".join(cells) + f" | {sum(counts.values())} |")
+    return lines
+
+
+def _round_boundaries(queries: Sequence[QueryRow], rounds: Sequence[int]) -> dict[int, str]:
+    """When each round's searching began, as a timestamp string.
+
+    The earliest `ran_at` in the round. Timestamps here are ISO-8601 in UTC to
+    the second, so string comparison is chronological comparison and no parsing
+    is needed to order them.
+    """
+    return {
+        number: min(query.ran_at for query in queries if query.round == number)
+        for number in rounds
+    }
+
+
+def _decisions_in(
+    decisions: Sequence[DecisionRow], boundaries: dict[int, str], number: int
+) -> list[DecisionRow]:
+    """Decisions belonging to one round, under the sequential-loop assumption.
+
+    A decision made *before* the first round's first query — which happens when
+    a gate rejects a video the search already returned in an earlier run — falls
+    into the first round rather than nowhere. Dropping it would make the
+    per-round counts silently disagree with the total, and a report whose parts
+    do not sum to its whole is one nobody trusts twice.
+    """
+    ordered = sorted(boundaries.items())
+    start = boundaries[number]
+    following = [when for other, when in ordered if other > number]
+    end = following[0] if following else None
+    first = ordered[0][0]
+    return [
+        row
+        for row in decisions
+        if (row.decided_at >= start or (number == first and row.decided_at < start))
+        and (end is None or row.decided_at < end)
+    ]
+
+
+# -- the other four files ------------------------------------------------------
+
+
+def _render_brief(run: RunRow) -> str:
+    return "\n".join(
+        [
+            f"# Brief — {run.topic}",
+            "",
+            f"Run `{run.run_id}`, written by prompt v{run.brief_version or MISSING}.",
+            "",
+            run.brief.strip() or "(the run stored no brief)",
+            "",
+        ]
+    )
+
+
+def render_map(run: RunRow, territory: dict[str, Any] | None) -> str:
+    """The map, its revisions, and the diff each revision made.
+
+    A revision that says only "removed `caching`" is a change you cannot judge.
+    The previous version's term lists are stored on the run for exactly this,
+    so the diff is rendered against them rather than described.
+    """
+    lines = [f"# Territory — {run.topic}", ""]
+    if not territory:
+        lines.extend(
+            [
+                "No territory map was stored for this run. Runs before B4 have none,",
+                "and a mapping call that failed leaves discovery narrower, not broken.",
+                "",
+            ]
+        )
+        return "\n".join(lines)
+
+    revision = territory.get("revision", 1)
+    lines.extend(
+        [
+            f"Prompt v{territory.get('version') or MISSING}, revision {revision}.",
+            "",
+            "## Final map",
+            "",
+            "**Concepts** — what falls under the brief:",
+            "",
+        ]
+    )
+    lines.extend(_bullets(territory.get("concepts")))
+    lines.extend(["", "**Vocabulary** — words the subject uses, never on their own a "
+                  "reason to keep a video:", ""])
+    lines.extend(_bullets(territory.get("vocabulary")))
+
+    recency = territory.get("recency") or {}
+    months = recency.get("months")
+    lines.extend(
+        [
+            "",
+            "**Recency**: "
+            + (f"{months} months" if months else "any time")
+            + f" — {recency.get('reason') or 'no reason given'}",
+            "",
+            "## Queries the map proposed",
+            "",
+        ]
+    )
+    for query in territory.get("queries") or []:
+        filters = query.get("filters") or {}
+        suffix = f" — filters: {filters}" if filters else ""
+        variant = f" (variant of “{query['variant_of']}”)" if query.get("variant_of") else ""
+        lines.append(f"- **{query.get('text')}**{variant}{suffix}")
+    if not territory.get("queries"):
+        lines.append("- none")
+
+    rejected = territory.get("rejected") or []
+    lines.extend(["", "## Filters the validator refused", ""])
+    if rejected:
+        # Every refusal widened the search. Listed so that "why did this run see
+        # more than I asked for?" has an answer that is not a shrug.
+        lines.extend(
+            f"- `{item.get('field')}={item.get('value')}` on “{item.get('query')}” — "
+            f"{item.get('reason')}"
+            for item in rejected
+        )
+    else:
+        lines.append("- none")
+
+    lines.extend(["", "## Revisions", ""])
+    revisions = territory.get("revisions") or []
+    if not revisions:
+        lines.append("The map was never revised.")
+    else:
+        for item in revisions:
+            sign = "+" if item.get("action") == "add" else "−"
+            lines.append(f"- {sign} **{item.get('kind')}**: {item.get('term')}")
+            lines.append(f"  - reason: {item.get('reason') or MISSING}")
+            if item.get("evidence"):
+                lines.append(f"  - evidence: {item['evidence']}")
+
+    history = territory.get("history") or []
+    if history:
+        lines.extend(["", "## Diffs", ""])
+        previous = history[0]
+        for snapshot in [*history[1:], territory]:
+            lines.extend(_diff(previous, snapshot))
+            previous = snapshot
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _diff(before: dict[str, Any], after: dict[str, Any]) -> list[str]:
+    lines = [
+        f"### revision {before.get('revision', '?')} → {after.get('revision', '?')}",
+        "",
+    ]
+    for kind in ("concepts", "vocabulary"):
+        old = list(before.get(kind) or [])
+        new = list(after.get(kind) or [])
+        added = [term for term in new if term not in old]
+        removed = [term for term in old if term not in new]
+        if not added and not removed:
+            continue
+        lines.append(f"- {kind}:")
+        lines.extend(f"  - + {term}" for term in added)
+        lines.extend(f"  - − {term}" for term in removed)
+    if len(lines) == 2:
+        lines.append("- no change to either term list")
+    lines.append("")
+    return lines
+
+
+def _render_queries(queries: Sequence[QueryRow]) -> str:
+    header = (
+        "round\tquery\torigin\torigin_detail\tfilters\tresults\tprovider\tquota\tran_at"
+    )
+    rows = [
+        "\t".join(
+            [
+                str(query.round),
+                _cell(query.query),
+                _cell(query.origin),
+                _cell(query.origin_detail),
+                _filters(query.filters_json),
+                MISSING if query.results_count is None else str(query.results_count),
+                _cell(query.provider),
+                MISSING if query.quota_units is None else str(query.quota_units),
+                _cell(query.ran_at),
+            ]
+        )
+        for query in queries
+    ]
+    return "\n".join([header, *rows])
+
+
+def _render_decisions(decisions: Sequence[DecisionRow]) -> str:
+    header = "video_id\tstage\tverdict\tevidence\tprompt_version\tdecided_at\ttopic\treason"
+    rows = [
+        "\t".join(
+            [
+                _cell(row.video_id),
+                _cell(row.stage),
+                _cell(row.verdict),
+                _cell(row.evidence),
+                _cell(row.prompt_version),
+                _cell(row.decided_at),
+                _cell(row.topic),
+                _cell(row.reason),
+            ]
+        )
+        for row in decisions
+    ]
+    return "\n".join([header, *rows])
+
+
+# -- shared -------------------------------------------------------------------
+
+
+def _territory(run: RunRow) -> dict[str, Any] | None:
+    if not run.territory_map:
+        return None
+    try:
+        loaded = json.loads(run.territory_map)
+    except ValueError:
+        log.warning("export: run %s has an unreadable territory map", run.run_id)
+        return None
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _filters(filters_json: str | None) -> str:
+    """Filters as ``key=value`` pairs, or ``-``. Reasons are dropped here.
+
+    ``filters_json`` stores each filter's value *and* the reason the model gave
+    for it. The reason belongs in ``territory.md``, where there is room for a
+    sentence; a TSV cell holding a paragraph is a TSV nobody can read.
+    """
+    if not filters_json:
+        return MISSING
+    try:
+        loaded = json.loads(filters_json)
+    except ValueError:
+        return _cell(filters_json)
+    if not isinstance(loaded, dict) or not loaded:
+        return MISSING
+    parts = []
+    for key, value in sorted(loaded.items()):
+        if isinstance(value, dict):
+            value = value.get("value", "")
+        if value not in (None, ""):
+            parts.append(f"{key}={value}")
+    return " ".join(parts) or MISSING
+
+
+def _cell(value: str | None) -> str:
+    """One TSV cell: never empty, never containing a tab or a newline.
+
+    A stray tab inside a judge's reason would shift every column after it, and
+    the file would still open — silently wrong, which is the failure mode this
+    project keeps finding. Collapsing whitespace makes that impossible.
+    """
+    if value is None:
+        return MISSING
+    flat = _flat(value)
+    return flat or MISSING
+
+
+def _flat(value: str | None) -> str:
+    return " ".join((value or "").split())
+
+
+def _bullets(items: Iterable[str] | None) -> list[str]:
+    listed = [f"- {item}" for item in (items or [])]
+    return listed or ["- none"]

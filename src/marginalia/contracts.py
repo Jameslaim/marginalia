@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field, fields
+from pathlib import Path
 
 __all__ = [
     # asset state
@@ -117,6 +118,8 @@ __all__ = [
     "SnapResult",
     # model calls
     "Usage",
+    # run exports
+    "ExportedRun",
 ]
 
 
@@ -603,6 +606,21 @@ class JudgedVideo:
     stage: str  # metadata | full
     verdict: str
     reason: str
+    # How good the evidence behind that verdict was. `CLEAR` for anything stage
+    # 1 decided — it never claims to have read a transcript — and whatever
+    # stage 2 graded otherwise.
+    #
+    # This field is what stops a `DEGRADED` keeper counting toward coverage. A
+    # degraded video was kept and stored, and the one thing known about it is
+    # that nobody could read it: it gets no note, so `/ask` will never answer
+    # from it. A planner shown it in the ordinary KEPT list would conclude a
+    # part of the brief was satisfied by evidence that does not exist, and stop
+    # searching for the video that would actually have satisfied it.
+    evidence: str = EVIDENCE_CLEAR
+
+    @property
+    def unreadable(self) -> bool:
+        return self.evidence == EVIDENCE_DEGRADED
 
 
 @dataclass(frozen=True)
@@ -753,6 +771,11 @@ class TranscriptResult:
     # (machine-generated). Recorded because manual captions are materially
     # better and a later upgrade pass needs to know which it has.
     caption_kind: str = "manual"
+    # The uploader's stable YouTube ID, as opposed to `channel`, which is the
+    # display name and can be changed at any time. Nothing reads it yet; it is
+    # carried because it arrives free with the fetch, and backfilling it later
+    # would mean one network call per video already in the library.
+    channel_id: str = ""
 
 
 # -- search -----------------------------------------------------------------
@@ -1314,3 +1337,25 @@ class Usage:
         self.requests += other.requests
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+
+
+# -- run exports -------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ExportedRun:
+    """What ``marg run export`` wrote, and how much of the run it found.
+
+    The counts are here so the command can report what it rendered rather than
+    only where it put it. A run that exports with zero queries and zero
+    decisions is a real and readable answer — it usually means the run died
+    before it judged anything — and an export that said only "written to
+    exports/abc123" would hide it behind a success message.
+    """
+
+    run_id: str
+    directory: Path
+    files: list[Path]
+    rounds: int
+    queries: int
+    decisions: int

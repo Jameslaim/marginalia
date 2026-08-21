@@ -161,6 +161,7 @@ class YtDlpProvider:
             caption_kind=kind,
             title=str(info.get("title") or ""),
             channel=str(info.get("channel") or info.get("uploader") or ""),
+            channel_id=str(info.get("channel_id") or info.get("uploader_id") or ""),
             duration_s=int(info.get("duration") or 0),
             upload_date=info.get("upload_date") or None,
             chapters=_chapters(info),

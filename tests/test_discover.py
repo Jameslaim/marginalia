@@ -114,6 +114,22 @@ def transcript(text: str = "hello world") -> TranscriptResult:
         channel="Chan",
         duration_s=600,
         upload_date="20260101",
+        channel_id="UCtestchannelid",
+    )
+
+
+def transcript_without_channel(text: str = "hello world") -> TranscriptResult:
+    """A provider that did not report a channel. `channel_id` defaults to "",
+    and the store path must turn that into `None` so the ledger's COALESCE
+    keeps whatever an earlier fetch recorded."""
+    return TranscriptResult(
+        lines=[TranscriptLine(0, 1000, text)],
+        language="en",
+        source="captions",
+        title="A video",
+        channel="Chan",
+        duration_s=600,
+        upload_date="20260101",
     )
 
 
@@ -1970,3 +1986,107 @@ def test_a_filter_the_planner_proposed_and_lost_is_counted_on_the_run_not_the_ro
 
     assert outcome.rounds[0].filters_rejected == 0
     assert [r.field for r in outcome.rejected_filters] == ["videoDuration"]
+
+
+# -- cleanup: a degraded keeper never counts as coverage ---------------------
+
+
+def test_a_degraded_keeper_reaches_the_planner_labelled_as_such(
+    config, ledger, library, client, searches
+) -> None:
+    """The gap this closes: `evidence` was graded, counted and used to suppress
+    the note, and then dropped on the floor before the planner saw anything.
+
+    A DEGRADED keeper is a video nobody could read. It is stored, it gets no
+    note, and `/ask` will never answer from it — so a planner that reads it as
+    an ordinary keeper concludes a part of the brief is satisfied by evidence
+    that does not exist, and stops looking for the video that would satisfy it.
+    """
+    searches["*"] = [result("aaaaaaaaaaa", "A garbled video")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={
+            "aaaaaaaaaaa": (VERDICT_YES, "captions are unreadable", [], EVIDENCE_DEGRADED)
+        },
+    )
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, judge, max_rounds=2,
+        mapper=FakeMapper(), planner=planner)
+
+    kept = planner.seen[0].kept
+    assert [video.title for video in kept] == ["A garbled video"]
+    assert kept[0].evidence == EVIDENCE_DEGRADED
+    assert kept[0].unreadable
+
+
+def test_a_clean_keeper_carries_clear_evidence(
+    config, ledger, library, client, searches
+) -> None:
+    """The other half. If everything read DEGRADED the split above would be
+    a section heading that always fires, which is no signal at all."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "walks through the config", [])},
+    )
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, judge, max_rounds=2,
+        mapper=FakeMapper(), planner=planner)
+
+    assert planner.seen[0].kept[0].evidence == EVIDENCE_CLEAR
+    assert not planner.seen[0].kept[0].unreadable
+
+
+def test_a_stage_one_keeper_is_clear_rather_than_ungraded(
+    config, ledger, library, client, searches
+) -> None:
+    """A stage-1 YES never read a transcript, so it has no evidence grade of its
+    own. `CLEAR` is the honest default — the metadata was legible — and it keeps
+    `DEGRADED` meaning one thing: stage 2 could not read the transcript."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner()
+
+    run(config, ledger, library, client,
+        FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "obviously relevant")}),
+        max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    kept = planner.seen[0].kept[0]
+    assert kept.stage == STAGE_METADATA
+    assert kept.evidence == EVIDENCE_CLEAR
+
+
+# -- cleanup: channel_id ----------------------------------------------------
+
+
+def test_a_stored_video_records_its_channel_id(
+    config, ledger, library, client, searches
+) -> None:
+    """Free with the fetch. Backfilling it later means one network call per
+    video already in the library, which is why it goes in before anything reads
+    it rather than after something wants it."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    run(config, ledger, library, client, FakeJudge(), mapper=FakeMapper())
+
+    assert ledger.get("aaaaaaaaaaa").channel_id == "UCtestchannelid"
+    assert library.read_meta("aaaaaaaaaaa")["channel_id"] == "UCtestchannelid"
+
+
+def test_a_provider_that_reports_no_channel_id_does_not_erase_one(
+    config, ledger, library, client, searches
+) -> None:
+    """`COALESCE` only helps if the caller passes `None` rather than `""`."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    ledger.mark_pending("aaaaaaaaaaa")
+    ledger.mark_has_transcript(
+        "aaaaaaaaaaa", source="captions", provider="ytdlp", channel_id="UCearlier"
+    )
+    ledger.mark_pending("aaaaaaaaaaa")
+
+    from marginalia.flow import discover as flow
+
+    flow._store(library, ledger, result("aaaaaaaaaaa"), transcript_without_channel(), config)
+
+    assert ledger.get("aaaaaaaaaaa").channel_id == "UCearlier"

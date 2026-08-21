@@ -441,9 +441,27 @@ def render_round(
     else:
         lines.append("- none")
 
+    # Split, not merely labelled. A `DEGRADED` keeper is a video stage 2 could
+    # not read: it was stored, it gets no note, and `/ask` will never answer
+    # from it. Listed among the ordinary keepers it reads as coverage — the
+    # planner would conclude a part of the brief is satisfied by evidence that
+    # does not exist, and stop searching for the video that would have
+    # satisfied it. Two headings say what one adjective inside a list does not.
+    readable = [video for video in report.kept if not video.unreadable]
+    unreadable = [video for video in report.kept if video.unreadable]
+
     lines.append("")
-    lines.append(f"KEPT ({len(report.kept)}):")
-    lines.extend(_video_lines(report.kept) or ["- none"])
+    lines.append(f"KEPT ({len(readable)}):")
+    lines.extend(_video_lines(readable) or ["- none"])
+
+    lines.append("")
+    lines.append(
+        f"KEPT BUT UNREADABLE ({len(unreadable)}) — the transcript was too damaged to "
+        "read, so no note will be written and nothing can be answered from these. "
+        "They do NOT count toward coverage: treat the part of the brief they look "
+        "like they cover as still unmet."
+    )
+    lines.extend(_video_lines(unreadable) or ["- none"])
 
     lines.append("")
     lines.append(f"REJECTED ({len(report.rejected)}):")

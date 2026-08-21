@@ -427,6 +427,8 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "SnapResult",
         # model calls
         "Usage",
+        # run exports
+        "ExportedRun",
     }
     assert set(contracts.__all__) == expected
     for name in expected:
