@@ -30,11 +30,14 @@ class FakeProvider:
     def __init__(self, results: list[SearchResult]) -> None:
         self._results = results
 
-    def search(self, query: str, limit: int = 25) -> list[SearchResult]:
+    def search(self, query: str, limit: int = 25, filters=None) -> list[SearchResult]:
         return self._results
 
     def quota_remaining(self) -> int | None:
         return None
+
+    def units_spent(self) -> int:
+        return 0
 
 
 def result(video_id: str, title: str, duration_s: int | None, channel: str) -> SearchResult:
@@ -151,7 +154,7 @@ def test_a_bad_query_is_a_usage_error(library: Path, monkeypatch) -> None:
     from marginalia.providers.base import PermanentError
 
     class Broken(FakeProvider):
-        def search(self, query: str, limit: int = 25):
+        def search(self, query: str, limit: int = 25, filters=None):
             raise PermanentError("empty query")
 
     monkeypatch.setattr("marginalia.flow.search.get_search_provider", lambda name, **_: Broken([]))

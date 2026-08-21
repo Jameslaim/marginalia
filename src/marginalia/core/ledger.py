@@ -56,6 +56,7 @@ __all__ = [
     "VideoRow",
     "DecisionRow",
     "RunRow",
+    "QueryRow",
     "skip_reason",
     "normalise_topic",
     "in_library",
@@ -163,15 +164,15 @@ CREATE TABLE IF NOT EXISTS runs (
   input_tokens    INTEGER NOT NULL DEFAULT 0,
   output_tokens   INTEGER NOT NULL DEFAULT 0,
   stopped_because TEXT,
-  territory_map     TEXT,        -- B4 writes it, nothing reads it yet
+  territory_map     TEXT,        -- the map B4 worked from, stored whole
   territory_version TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs(topic);
 
 -- Every query a run issued, and why it issued it. `origin` is the column
 -- that makes "why did it search for *that*?" answerable; without it a run's
--- queries are a list with no causal story. B4 and B5 write these rows —
--- the table exists now so that neither needs a migration.
+-- queries are a list with no causal story. Created empty in B1 and given its
+-- writer in B4, so that adding provenance needed no migration.
 CREATE TABLE IF NOT EXISTS queries (
   run_id         TEXT NOT NULL,
   round          INTEGER NOT NULL,
@@ -311,6 +312,37 @@ class RunRow:
         return cls(**{field.name: row[field.name] for field in fields(cls)})
 
 
+@dataclass(frozen=True)
+class QueryRow:
+    """One search a run issued, and why it issued it.
+
+    ``origin`` is the column the table exists for. Without it a run's queries
+    are a list with no causal story, and *"why did it search for that?"* — the
+    first question anyone asks when a round goes wrong — has no answer at all.
+    ``origin_detail`` carries the half ``origin`` cannot: which territory term,
+    or which unexplained concept, produced this particular string.
+
+    ``filters_json`` holds each filter's value **and the reason given for it**,
+    because a filter you cannot inspect is one you cannot correct. Two of the
+    four exclude content, so this is the record of what a run chose not to see.
+    """
+
+    run_id: str
+    round: int
+    query: str
+    filters_json: str | None
+    origin: str
+    origin_detail: str | None
+    results_count: int | None
+    provider: str | None
+    quota_units: int | None
+    ran_at: str
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> QueryRow:
+        return cls(**{field.name: row[field.name] for field in fields(cls)})
+
+
 # Every table the current schema expects, and the columns it must have. Used
 # by the drift guard; kept beside the dataclasses so it cannot fall behind.
 _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
@@ -318,22 +350,10 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "decisions": frozenset(field.name for field in fields(DecisionRow)),
     "quota": frozenset({"provider", "date", "units_used"}),
     "runs": frozenset(field.name for field in fields(RunRow)),
-    # No dataclass yet: nothing reads `queries` until B4, and inventing a row
-    # type for a table with no reader would be inventing its shape twice.
-    "queries": frozenset(
-        {
-            "run_id",
-            "round",
-            "query",
-            "filters_json",
-            "origin",
-            "origin_detail",
-            "results_count",
-            "provider",
-            "quota_units",
-            "ran_at",
-        }
-    ),
+    # B4 gave the table a writer and a reader, so it gets a dataclass like the
+    # rest. Until then the columns were listed by hand here, deliberately: a row
+    # type for a table nothing read would have been inventing its shape twice.
+    "queries": frozenset(field.name for field in fields(QueryRow)),
 }
 
 
@@ -949,6 +969,24 @@ class Ledger:
             raise LedgerError(f"no run row for {run_id!r}: start_run() must be called first")
         return self.get_run(run_id)  # type: ignore[return-value]
 
+    def save_territory(self, run_id: str, territory_map: str, version: str) -> RunRow:
+        """Store the map this run worked from, in full.
+
+        Same argument as storing the brief. When results look wrong the first
+        question is *what did it think this topic covered?*, and a list of the
+        queries that ran does not answer it — the queries are the conclusion,
+        and the map is the reasoning that produced them.
+        """
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE runs SET territory_map = ?, territory_version = ? WHERE run_id = ?",
+                (territory_map, version, run_id),
+            )
+        if cursor.rowcount == 0:
+            raise LedgerError(f"no run row for {run_id!r}: start_run() must be called first")
+        log.info("run %s stored a territory map (version %s)", run_id, version)
+        return self.get_run(run_id)  # type: ignore[return-value]
+
     def get_run(self, run_id: str) -> RunRow | None:
         row = self._conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
         return RunRow.from_sqlite(row) if row is not None else None
@@ -961,6 +999,72 @@ class Ledger:
                 "SELECT * FROM runs WHERE topic = ? ORDER BY started_at", (normalise_topic(topic),)
             ).fetchall()
         return [RunRow.from_sqlite(row) for row in rows]
+
+    # -- queries -----------------------------------------------------------
+
+    def log_query(
+        self,
+        run_id: str,
+        *,
+        round: int,
+        query: str,
+        origin: str,
+        origin_detail: str | None = None,
+        filters_json: str | None = None,
+        results_count: int | None = None,
+        provider: str | None = None,
+        quota_units: int | None = None,
+    ) -> QueryRow:
+        """Record one search, with where it came from and what it cost.
+
+        Written after the search rather than before it, unlike ``mark_pending``,
+        and the difference is deliberate: a fetch that dies mid-flight leaves a
+        file half-written and a state nobody can infer, while a search that dies
+        leaves nothing at all. What this row is for is the *result* — how many
+        candidates a query surfaced, and at what quota cost — and a row written
+        beforehand could carry neither.
+        """
+        row = QueryRow(
+            run_id=run_id,
+            round=round,
+            query=query,
+            filters_json=filters_json,
+            origin=origin,
+            origin_detail=origin_detail,
+            results_count=results_count,
+            provider=provider,
+            quota_units=quota_units,
+            ran_at=_utcnow(),
+        )
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO queries (
+                    run_id, round, query, filters_json, origin, origin_detail,
+                    results_count, provider, quota_units, ran_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row.run_id,
+                    row.round,
+                    row.query,
+                    row.filters_json,
+                    row.origin,
+                    row.origin_detail,
+                    row.results_count,
+                    row.provider,
+                    row.quota_units,
+                    row.ran_at,
+                ),
+            )
+        log.info("query: %s round %d %s/%r", run_id, round, origin, query)
+        return row
+
+    def queries_for_run(self, run_id: str) -> list[QueryRow]:
+        rows = self._conn.execute(
+            "SELECT * FROM queries WHERE run_id = ? ORDER BY rowid", (run_id,)
+        ).fetchall()
+        return [QueryRow.from_sqlite(row) for row in rows]
 
     def latest_decision(
         self, video_id: str, topic: str, *, verdict: str | None = None

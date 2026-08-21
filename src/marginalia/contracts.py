@@ -20,6 +20,7 @@ implementations it constrains.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field, fields
 
@@ -40,6 +41,21 @@ __all__ = [
     "ORIGIN_TERRITORY",
     "ORIGIN_PLANNER",
     "ORIGIN_THREAD",
+    # search filters
+    "FILTER_PUBLISHED_AFTER",
+    "FILTER_ORDER",
+    "FILTER_RELEVANCE_LANGUAGE",
+    "FILTER_VIDEO_DURATION",
+    "FILTER_FIELDS",
+    "HARD_FILTERS",
+    "ORDER_VALUES",
+    "VIDEO_DURATION_VALUES",
+    "SearchFilters",
+    # territory
+    "Recency",
+    "PlannedQuery",
+    "FilterRejection",
+    "TerritoryMap",
     # verdict vocabulary
     "VERDICT_YES",
     "VERDICT_NO",
@@ -151,6 +167,291 @@ ORIGIN_BRIEF = "brief"
 ORIGIN_TERRITORY = "territory"
 ORIGIN_PLANNER = "planner"
 ORIGIN_THREAD = "thread"
+
+
+# -- search filters -----------------------------------------------------------
+
+# The four search parameters a territory map may propose, named exactly as the
+# model writes them and the validator reads them. Shared vocabulary, so rule 10
+# puts them here rather than in `brain/` or `providers/`.
+#
+# **They are not equivalent, and the difference is the whole reason this is a
+# validated structure rather than a dict.** Two of them exclude and two do not:
+#
+# ============================  ==========================================
+# `publishedAfter`              hard — removes everything older, silently
+# `videoDuration`               hard — removes everything outside the band
+# `order`                       sorts only; a different slice, never a
+#                               smaller universe
+# `relevanceLanguage`           soft — ranks; a highly relevant result in
+#                               another language still comes back
+# ============================  ==========================================
+#
+# A hard filter applied without a reason excludes content permanently and
+# invisibly, which is the same failure shape as a false-negative verdict: you
+# never find out what it removed. `videoDuration` is the trap of the four — a
+# rule that drops Shorts is the duration bias the stage-1 prompt spends four
+# paragraphs forbidding, moved into the search layer where nobody would see it.
+FILTER_PUBLISHED_AFTER = "publishedAfter"
+FILTER_ORDER = "order"
+FILTER_RELEVANCE_LANGUAGE = "relevanceLanguage"
+FILTER_VIDEO_DURATION = "videoDuration"
+
+FILTER_FIELDS = frozenset(
+    {
+        FILTER_PUBLISHED_AFTER,
+        FILTER_ORDER,
+        FILTER_RELEVANCE_LANGUAGE,
+        FILTER_VIDEO_DURATION,
+    }
+)
+
+# The two that exclude. Named as a set because the rules that matter are the
+# ones about these two, and a reader should not have to remember which is which.
+HARD_FILTERS = frozenset({FILTER_PUBLISHED_AFTER, FILTER_VIDEO_DURATION})
+
+ORDER_VALUES = frozenset({"relevance", "date", "viewCount", "rating", "title"})
+VIDEO_DURATION_VALUES = frozenset({"any", "short", "medium", "long"})
+
+# `relevanceLanguage` deliberately has no value set. It takes an ISO 639-1 code
+# and any list written here would go stale; more to the point it is the one soft
+# parameter, so a wrong value costs ranking rather than content. Its shape is
+# checked instead — see `brain/territory.py`.
+
+
+@dataclass(frozen=True)
+class SearchFilters:
+    """What was asked of the search provider beyond the query string.
+
+    Every field optional and unset by default, because the default search — no
+    filters at all — is the widest one, and width is what discovery is short of.
+    A filter is something a reason had to justify.
+    """
+
+    published_after: str | None = None
+    order: str | None = None
+    relevance_language: str | None = None
+    video_duration: str | None = None
+
+    def __bool__(self) -> bool:
+        return bool(self.as_dict())
+
+    def as_dict(self) -> dict[str, str]:
+        """Only what is set, keyed by the wire name. Empty when nothing is."""
+        pairs = (
+            (FILTER_PUBLISHED_AFTER, self.published_after),
+            (FILTER_ORDER, self.order),
+            (FILTER_RELEVANCE_LANGUAGE, self.relevance_language),
+            (FILTER_VIDEO_DURATION, self.video_duration),
+        )
+        return {name: value for name, value in pairs if value is not None}
+
+    def without(self, name: str) -> SearchFilters:
+        """The same filters with one field cleared. How a rejection is applied.
+
+        A rejected filter never drops the query — it drops the *filter*, which
+        widens the search. Rejecting toward width is the same asymmetry the
+        judge follows: an unjustified exclusion is invisible and permanent, and
+        one extra unfiltered query is neither.
+        """
+        attribute = _FILTER_ATTRIBUTES.get(name)
+        if attribute is None:
+            return self
+        return SearchFilters(
+            **{
+                current.name: (None if current.name == attribute else getattr(self, current.name))
+                for current in fields(self)
+            }
+        )
+
+
+_FILTER_ATTRIBUTES = {
+    FILTER_PUBLISHED_AFTER: "published_after",
+    FILTER_ORDER: "order",
+    FILTER_RELEVANCE_LANGUAGE: "relevance_language",
+    FILTER_VIDEO_DURATION: "video_duration",
+}
+
+
+# -- territory ----------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Recency:
+    """How far back this subject is worth searching, and why.
+
+    ``months`` of ``None`` means *any time*, which is the default and the wider
+    answer. The reason is stored with the decision because a recency call you
+    cannot inspect is one you cannot correct — "SQLite WAL mode" and "prompt
+    caching pricing" want opposite answers and no rule produces both.
+    """
+
+    months: int | None = None
+    reason: str = ""
+
+    @property
+    def limited(self) -> bool:
+        return self.months is not None
+
+    @property
+    def label(self) -> str:
+        return f"last {self.months} months" if self.months else "any time"
+
+
+@dataclass(frozen=True)
+class FilterRejection:
+    """A filter the code refused to execute. Counted, logged, never silent.
+
+    Same discipline as the unparsed counters: something the model proposed was
+    dropped, and a drop nobody counts is indistinguishable from a proposal that
+    was never made.
+    """
+
+    query: str
+    field: str
+    value: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class PlannedQuery:
+    """One search to run, where it came from, and what was asked alongside it.
+
+    ``origin_detail`` is the half of provenance that ``origin`` cannot carry: a
+    territory query is only interesting if you can see *which* map term produced
+    it, which is exactly the question asked when a round finds something the
+    topic words never would have.
+    """
+
+    text: str
+    origin: str
+    origin_detail: str = ""
+    filters: SearchFilters = SearchFilters()
+    # Set when this query exists only to *add* a slice another query excludes —
+    # the one circumstance in which `videoDuration` is allowed at all.
+    variant_of: str = ""
+    # Per filter, in the model's words. Kept beside the value in `filters_json`
+    # so that reading the ledger answers "why this filter?" without a rerun.
+    reasons: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def key(self) -> tuple[str, tuple[tuple[str, str], ...]]:
+        """Identity for duplicate detection: the text *and* the filters.
+
+        Not the text alone. The same query ordered by `relevance` and by `date`
+        returns different slices of the same result set — free width, and the
+        reason `order` is worth proposing — so collapsing them as duplicates
+        would throw away the thing that makes the parameter useful.
+        """
+        return (
+            " ".join(self.text.lower().split()),
+            tuple(sorted(self.filters.as_dict().items())),
+        )
+
+    def filters_json(self) -> str:
+        """``{"order": {"value": "date", "why": "..."}}`` — value and reason together."""
+        return json.dumps(
+            {
+                name: {"value": value, "why": self.reasons.get(name, "")}
+                for name, value in self.filters.as_dict().items()
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+
+
+@dataclass(frozen=True)
+class TerritoryMap:
+    """What a subject actually covers, worked out before anything is searched.
+
+    The problem it exists for: search "AI agent memory" and you get videos with
+    those words in the title. The video called "Building ReAct loops with tool
+    calling" is exactly what was wanted and never says "agent" — and no amount
+    of careful judging finds a video the search never returned.
+
+    ``concepts`` and ``vocabulary`` are separate on purpose. A concept is
+    something that falls *under* the brief; a vocabulary term is only a word the
+    subject uses. The distinction is load-bearing at judging time, where the map
+    is shown as **the words this subject uses and nothing more** — B3 measured
+    this judge confabulating from suggestive context, and a territory map is a
+    list of suggestive context.
+    """
+
+    topic: str
+    version: str
+    concepts: list[str] = field(default_factory=list)
+    vocabulary: list[str] = field(default_factory=list)
+    recency: Recency = Recency()
+    queries: list[PlannedQuery] = field(default_factory=list)
+    # Filters the validator refused, in the order they were caught.
+    rejected: list[FilterRejection] = field(default_factory=list)
+    parsed: bool = True
+    problem: str = ""
+    # What the mapping call cost. One call per run, so the report can name it
+    # exactly rather than folding it into a total.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    latency_s: float = 0.0
+
+    def __bool__(self) -> bool:
+        return bool(self.concepts or self.vocabulary or self.queries)
+
+    @property
+    def terms(self) -> list[str]:
+        """Concepts and vocabulary together, deduplicated, in order.
+
+        What the judge is shown. It is deliberately *not* the queries or the
+        filters: those are instructions to a search engine, and showing them to
+        a judge would be handing it the reasoning it is supposed to check.
+        """
+        seen: set[str] = set()
+        terms: list[str] = []
+        for term in [*self.concepts, *self.vocabulary]:
+            key = " ".join(term.lower().split())
+            if key and key not in seen:
+                seen.add(key)
+                terms.append(term)
+        return terms
+
+    def as_json(self) -> str:
+        """What goes in ``runs.territory_map``.
+
+        Stored whole, for the same reason the brief is: when results look wrong
+        the first question is *what did it think this topic covered?*, and that
+        is unanswerable from a list of queries.
+        """
+        return json.dumps(
+            {
+                "topic": self.topic,
+                "version": self.version,
+                "concepts": self.concepts,
+                "vocabulary": self.vocabulary,
+                "recency": {"months": self.recency.months, "reason": self.recency.reason},
+                "queries": [
+                    {
+                        "text": query.text,
+                        "origin_detail": query.origin_detail,
+                        "filters": query.filters.as_dict(),
+                        "reasons": query.reasons,
+                        "variant_of": query.variant_of,
+                    }
+                    for query in self.queries
+                ],
+                "rejected": [
+                    {
+                        "query": rejection.query,
+                        "field": rejection.field,
+                        "value": rejection.value,
+                        "reason": rejection.reason,
+                    }
+                    for rejection in self.rejected
+                ],
+                "parsed": self.parsed,
+                "problem": self.problem,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
 
 # -- verdicts ---------------------------------------------------------------
@@ -411,13 +712,42 @@ class RoundReport:
     # Stage-2 replies that broke the five-line contract. Counted rather than
     # swallowed, the way citation parsing counts what it drops.
     unparsed: int = 0
+    # B4. Filters the validator refused before any search ran. Its own counter,
+    # like everything else here: a rejected filter is neither a failure nor a
+    # rejection nor a parse problem, and a round that reported it as any of
+    # those would be reporting three causes in one number.
+    filters_rejected: int = 0
     concepts: list[str] = field(default_factory=list)
     from_threads: bool = False
+    # B4. The queries as planned, with their origins and filters. `queries`
+    # above stays a list of strings: it is what the report prints and what
+    # `--json` has always carried, and a reader of either should not have to
+    # learn a structure to see what was searched for.
+    planned: list[PlannedQuery] = field(default_factory=list)
+    # video_id -> the origins whose queries returned it. *Every* origin, not the
+    # first: "would the old brief expansion have found this?" is a question
+    # about all the queries that surfaced a video, and recording only the first
+    # would answer it with whichever set happened to run earlier.
+    surfaced_by: dict[str, set[str]] = field(default_factory=dict)
 
     @property
     def judged_here(self) -> int:
         """Candidates this round actually reached a stage-2 verdict on."""
         return self.stored + self.flipped_to_no
+
+    def only_from(self, origin: str) -> list[str]:
+        """Videos no other origin's queries returned. The phase's value, counted.
+
+        A territory query that surfaces a video the brief's own expansion also
+        surfaced has proved nothing. This is the set that would not have been
+        seen at all — and since a video the search never returns is invisible to
+        every stage after it, that set is the entire difference the map makes.
+        """
+        return [
+            video_id
+            for video_id, origins in self.surfaced_by.items()
+            if origins == {origin}
+        ]
 
 
 @dataclass
@@ -435,6 +765,12 @@ class DiscoverRun:
     dry_run: bool = False
 
     cost_usd: float = 0.0
+
+    # B4. What this run understood the subject to cover, and every filter the
+    # validator refused across all rounds. An empty map is a legitimate state:
+    # a mapping call that failed leaves discovery narrower, not broken.
+    territory: TerritoryMap = field(default_factory=lambda: TerritoryMap(topic="", version=""))
+    rejected_filters: list[FilterRejection] = field(default_factory=list)
 
     @property
     def candidates_seen(self) -> int:
@@ -477,6 +813,12 @@ class SearchRun:
     # order. The report names these: a silent fallback looks like a quota that
     # never runs out.
     fallbacks: list[tuple[str, str]] = field(default_factory=list)
+    # What was asked alongside the query string, and what the answer cost in
+    # the provider's own units. Both go into the `queries` row: "why did it
+    # search for that?" is only half the question, and "what did that buy?" is
+    # the other half.
+    filters: SearchFilters = SearchFilters()
+    quota_units: int = 0
 
     def of(self, verdict: str) -> list[Candidate]:
         return [candidate for candidate in self.candidates if candidate.verdict == verdict]

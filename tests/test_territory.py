@@ -1,0 +1,766 @@
+"""Territory mapping: parsing, and the validator that decides what may execute.
+
+Two kinds of test, and the second kind is the important one. Parsing is the
+usual "does it survive a model that did not read the format" surface. Validation
+is a **safety** surface: two of the four search parameters *exclude*, and a
+wrongly-applied one removes videos before anything in this system has seen them,
+which is the one failure mode nothing downstream can detect or recover.
+
+So the validator's tests are written the way a rejection test should be — every
+one of them asserts both halves: that the filter did not run, and that the query
+still did.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import date
+
+import pytest
+
+from marginalia.brain.territory import (
+    MAP_PROMPT,
+    Mapper,
+    parse_map,
+    user_constraints,
+    validate,
+)
+from marginalia.contracts import (
+    FILTER_ORDER,
+    FILTER_PUBLISHED_AFTER,
+    FILTER_RELEVANCE_LANGUAGE,
+    FILTER_VIDEO_DURATION,
+    ORIGIN_TERRITORY,
+    Brief,
+    PlannedQuery,
+    Recency,
+    SearchFilters,
+)
+from marginalia.llm import load_prompt, prompts_dir
+
+TODAY = date(2026, 8, 21)
+
+BRIEF = Brief(topic="ai agent memory", text="INTENT\nAgent memory.", version="1/1")
+
+GOOD_MAP = """
+CONCEPTS: episodic memory, tool calling loops, context compaction
+VOCABULARY: ReAct, LangGraph, scratchpad, vector store
+RECENCY: 12 months — the agent tooling ecosystem turns over inside a year
+
+QUERY: building react loops with tool calling
+FROM: vocabulary: ReAct
+FILTERS: order=date (this year's patterns rank poorly by relevance)
+
+QUERY: langgraph persistent state tutorial
+FROM: vocabulary: LangGraph
+FILTERS: none
+"""
+
+
+def _query(text="a query", **kwargs) -> PlannedQuery:
+    kwargs.setdefault("origin", ORIGIN_TERRITORY)
+    return PlannedQuery(text=text, **kwargs)
+
+
+# -- parsing ----------------------------------------------------------------
+
+
+def test_a_well_formed_map_is_read_whole() -> None:
+    territory = parse_map(GOOD_MAP, topic="ai agent memory", version="1")
+
+    assert territory.concepts == ["episodic memory", "tool calling loops", "context compaction"]
+    assert territory.vocabulary == ["ReAct", "LangGraph", "scratchpad", "vector store"]
+    assert territory.recency.months == 12
+    assert "turns over" in territory.recency.reason
+    assert [query.text for query in territory.queries] == [
+        "building react loops with tool calling",
+        "langgraph persistent state tutorial",
+    ]
+    assert territory.parsed
+
+
+def test_every_query_carries_where_it_came_from() -> None:
+    """`origin_detail` is what makes the phase's own claim checkable.
+
+    "The map found a video the topic words never would have" is only inspectable
+    if each query says which term produced it.
+    """
+    territory = parse_map(GOOD_MAP, topic="ai agent memory", version="1")
+
+    assert territory.queries[0].origin_detail == "vocabulary: ReAct"
+    assert all(query.origin == ORIGIN_TERRITORY for query in territory.queries)
+
+
+def test_a_filter_carries_its_reason() -> None:
+    territory = parse_map(GOOD_MAP, topic="ai agent memory", version="1")
+
+    query = territory.queries[0]
+    assert query.filters.order == "date"
+    assert "relevance" in query.reasons[FILTER_ORDER]
+    assert '"why"' in query.filters_json()
+
+
+def test_concepts_and_vocabulary_are_kept_apart() -> None:
+    """A concept falls under the brief; a vocabulary term is only a word.
+
+    They are shown to the judge as one flat list on purpose, but they are stored
+    separately — the map is the record of what the run thought, and collapsing
+    the two would lose the distinction the prompt asked for.
+    """
+    territory = parse_map(GOOD_MAP, topic="t", version="1")
+
+    assert "ReAct" not in territory.concepts
+    assert "episodic memory" not in territory.vocabulary
+    assert territory.terms[:3] == territory.concepts
+
+
+def test_terms_deduplicates_across_the_two_lists() -> None:
+    text = "CONCEPTS: caching\nVOCABULARY: Caching, kv cache\nRECENCY: ANY — stable\nQUERY: a b\nFROM: t"
+    territory = parse_map(text, topic="t", version="1")
+
+    assert territory.terms == ["caching", "kv cache"]
+
+
+def test_markdown_decoration_survives() -> None:
+    text = """
+**CONCEPTS:** one, two
+**VOCABULARY**: three
+RECENCY: ANY — stable subject
+
+**QUERY:** sqlite wal mode explained
+FROM: topic
+FILTERS: none
+"""
+    territory = parse_map(text, topic="t", version="1")
+
+    assert territory.concepts == ["one", "two"]
+    assert territory.queries[0].text == "sqlite wal mode explained"
+
+
+def test_a_reply_with_no_queries_is_not_parsed() -> None:
+    """There is nothing to search. Marked, not silently returned as an empty map.
+
+    An empty map that claims to have parsed reads, to every later reader, as a
+    subject that genuinely has no other words.
+    """
+    territory = parse_map("CONCEPTS: a\nVOCABULARY: b\nRECENCY: ANY — x", topic="t", version="1")
+
+    assert not territory.parsed
+    assert "no queries" in territory.problem
+
+
+def test_a_sentence_instead_of_a_map_is_not_parsed() -> None:
+    territory = parse_map("I'm sorry, I can't help with that.", topic="t", version="1")
+
+    assert not territory.parsed
+    assert not territory.queries
+
+
+def test_an_over_long_query_is_dropped_and_named() -> None:
+    text = (
+        "CONCEPTS: a\nVOCABULARY: b\nRECENCY: ANY — x\n"
+        "QUERY: " + " ".join(["word"] * 20) + "\nFROM: t\n"
+        "QUERY: short one\nFROM: t"
+    )
+    territory = parse_map(text, topic="t", version="1")
+
+    assert [query.text for query in territory.queries] == ["short one"]
+    assert "too long" in territory.problem
+
+
+def test_too_many_queries_are_capped() -> None:
+    blocks = "\n".join(f"QUERY: query number {n}\nFROM: topic\n" for n in range(40))
+    territory = parse_map(
+        f"CONCEPTS: a\nVOCABULARY: b\nRECENCY: ANY — x\n{blocks}", topic="t", version="1"
+    )
+
+    assert len(territory.queries) == 24
+
+
+def test_the_cap_says_what_it_dropped(caplog: pytest.LogCaptureFixture) -> None:
+    """A silent cap reads, months later, as a model that proposed only this many."""
+    blocks = "\n".join(f"QUERY: query number {n}\nFROM: topic\n" for n in range(40))
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.territory"):
+        parse_map(f"CONCEPTS: a\nRECENCY: ANY — x\n{blocks}", topic="t", version="1")
+
+    assert any("40 queries proposed" in record.getMessage() for record in caplog.records)
+
+
+# -- recency ----------------------------------------------------------------
+
+
+def test_recency_is_a_judgement_with_a_reason() -> None:
+    territory = parse_map(
+        "CONCEPTS: a\nRECENCY: 6 months — provider pricing changed three times this year\n"
+        "QUERY: a b\nFROM: t",
+        topic="t",
+        version="1",
+    )
+
+    assert territory.recency.months == 6
+    assert territory.recency.reason == "provider pricing changed three times this year"
+    assert territory.recency.label == "last 6 months"
+
+
+def test_any_is_a_real_answer_and_the_wider_one() -> None:
+    territory = parse_map(
+        "CONCEPTS: a\nRECENCY: ANY — SQLite WAL mode has behaved this way for a decade\n"
+        "QUERY: a b\nFROM: t",
+        topic="t",
+        version="1",
+    )
+
+    assert territory.recency.months is None
+    assert not territory.recency.limited
+    assert territory.recency.label == "any time"
+
+
+def test_an_unreadable_recency_line_widens_rather_than_guesses() -> None:
+    """A window invented from a line nobody could read would exclude on a parse bug."""
+    territory = parse_map(
+        "CONCEPTS: a\nRECENCY: sometime recentish\nQUERY: a b\nFROM: t", topic="t", version="1"
+    )
+
+    assert territory.recency.months is None
+    assert "recency line unreadable" in territory.problem
+
+
+def test_an_absurd_window_is_not_used() -> None:
+    territory = parse_map(
+        "CONCEPTS: a\nRECENCY: 9000 months — forever\nQUERY: a b\nFROM: t",
+        topic="t",
+        version="1",
+    )
+
+    assert territory.recency.months is None
+
+
+# -- the validator: unsupported and malformed --------------------------------
+
+
+def test_an_unsupported_field_is_rejected_and_counted() -> None:
+    """Caught at parse time, and counted the same way a validator rejection is."""
+    territory = parse_map(
+        "CONCEPTS: a\nRECENCY: ANY — x\nQUERY: a b\nFROM: t\n"
+        "FILTERS: publishedBefore=2020-01-01 (older only)",
+        topic="t",
+        version="1",
+    )
+
+    assert territory.queries[0].filters.as_dict() == {}
+    assert [rejection.field for rejection in territory.rejected] == ["publishedBefore"]
+    assert "not a search parameter" in territory.rejected[0].reason
+
+
+def test_a_malformed_published_after_is_caught_not_executed() -> None:
+    """Gate 3. Models compute dates badly, and the failure is silent: a cutoff
+    the API cannot read is a 400, and one in the future returns nothing at all —
+    which reads exactly like a subject with no videos."""
+    queries = [
+        _query(filters=SearchFilters(published_after="2027-13-45"), origin=ORIGIN_TERRITORY)
+    ]
+
+    kept, rejections = validate(
+        queries, recency=Recency(months=12, reason="fast"), today=TODAY
+    )
+
+    assert len(kept) == 1, "the query still runs; only the filter is dropped"
+    assert kept[0].filters.published_after is None
+    assert rejections[0].field == FILTER_PUBLISHED_AFTER
+    assert "readable" in rejections[0].reason
+
+
+def test_a_future_cutoff_is_rejected() -> None:
+    queries = [_query(filters=SearchFilters(published_after="2030-01-01"))]
+
+    kept, rejections = validate(queries, recency=Recency(months=12, reason="f"), today=TODAY)
+
+    assert kept[0].filters.published_after is None
+    assert "future" in rejections[0].reason
+
+
+def test_a_rejection_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Counted, logged, surfaced — the same discipline as the unparsed counters."""
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.territory"):
+        validate(
+            [_query(filters=SearchFilters(order="sideways"))],
+            recency=Recency(),
+            today=TODAY,
+        )
+
+    assert any("rejected filter" in record.message for record in caplog.records)
+
+
+@pytest.mark.parametrize("value", ["sideways", "DATE", "most_viewed", ""])
+def test_an_order_outside_the_allowed_set_is_rejected(value: str) -> None:
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(order=value))], recency=Recency(), today=TODAY
+    )
+
+    assert kept[0].filters.order is None
+    assert len(rejections) == 1
+
+
+@pytest.mark.parametrize("value", ["relevance", "date", "viewCount", "rating", "title"])
+def test_every_documented_order_is_allowed(value: str) -> None:
+    """The other half. A validator that rejected everything would pass the tests
+    above and quietly delete the width `order` exists to buy."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(order=value))], recency=Recency(), today=TODAY
+    )
+
+    assert kept[0].filters.order == value
+    assert not rejections
+
+
+@pytest.mark.parametrize("value", ["english", "en_GB", "e", "EN"])
+def test_a_malformed_language_is_rejected(value: str) -> None:
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(relevance_language=value))],
+        recency=Recency(),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.relevance_language is None
+    assert rejections[0].field == FILTER_RELEVANCE_LANGUAGE
+
+
+@pytest.mark.parametrize("value", ["en", "de", "pt-BR"])
+def test_a_well_formed_language_is_allowed(value: str) -> None:
+    """It ranks and never excludes, so it is the safe one and stays permitted."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(relevance_language=value))],
+        recency=Recency(),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.relevance_language == value
+    assert not rejections
+
+
+# -- the validator: videoDuration, the trap ----------------------------------
+
+
+@pytest.mark.parametrize("band", ["short", "medium", "long"])
+def test_video_duration_never_survives_on_a_main_query(band: str) -> None:
+    """Gate 4, and the rule this phase most needs held.
+
+    A duration band excludes everything outside it. On a main query that is the
+    duration bias the stage-1 prompt spends four paragraphs forbidding, moved
+    into the search layer where nobody would look for it — and the class it
+    usually removes is Shorts, which can be denser than a fifty-minute talk.
+    """
+    kept, rejections = validate(
+        [_query("cache breakpoints", filters=SearchFilters(video_duration=band))],
+        recency=Recency(),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.video_duration is None
+    assert kept[0].text == "cache breakpoints", "the query runs; the band does not"
+    assert rejections[0].field == FILTER_VIDEO_DURATION
+    assert "main query" in rejections[0].reason
+
+
+def test_no_planned_query_ever_reaches_a_provider_with_a_duration_band_alone() -> None:
+    """The rule stated as a property over a whole map rather than one query."""
+    text = (
+        "CONCEPTS: a\nRECENCY: ANY — x\n"
+        "QUERY: prompt caching explained\nFROM: t\nFILTERS: videoDuration=long (deep dives)\n"
+        "QUERY: kv cache eviction\nFROM: t\nFILTERS: videoDuration=short (quick ones)\n"
+    )
+    territory = parse_map(text, topic="t", version="1")
+    kept, _ = validate(territory.queries, recency=territory.recency, today=TODAY)
+
+    for query in kept:
+        assert query.variant_of or query.filters.video_duration is None
+
+
+def test_a_duration_variant_of_a_real_query_is_allowed() -> None:
+    """The one legitimate use: *adding* a slice rather than removing one.
+
+    Both run — the unfiltered query and the variant — so nothing is excluded and
+    a band that relevance ranking buries gets surfaced.
+    """
+    queries = [
+        _query("cache breakpoints"),
+        _query(
+            "cache breakpoints",
+            filters=SearchFilters(video_duration="short"),
+            variant_of="cache breakpoints",
+        ),
+    ]
+
+    kept, rejections = validate(queries, recency=Recency(), today=TODAY)
+
+    assert len(kept) == 2
+    assert kept[1].filters.video_duration == "short"
+    assert not rejections
+
+
+def test_a_variant_of_a_query_that_does_not_exist_is_rejected() -> None:
+    """Otherwise `variant_of` is a password: write anything and the band runs."""
+    queries = [
+        _query("cache breakpoints"),
+        _query(
+            "something else entirely",
+            filters=SearchFilters(video_duration="short"),
+            variant_of="a query nobody proposed",
+        ),
+    ]
+
+    kept, rejections = validate(queries, recency=Recency(), today=TODAY)
+
+    assert kept[1].filters.video_duration is None
+    assert "no such" in rejections[0].reason
+
+
+def test_a_variant_may_not_name_another_variant() -> None:
+    """A chain of variants would let one legitimate main query authorise many
+    bands, which is the exclusion this rule exists to bound."""
+    queries = [
+        _query("a b", filters=SearchFilters(video_duration="short"), variant_of="c d"),
+        _query("c d", filters=SearchFilters(video_duration="long"), variant_of="a b"),
+    ]
+
+    kept, _ = validate(queries, recency=Recency(), today=TODAY)
+
+    assert all(query.filters.video_duration is None for query in kept)
+
+
+@pytest.mark.parametrize("band", ["tiny", "4min", "any minutes"])
+def test_a_duration_outside_the_allowed_set_is_rejected(band: str) -> None:
+    """A band the provider would refuse. Stripping it leaves a variant identical
+    to the query it varied, which the duplicate rule then drops — the variant
+    existed only to carry the band, and without it there is nothing to run."""
+    queries = [
+        _query("a b"),
+        _query("a b", filters=SearchFilters(video_duration=band), variant_of="a b"),
+    ]
+
+    kept, rejections = validate(queries, recency=Recency(), today=TODAY)
+
+    assert all(query.filters.video_duration is None for query in kept)
+    assert rejections[0].field == FILTER_VIDEO_DURATION
+    assert "one of" in rejections[0].reason
+
+
+# -- the validator: recency and the user -------------------------------------
+
+
+def test_a_date_filter_needs_the_recency_call_to_justify_it() -> None:
+    """A map that reasoned "any time" and then filtered by date has contradicted
+    its own reasoning, and the filter is the half that excludes."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="2026-01-01"))],
+        recency=Recency(months=None, reason="fundamentals do not move"),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+    assert "any time" in rejections[0].reason
+
+
+def test_a_date_inside_the_reasoned_window_is_allowed() -> None:
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="2025-09-01"))],
+        recency=Recency(months=12, reason="turns over"),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after == "2025-09-01"
+    assert not rejections
+
+
+def test_a_cutoff_far_narrower_than_the_window_is_rejected() -> None:
+    """Rejecting widens. A twelve-month judgement does not license a two-month
+    exclusion, and dropping the filter falls back to the unfiltered search.
+
+    "Far" is the operative word: a month of slack absorbs the model's date
+    arithmetic, because a cutoff a fortnight off is the same judgement while a
+    two-month one is a different judgement wearing the same reason."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="2026-07-01"))],
+        recency=Recency(months=12, reason="turns over"),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+    assert "excludes more than the reasoned window" in rejections[0].reason
+
+
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "history of transformers",
+        "SQLite WAL mode, all time",
+        "classic compiler lectures",
+    ],
+)
+def test_the_user_outranks_the_recency_reasoning(topic: str) -> None:
+    """The case this rule exists for: a user who asked for old material and got
+    it excluded, silently, by a model reasoning about ecosystems."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="2026-01-01"))],
+        recency=Recency(months=12, reason="the model thought this moves fast"),
+        topic=topic,
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+    assert "the user asked" in rejections[0].reason
+
+
+def test_a_topic_with_no_stated_constraint_leaves_the_reasoning_alone() -> None:
+    assert not user_constraints("ai agent memory").no_date_filter
+    assert user_constraints("history of transformers").no_date_filter
+
+
+def test_the_user_rule_only_ever_removes_a_hard_filter() -> None:
+    """One-directional by design: it can forbid `publishedAfter`, never require
+    one. A phrase it recognises wrongly costs one unfiltered search."""
+    kept, _ = validate(
+        [_query(filters=SearchFilters(order="date", relevance_language="en"))],
+        recency=Recency(),
+        topic="history of transformers",
+        today=TODAY,
+    )
+
+    assert kept[0].filters.order == "date"
+    assert kept[0].filters.relevance_language == "en"
+
+
+# -- the validator: duplicates ------------------------------------------------
+
+
+def test_an_identical_query_already_run_is_dropped() -> None:
+    kept, rejections = validate(
+        [_query("prompt caching")],
+        recency=Recency(),
+        already_run={_query("Prompt  Caching").key},
+        today=TODAY,
+    )
+
+    assert not kept
+    assert rejections[0].field == "query"
+
+
+def test_the_same_text_with_different_filters_is_not_a_duplicate() -> None:
+    """The same query by `relevance` and by `date` returns different slices of
+    the same result set. Collapsing them throws away free width."""
+    queries = [_query("prompt caching"), _query("prompt caching", filters=SearchFilters(order="date"))]
+
+    kept, rejections = validate(queries, recency=Recency(), today=TODAY)
+
+    assert len(kept) == 2
+    assert not rejections
+
+
+def test_a_query_that_becomes_a_duplicate_after_a_rejection_is_dropped() -> None:
+    """Stripping a filter can make two queries identical, and the check has to
+    run on what will actually be sent rather than on what was proposed."""
+    queries = [
+        _query("prompt caching"),
+        _query("prompt caching", filters=SearchFilters(published_after="2026-01-01")),
+    ]
+
+    kept, rejections = validate(queries, recency=Recency(reason="any time"), today=TODAY)
+
+    assert len(kept) == 1
+    assert {rejection.field for rejection in rejections} == {FILTER_PUBLISHED_AFTER, "query"}
+
+
+def test_rejected_filters_lose_their_reasons_too() -> None:
+    """A reason for a filter that did not run would read, in the ledger, as a
+    filter that did."""
+    kept, _ = validate(
+        [
+            PlannedQuery(
+                text="a b",
+                origin=ORIGIN_TERRITORY,
+                filters=SearchFilters(order="date", video_duration="short"),
+                reasons={FILTER_ORDER: "fresh", FILTER_VIDEO_DURATION: "shorts"},
+            )
+        ],
+        recency=Recency(),
+        today=TODAY,
+    )
+
+    assert kept[0].reasons == {FILTER_ORDER: "fresh"}
+
+
+# -- the prompt ---------------------------------------------------------------
+
+
+def test_the_mapping_prompt_is_versioned_and_renders() -> None:
+    prompt = load_prompt(MAP_PROMPT, directory=prompts_dir())
+
+    assert prompt.version
+    rendered = prompt.render(topic="t", brief="B", count=8)
+    assert "{{" not in rendered
+
+
+def test_the_mapping_prompt_names_no_model_family() -> None:
+    """Same rule the other prompts are held to: a prompt that names a model
+    family is a prompt that has to be rewritten to swap providers."""
+    text = load_prompt(MAP_PROMPT, directory=prompts_dir()).text.lower()
+
+    for family in ("claude", "gpt-", "gemini", "llama", "kimi", "deepseek", "qwen"):
+        assert family not in text
+
+
+def test_the_mapping_prompt_states_the_duration_rule() -> None:
+    """The trap parameter needs the rule in the prompt as well as in the code.
+    Code that silently rejects every proposal teaches the model nothing."""
+    text = load_prompt(MAP_PROMPT, directory=prompts_dir()).text
+
+    assert "Never put this on a main query" in text
+
+
+# -- the mapper ---------------------------------------------------------------
+
+
+class FakeReply:
+    def __init__(self, text: str, finish_reason: str = "stop") -> None:
+        self.text = text
+        self.finish_reason = finish_reason
+        self.usage = type("U", (), {"input_tokens": 100, "output_tokens": 50})()
+        self.latency_s = 1.5
+
+
+class FakeClient:
+    def __init__(self, reply=None, raises=None) -> None:
+        self._reply = reply
+        self._raises = raises
+        self.tasks: list[str] = []
+
+    def complete(self, system, user, *, task=None, max_tokens=None):
+        self.tasks.append(task)
+        if self._raises is not None:
+            raise self._raises
+        return self._reply
+
+
+def test_the_mapper_returns_a_validated_map() -> None:
+    mapper = Mapper(FakeClient(FakeReply(GOOD_MAP)))
+
+    territory = mapper.map(BRIEF)
+
+    assert territory.vocabulary == ["ReAct", "LangGraph", "scratchpad", "vector store"]
+    assert territory.input_tokens == 100
+    assert territory.latency_s == 1.5
+
+
+def test_a_failed_mapping_call_leaves_the_run_narrower_not_dead() -> None:
+    """Discovery still has the brief's own queries. Raising here would let a new
+    and unproven step kill a loop that worked before it existed."""
+    mapper = Mapper(FakeClient(raises=RuntimeError("boom")))
+
+    territory = mapper.map(BRIEF)
+
+    assert not territory.parsed
+    assert not territory.queries
+    assert "boom" in territory.problem
+
+
+def test_a_truncated_reply_is_not_parsed_at_all() -> None:
+    """A truncated vocabulary is worse than none: it looks like the subject's
+    full extent, and the queries that would have covered the rest never run."""
+    mapper = Mapper(FakeClient(FakeReply(GOOD_MAP, finish_reason="length")))
+
+    territory = mapper.map(BRIEF)
+
+    assert not territory.parsed
+    assert not territory.queries
+    assert "token ceiling" in territory.problem
+
+
+def test_the_mapping_call_names_its_own_task() -> None:
+    """Effort is per task and set in config; a call with no task name silently
+    takes the global default."""
+    client = FakeClient(FakeReply(GOOD_MAP))
+    Mapper(client).map(BRIEF)
+
+    assert client.tasks == ["map_territory"]
+
+
+def test_the_mapper_validates_before_returning() -> None:
+    text = (
+        "CONCEPTS: a\nRECENCY: ANY — stable\n"
+        "QUERY: sqlite wal mode\nFROM: t\nFILTERS: publishedAfter=2026-01-01 (recent)\n"
+    )
+    territory = Mapper(FakeClient(FakeReply(text))).map(BRIEF)
+
+    assert territory.queries[0].filters.published_after is None
+    assert territory.rejected
+
+
+# -- what a real mapping call actually wrote --------------------------------
+#
+# Both of these were found by running the map for real, not by imagining what a
+# model might do. Both failures were *safe* — one rejected a filter that cannot
+# exclude anything, the other produced cosmetically broken vocabulary — and both
+# were counted and logged rather than silent, which is the design working. They
+# are fixed anyway: a separator the reason field is free to contain is a parser
+# asking for trouble.
+
+
+def test_a_semicolon_inside_a_reason_does_not_split_the_filter() -> None:
+    """Observed verbatim from a real mapping call for "AI agent memory".
+
+    A plain `split(";")` cut the reason in half and left two fragments that were
+    neither `name=value`, so a perfectly good `order` filter — one of the two
+    that cannot exclude anything — was dropped and counted twice as a rejection.
+    """
+    text = (
+        "CONCEPTS: a\nRECENCY: 12 months — fast\n"
+        "QUERY: mem0 agent memory tutorial\nFROM: vocabulary: Mem0\n"
+        "FILTERS: order=date (Mem0 changes monthly; latest tutorials reflect the API)"
+    )
+
+    territory = parse_map(text, topic="t", version="1")
+
+    assert territory.queries[0].filters.order == "date"
+    assert territory.queries[0].reasons[FILTER_ORDER].endswith("reflect the API")
+    assert not territory.rejected
+
+
+def test_two_filters_still_separate_on_a_semicolon() -> None:
+    """The other half: the fix must not make the separator stop working."""
+    text = (
+        "CONCEPTS: a\nRECENCY: ANY — x\nQUERY: a b\nFROM: t\n"
+        "FILTERS: order=date (fresh); relevanceLanguage=en (english ranks first)"
+    )
+
+    territory = parse_map(text, topic="t", version="1")
+
+    assert territory.queries[0].filters.as_dict() == {"order": "date", "relevanceLanguage": "en"}
+
+
+def test_a_parenthesised_list_of_names_survives_the_comma_split() -> None:
+    """Also observed. The model wrote one vocabulary entry as
+
+        vector database (Pinecone, Chroma, Weaviate, FAISS)
+
+    and the comma split left `vector database (Pinecone` and `FAISS)` with three
+    clean names between them. Nothing downstream broke — the judge is shown a
+    word list — but two of the words were fragments with dangling brackets, and
+    the map is meant to be readable as the record of what a run thought a
+    subject was called.
+    """
+    text = (
+        "CONCEPTS: a\n"
+        "VOCABULARY: Mem0, vector database (Pinecone, Chroma, FAISS), embeddings\n"
+        "RECENCY: ANY — x\nQUERY: a b\nFROM: t"
+    )
+
+    territory = parse_map(text, topic="t", version="1")
+
+    assert territory.vocabulary == [
+        "Mem0",
+        "vector database",
+        "Pinecone",
+        "Chroma",
+        "FAISS",
+        "embeddings",
+    ]

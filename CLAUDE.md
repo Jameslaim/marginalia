@@ -166,13 +166,46 @@ not drift.
     had a precedent: thirteen transient fetch failures once left no trace in a report
     at all.
 
+15. **A territory term is never, on its own, a reason to keep a video.** The map says
+    what words a subject uses; the **brief** says what counts as relevant. A LangChain
+    document-loading tutorial is not about agent memory because LangChain is in the
+    vocabulary. This is a rule in both judging prompts, with that worked example, not a
+    note — B3 measured this judge confabulating from suggestive context, and a
+    vocabulary list is a page of suggestive context. The judge is shown the concepts and
+    the vocabulary flat, and never the queries, the filters or the map's reasoning:
+    handing it those would be handing it the conclusion it is supposed to check.
+
+16. **The model proposes a filter; the code decides whether it runs.** Two of the four
+    search parameters *exclude* — `publishedAfter` and `videoDuration` — and an
+    unjustified exclusion removes videos before anything in this system has seen them,
+    which is the one failure nothing downstream can detect. `order` sorts and
+    `relevanceLanguage` ranks; neither can remove anything, so both are safe.
+
+    **`videoDuration` never goes on a main query.** Only on a variant that repeats a
+    query it names, so the band *adds* a slice instead of removing one. A rule that
+    drops Shorts is the duration bias `judge_metadata` spends four paragraphs
+    forbidding, relocated to the search layer where nobody would look for it.
+
+    **Every rejection widens, and every rejection is counted.** A refused filter drops
+    the filter, never the query, and lands in `RoundReport.filters_rejected` and the
+    report — the same discipline as the unparsed counters. `publishedAfter` additionally
+    requires the recency call to have reasoned that age matters, and the user's own
+    words outrank that reasoning: "history of transformers" with a twelve-month cutoff
+    excludes precisely what was asked for.
+
+17. **Recency is reasoned per subject, never ruled.** "Prompt caching pricing" wants six
+    months and "SQLite WAL mode" wants any time, and no rule produces both. The reason
+    is stored on the map and printed in the report, because a call that silently
+    excludes and cannot be inspected is one nobody can correct. `ANY` is the default and
+    the wider answer.
+
 ## Structure
 
 ```
 src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
   core/     ids.py  ledger.py  library.py        identity, state, file layout
   providers/                                     the part guaranteed to break
-  brain/    judge.py                             reasoning; no I/O
+  brain/    judge.py  territory.py               reasoning; no I/O
   flow/     search.py  discover.py               execution
   enrich/   note.py  timestamps.py               what happens after storage
 ```
@@ -184,7 +217,11 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
   reads `config.library_path` solely to hand it over.
 - `llm.py` makes calls and knows nothing about verdicts. `brain/judge.py` turns replies
   into verdicts and knows nothing about the loop. `flow/discover.py` runs the loop and
-  parses nothing. Keep that split; it is why the parsers are testable without a model.
+  parses nothing. `brain/territory.py` splits the same way and adds a third part: pure
+  parsing, then a pure **validator** deciding which proposed filters may execute, then
+  the one call. The validator is the safety-critical half and it is a pure function of
+  its arguments — including `today`, which is passed in so a date rule can be tested
+  without waiting for a month to pass. Keep that split; it is why the parsers are testable without a model.
   `enrich/note.py` holds the same split internally: pure section parsing at the top, the
   drain loop at the bottom, and nothing in between that needs a model to test.
 - `print` appears only in `cli.py`. Everything else uses `logging`.
@@ -198,6 +235,14 @@ Milestone 5 adds **understanding notes**: `enrich/note.py`, `prompts/write_note.
 `marg note` command, and `note_version`/`note_model`/`noted_at` on `videos`. A stored
 transcript goes in, a note comes out, and the note is what every later question is
 answered from.
+
+**B4 adds territory mapping**: `brain/territory.py`, `prompts/territory/map.md`,
+validated per-query search filters, `runs.territory_map`, and the `queries` table's
+first writer. The map is built **once**, before round one, and never revised — revising
+it between rounds is B5's planner, and a map re-run each round would be that arrived at
+by accident. The map's queries run *alongside* the brief's own expansion rather than
+replacing it, which is what lets `queries.origin` answer "did the map find anything the
+old expansion would not have?" from the ledger rather than from an opinion.
 
 Do not add `/ask` or `ask.py`, ASR or Whisper, embeddings, retrieval or ranking over
 notes, or content fingerprinting (Gate 3) — each belongs to another milestone in

@@ -35,6 +35,7 @@ from ..contracts import (
     MetadataVerdict,
     OpeningVerdict,
     SearchResult,
+    TerritoryMap,
 )
 from ..llm import LlmClient, Prompt, Reply, batched, load_prompt
 
@@ -47,6 +48,7 @@ __all__ = [
     "parse_full",
     "parse_opening",
     "parse_queries",
+    "territory_lines",
 ]
 
 # Words the judge is told to use. Anything else on a line is not a verdict.
@@ -538,15 +540,23 @@ class Judge:
     # -- stage 1: metadata, batched ---------------------------------------
 
     def judge_metadata(
-        self, brief: Brief, candidates: Sequence[SearchResult], *, batch_size: int
+        self,
+        brief: Brief,
+        candidates: Sequence[SearchResult],
+        *,
+        batch_size: int,
+        territory: TerritoryMap | None = None,
     ) -> list[MetadataVerdict]:
         verdicts: list[MetadataVerdict] = []
         for chunk in batched(list(candidates), batch_size):
-            verdicts.extend(self._judge_chunk(brief, chunk))
+            verdicts.extend(self._judge_chunk(brief, chunk, territory))
         return verdicts
 
     def _judge_chunk(
-        self, brief: Brief, chunk: Sequence[SearchResult]
+        self,
+        brief: Brief,
+        chunk: Sequence[SearchResult],
+        territory: TerritoryMap | None = None,
     ) -> list[MetadataVerdict]:
         prompt = self.prompt("judge_metadata")
         listing = "\n".join(
@@ -555,7 +565,11 @@ class Judge:
         try:
             reply: Reply = self.client.complete(
                 "You judge video relevance from metadata.",
-                prompt.render(brief=brief.text, candidates=listing),
+                prompt.render(
+                    brief=brief.text,
+                    candidates=listing,
+                    territory=territory_lines(territory),
+                ),
                 task="judge_metadata",
             )
         except Exception as exc:  # noqa: BLE001 - a failed batch must not reject
@@ -583,6 +597,7 @@ class Judge:
         transcript: str,
         chapters: Sequence[str] = (),
         duration_s: int | None = None,
+        territory: TerritoryMap | None = None,
     ) -> FullVerdict:
         """Judge one video on everything it says.
 
@@ -605,6 +620,7 @@ class Judge:
                     channel=candidate.channel,
                     duration=str(duration_s) if duration_s else "unknown",
                     chapters=chapter_text,
+                    territory=territory_lines(territory),
                     transcript=transcript,
                 ),
                 task="judge_full",
@@ -673,6 +689,33 @@ class Judge:
 
         verdict, reason, concepts, parsed = parse_opening(reply.text)
         return OpeningVerdict(candidate.video_id, verdict, reason, concepts, parsed)
+
+
+def territory_lines(territory: TerritoryMap | None) -> str:
+    """The map as the judge sees it: a word list, and nothing more.
+
+    **This is the risk B3 identified, made concrete.** That phase measured this
+    judge confabulating from suggestive context — three videos kept on reasons
+    describing numbers their transcripts do not contain, two of them short
+    enough that the judge had read them in full and completed the pattern the
+    title implied anyway. A territory map is a list of suggestive context, and
+    handing it to that judge is the main hazard of this phase.
+
+    So what crosses is deliberately impoverished. Concepts and vocabulary, flat,
+    unlabelled as to which is which, with no queries, no filters and no reasons:
+    the judge is being told what words this subject uses, not what the map
+    concluded. The rule that a term is never a reason to keep a video is stated
+    in the prompts themselves, as a rule with a worked example, because a note
+    in a docstring enforces nothing at judging time.
+
+    An absent map renders as a sentence saying so, rather than an empty block.
+    ``Prompt.render`` refuses unfilled placeholders, and a blank section reads
+    to a model like a subject with no vocabulary rather than a run without a
+    map.
+    """
+    if territory is None or not territory.terms:
+        return "TERRITORY: none mapped for this topic."
+    return "TERRITORY (words this subject uses): " + ", ".join(territory.terms)
 
 
 def _describe(position: int, candidate: SearchResult) -> str:

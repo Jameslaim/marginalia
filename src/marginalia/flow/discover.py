@@ -2,8 +2,13 @@
 
 ::
 
+    once:
+      write brief -> review brief              (M2b)
+      map the territory -> concepts, vocabulary, recency, queries   (B4)
+
     round:
-      expand brief -> queries
+      expand brief -> queries, plus the map's own queries in round 1
+      validate every filter before it executes (B4)
       search each query -> candidates          (M2a, unchanged)
       gates 1 and 2                            (M2a, unchanged)
       stage 1, batched -> yes / no / maybe
@@ -12,6 +17,12 @@
       decide whether to run again
 
 The loop-back is the whole point. Everything else is plumbing.
+
+**The map runs once, before the first round.** It is what makes a query out of a
+word the user never typed — searching "AI agent memory" never returns the video
+called "Building ReAct loops with tool calling", and no judge can rescue a video
+that was never returned. Revising the map between rounds is B5's planner and is
+deliberately not here: this phase builds the map, not the thing that changes it.
 
 **Threads come free.** Stage 2 already reads the opening, so it returns the
 concepts a video mentions without explaining in the same response — no second
@@ -33,14 +44,18 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from ..brain.judge import FULL_PROMPT, Judge
+from ..brain.territory import Mapper, validate
 from ..config import Config
 from ..contracts import (
     EVIDENCE_DEGRADED,
     NEW,
+    ORIGIN_BRIEF,
+    ORIGIN_THREAD,
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
     DiscoverRun,
+    PlannedQuery,
     RoundReport,
     SearchResult,
     TranscriptResult,
@@ -99,6 +114,7 @@ def discover(
     max_requests: int | None = None,
     dry_run: bool = False,
     judge: Judge | None = None,
+    mapper: Mapper | None = None,
     provider: TranscriptProvider | None = None,
 ) -> DiscoverRun:
     """Run the loop. Writes nothing to the library when ``dry_run`` is set."""
@@ -109,6 +125,7 @@ def discover(
 
     normalised = normalise_topic(topic)
     judge = judge or Judge(client)
+    mapper = mapper or Mapper(client)
     run_id = _new_run_id()
 
     # The brief costs two requests and must exist before the run row can be
@@ -132,6 +149,17 @@ def discover(
         model=client.model,
         dry_run=dry_run,
     )
+
+    # After the run row exists, so a crash mid-mapping leaves a run with no
+    # `finished_at` rather than nothing at all — the same ordering rule the
+    # brief follows, applied to the second thing that costs a request.
+    run.territory = mapper.map(brief, count=config.discover.territory_queries)
+    ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
+    if run.territory.rejected:
+        log.info(
+            "discover: %d proposed filter(s) rejected before any search ran",
+            len(run.territory.rejected),
+        )
 
     try:
         _loop(
@@ -170,7 +198,9 @@ def _loop(
     max_requests: int,
 ) -> None:
     threads: list[str] = []
-    seen_queries: set[str] = set()
+    # Identity is (text, filters), so the same query by `relevance` and by
+    # `date` are two searches rather than one. That is the width `order` buys.
+    seen_queries: set[tuple] = set()
     quiet_rounds = 0
 
     for number in range(1, max_rounds + 1):
@@ -181,22 +211,31 @@ def _loop(
             run.stopped_because = STOP_MAX_COST
             return
 
-        queries = [
-            query
-            for query in judge.expand_queries(
-                run.brief, count=config.discover.queries_per_round, concepts=threads[:8]
-            )
-            if query.lower() not in seen_queries
-        ]
-        seen_queries.update(query.lower() for query in queries)
-        report = RoundReport(number=number, queries=queries, from_threads=bool(threads))
-        run.rounds.append(report)
+        planned = _plan_round(config, judge, run, number, threads)
+        planned, rejections = validate(
+            planned, recency=run.territory.recency, topic=run.brief.topic,
+            already_run=seen_queries,
+        )
+        seen_queries.update(query.key for query in planned)
 
-        if not queries:
+        report = RoundReport(
+            number=number,
+            queries=[query.text for query in planned],
+            planned=planned,
+            filters_rejected=len(rejections),
+            from_threads=bool(threads),
+        )
+        run.rounds.append(report)
+        # On the run rather than only on the map: a filter rejected in round two
+        # was proposed by query expansion, not by the mapper, and folding the
+        # two together would make the map look like the source of both.
+        run.rejected_filters.extend(rejections)
+
+        if not planned:
             run.stopped_because = STOP_NO_NEW_VIDEOS
             return
 
-        candidates = _gather(config, ledger, run, queries, report)
+        candidates = _gather(config, ledger, run, planned, report)
         if candidates is None:
             run.stopped_because = STOP_NO_SEARCH
             return
@@ -225,14 +264,56 @@ def _loop(
     run.stopped_because = STOP_MAX_ROUNDS
 
 
+def _plan_round(
+    config: Config,
+    judge: Judge,
+    run: DiscoverRun,
+    number: int,
+    threads: Sequence[str],
+) -> list[PlannedQuery]:
+    """The queries this round will run, each carrying where it came from.
+
+    Round one runs two sets, and running both is the point. The brief's own
+    expansion is what discovery did before this phase; the map's queries are
+    written from words the topic never contained. Keeping them apart in the
+    ledger — by ``origin`` — is what turns "did the map help?" from an opinion
+    into a query against the `queries` table.
+
+    Later rounds are the loop-back, unchanged: concepts stage 2 found mentioned
+    but unexplained become the next round's searches. The map is not consulted
+    again, and not revised; revising it is B5's planner.
+    """
+    expanded = judge.expand_queries(
+        run.brief, count=config.discover.queries_per_round, concepts=list(threads)[:8]
+    )
+    origin = ORIGIN_THREAD if threads else ORIGIN_BRIEF
+    detail = ", ".join(list(threads)[:8]) if threads else run.brief.topic
+    planned = [
+        PlannedQuery(text=text, origin=origin, origin_detail=detail) for text in expanded
+    ]
+
+    if number == 1:
+        # After the brief's, not before: the brief's queries are the ones this
+        # loop already trusted, and a map that returns nothing must leave the
+        # round exactly as it was.
+        planned.extend(run.territory.queries)
+    return planned
+
+
 def _gather(
     config: Config,
     ledger: Ledger,
     run: DiscoverRun,
-    queries: Sequence[str],
+    queries: Sequence[PlannedQuery],
     report: RoundReport,
 ) -> list[SearchResult] | None:
-    """Search every query and apply gates 1 and 2. Returns survivors, in rank order."""
+    """Search every query and apply gates 1 and 2. Returns survivors, in rank order.
+
+    Also the only writer of the `queries` table. A row per search, with what it
+    asked for and what it returned — because *"why did it search for that?"* is
+    the first question asked when a round goes wrong, and without these rows a
+    run's queries are a list with no causal story.
+    """
     survivors: dict[str, SearchResult] = {}
     answered = False
 
@@ -241,27 +322,78 @@ def _gather(
             result = run_search(
                 config,
                 ledger,
-                query,
+                query.text,
                 limit=config.discover.results_per_query,
                 topic=run.topic,
                 log_decisions=not run.dry_run,
                 run_id=run.run_id,
+                filters=query.filters or None,
             )
         except (PermanentError, TransientError) as exc:
             # One dead query must not end a round that has nine good ones.
-            log.warning("discover: search failed for %r: %s", query, exc)
+            log.warning("discover: search failed for %r: %s", query.text, exc)
+            # Still recorded, with no result count. A query that failed is a
+            # query that ran, and a table that only holds the successful ones
+            # would answer "what did this round search for?" wrongly.
+            _log_query(ledger, run, report.number, query, results=None, provider=None, units=0)
             continue
 
         answered = True
         report.candidates += len(result.candidates)
         report.known += len(result.of("known"))
         report.rejected_before += len(result.of("rejected"))
+        _log_query(
+            ledger,
+            run,
+            report.number,
+            query,
+            results=len(result.candidates),
+            provider=result.provider,
+            units=result.quota_units,
+        )
+
         for candidate in result.of(NEW):
+            # Which origins surfaced this video, not just the first. "Would the
+            # old expansion have found it?" is a question about *all* the
+            # queries that returned it, and first-past-the-post would answer it
+            # with whichever set happened to run first.
+            report.surfaced_by.setdefault(candidate.video_id, set()).add(query.origin)
             survivors.setdefault(candidate.video_id, candidate.result)
 
     if not answered:
         return None
     return list(survivors.values())
+
+
+def _log_query(
+    ledger: Ledger,
+    run: DiscoverRun,
+    number: int,
+    query: PlannedQuery,
+    *,
+    results: int | None,
+    provider: str | None,
+    units: int,
+) -> None:
+    """Record one search. Written even on a dry run, unlike a decision.
+
+    The two are different kinds of record and the difference matters. A `no`
+    row poisons Gate 2 for the real run that follows, so a dry run must not
+    write one. A queries row poisons nothing — it says what was searched for,
+    which a dry run genuinely did, and a dry run whose queries left no trace
+    would be the one mode where "why did it search for that?" is unanswerable.
+    """
+    ledger.log_query(
+        run.run_id,
+        round=number,
+        query=query.text,
+        origin=query.origin,
+        origin_detail=query.origin_detail or None,
+        filters_json=query.filters_json() if query.filters else None,
+        results_count=results,
+        provider=provider,
+        quota_units=units,
+    )
 
 
 def _judge_round(
@@ -282,7 +414,14 @@ def _judge_round(
         return []
 
     verdicts = judge.judge_metadata(
-        run.brief, candidates, batch_size=config.llm.judge_batch_size
+        run.brief,
+        candidates,
+        batch_size=config.llm.judge_batch_size,
+        # Stage 1 especially. This is where a video whose title never says
+        # "agent" is dropped before anything reads it, and the vocabulary is
+        # the only thing that can stop that — under the rule, stated in the
+        # prompt, that a word from the map is never a reason to keep.
+        territory=run.territory,
     )
     by_id = {candidate.video_id: candidate for candidate in candidates}
     concepts: list[str] = []
@@ -390,6 +529,7 @@ def _judge_round(
                 transcript=_transcript_text(fetched),
                 chapters=[chapter.get("title", "") for chapter in fetched.chapters][:12],
                 duration_s=fetched.duration_s or candidate.duration_s,
+                territory=run.territory,
             )
             _log(
                 ledger,

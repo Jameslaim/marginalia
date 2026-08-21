@@ -57,15 +57,20 @@ class FakeProvider:
         self._results = list(results or [])
         self._raises = raises
         self.calls: list[tuple[str, int]] = []
+        self.filters: list[object] = []
 
-    def search(self, query: str, limit: int = 25) -> list[SearchResult]:
+    def search(self, query: str, limit: int = 25, filters=None) -> list[SearchResult]:
         self.calls.append((query, limit))
+        self.filters.append(filters)
         if self._raises is not None:
             raise self._raises
         return [replace(item, provider=self.name) for item in self._results]
 
     def quota_remaining(self) -> int | None:
         return None
+
+    def units_spent(self) -> int:
+        return 7
 
 
 @pytest.fixture()

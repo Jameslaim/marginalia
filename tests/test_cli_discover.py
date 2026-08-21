@@ -14,7 +14,18 @@ from pathlib import Path
 import pytest
 
 from marginalia.cli import EXIT_FAILED, EXIT_OK, EXIT_USAGE, main
-from marginalia.contracts import Brief, DiscoverRun, RoundReport
+from marginalia.contracts import (
+    ORIGIN_BRIEF,
+    ORIGIN_TERRITORY,
+    Brief,
+    DiscoverRun,
+    FilterRejection,
+    PlannedQuery,
+    Recency,
+    RoundReport,
+    SearchFilters,
+    TerritoryMap,
+)
 from marginalia.llm import LlmConfigError
 
 BRIEF = Brief(
@@ -71,7 +82,9 @@ def stubbed(configured: Path, monkeypatch: pytest.MonkeyPatch):
     def fake_discover(config, ledger, library, client, topic, **kwargs):
         captured.update(kwargs)
         captured["topic"] = topic
-        return fake_run()
+        # A test may set `stubbed["run"]` beforehand to choose what the report
+        # is rendering. Set after the kwargs, so it survives them.
+        return captured.get("run") or fake_run()
 
     monkeypatch.setattr("marginalia.cli.discover", fake_discover)
     return captured
@@ -259,3 +272,134 @@ def test_a_clean_round_stays_terse(configured, monkeypatch, capsys) -> None:
     line = capsys.readouterr().out.splitlines()[1]
     assert "fetch failed" not in line
     assert "previously rejected" not in line
+
+
+# -- B4: the map, the recency call, and the rejections in the report --------
+
+
+def _mapped_run(**overrides) -> DiscoverRun:
+    run = fake_run(**overrides)
+    run.territory = TerritoryMap(
+        topic="prompt caching",
+        version="1",
+        concepts=["prefix matching", "cache expiry"],
+        vocabulary=["cache_control", "KV cache"],
+        recency=Recency(months=6, reason="provider pricing moved three times this year"),
+        queries=[PlannedQuery(text="kv cache reuse", origin=ORIGIN_TERRITORY)],
+    )
+    return run
+
+
+def test_the_report_names_the_recency_call_and_its_reason(stubbed, capsys) -> None:
+    """The one judgement in this phase that silently *excludes*. A twelve-month
+    cutoff removes older material with no trace anywhere a reader would look, so
+    the reason is printed rather than only stored."""
+    stubbed["run"] = _mapped_run()
+
+    assert main(["discover", "prompt caching"]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "recency:  last 6 months" in out
+    assert "provider pricing moved three times this year" in out
+
+
+def test_the_report_sizes_the_map(stubbed, capsys) -> None:
+    stubbed["run"] = _mapped_run()
+
+    main(["discover", "prompt caching"])
+
+    assert "2 concepts, 2 vocabulary terms, 1 queries" in capsys.readouterr().out
+
+
+def test_rejected_filters_are_reported_even_at_zero(stubbed, capsys) -> None:
+    """Same reason the unparsed count prints at zero: it is what makes the
+    number trustworthy on the day it is not zero."""
+    stubbed["run"] = _mapped_run()
+
+    main(["discover", "prompt caching"])
+
+    assert "filters:  0 rejected" in capsys.readouterr().out
+
+
+def test_a_rejected_filter_is_named_with_its_reason(stubbed, capsys) -> None:
+    run = _mapped_run()
+    run.rejected_filters = [
+        FilterRejection("kv cache reuse", "publishedAfter", "2027-13-45", "not a readable date")
+    ]
+    stubbed["run"] = run
+
+    main(["discover", "prompt caching"])
+
+    out = capsys.readouterr().out
+    assert "filters:  1 rejected" in out
+    assert "publishedAfter=2027-13-45" in out
+    assert "not a readable date" in out
+
+
+def test_the_report_says_what_only_the_map_surfaced(stubbed, capsys) -> None:
+    run = _mapped_run()
+    run.rounds[0].surfaced_by = {
+        "aaaaaaaaaaa": {ORIGIN_BRIEF, ORIGIN_TERRITORY},
+        "bbbbbbbbbbb": {ORIGIN_TERRITORY},
+    }
+    stubbed["run"] = run
+
+    main(["discover", "prompt caching"])
+
+    assert "map-only: 1 candidate(s)" in capsys.readouterr().out
+
+
+def test_a_run_with_no_map_prints_no_map_lines(stubbed, capsys) -> None:
+    """A mapping call that failed leaves discovery narrower, not broken, and the
+    report must not grow a row of zeroes describing something that did not run."""
+    stubbed["run"] = fake_run()
+
+    main(["discover", "prompt caching"])
+
+    out = capsys.readouterr().out
+    assert "recency:" not in out
+    assert "brief:" in out
+
+
+def test_the_json_carries_the_whole_map(stubbed, capsys) -> None:
+    stubbed["run"] = _mapped_run()
+
+    main(["discover", "prompt caching", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["territory"]["vocabulary"] == ["cache_control", "KV cache"]
+    assert payload["territory"]["recency"]["months"] == 6
+    assert payload["territory_version"] == "1"
+    assert "seconds" in payload["territory_call"]
+
+
+def test_the_json_keeps_the_plain_query_list(stubbed, capsys) -> None:
+    """`queries` stays a list of strings. Every earlier baseline carries that
+    shape, and a comparison against one should not need a new reader."""
+    stubbed["run"] = _mapped_run()
+
+    main(["discover", "prompt caching", "--json"])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["rounds"][0]["queries"] == ["a"] * 5
+    assert payload["rounds"][0]["planned"] == []
+
+
+def test_the_json_carries_each_query_with_its_origin(stubbed, capsys) -> None:
+    run = _mapped_run()
+    run.rounds[0].planned = [
+        PlannedQuery(
+            text="kv cache reuse",
+            origin=ORIGIN_TERRITORY,
+            origin_detail="vocabulary: KV cache",
+            filters=SearchFilters(order="date"),
+        )
+    ]
+    stubbed["run"] = run
+
+    main(["discover", "prompt caching", "--json"])
+
+    planned = json.loads(capsys.readouterr().out)["rounds"][0]["planned"][0]
+    assert planned["origin"] == ORIGIN_TERRITORY
+    assert planned["origin_detail"] == "vocabulary: KV cache"
+    assert planned["filters"] == {"order": "date"}

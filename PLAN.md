@@ -949,6 +949,119 @@ uploader in ten seconds, which makes stage 1 the *more* exposed surface, not the
 nothing else; `no_captions`, `already_held`, `degraded` and `unparsed` each got their
 own.
 
+### B4 — territory mapping, and filters the code decides
+
+Search "AI agent memory" and you get videos with those words in the title. The video
+called *"Building ReAct loops with tool calling"* is exactly what was wanted and never
+says "agent". Nothing downstream recovers it: the judge only ever sees what the search
+returned, so a gap here is invisible at every later stage. Careful judging cannot fix a
+narrow search.
+
+So before searching, a model works out what the subject actually covers — subtopics,
+alternative names, practitioner jargon, tools, people — and the queries are written from
+**that**. On "prompt caching" the map produced `llm prefix caching`, and that one query
+returned *PagedAttention: Behind vLLM's Insane Speed*, *llm-d Precise Prefix-Cache-Aware
+Routing*, and *6 Types of Caching in AI Systems* — none of whose titles contain the word
+"prompt". Across the round, **39 of 129 candidates were surfaced only by map-derived
+queries**, against a baseline run that saw 60 candidates from six brief-derived ones.
+
+The map runs **once**, before round one, and is never revised. Revising it between
+rounds is B5's planner; a map re-run each round would be that, arrived at by accident.
+Its queries run *alongside* the brief's own expansion rather than replacing it, so
+`queries.origin` answers "did the map help?" from the ledger instead of from an opinion.
+
+**The risk this phase carries is the one B3 measured.** That phase found this judge
+confabulating from suggestive context — three videos kept on reasons describing numbers
+their transcripts do not contain, two of them short enough that the judge had read them
+in full and completed the pattern the title implied anyway. A territory map is a page of
+suggestive context, and both judging stages now receive one.
+
+So the rule goes in as a rule, in both prompts, with a worked example: *a term appearing
+in the map is never, on its own, a reason to keep a video; the brief decides what counts
+as relevant.* A LangChain document-loading tutorial is not about agent memory because
+LangChain is in the vocabulary. The judge is shown the concepts and vocabulary flat, and
+never the queries, the filters or the map's reasoning — handing it those would be handing
+it the conclusion it is supposed to check independently.
+
+Checked rather than assumed. Stage 1 was run over 64 candidates with the map present and
+absent, on queries chosen to be maximally tempting — LangChain cache tutorials, KV-cache
+transformer explainers, semantic-caching videos, LangGraph and pgvector tutorials, all of
+them dense in map vocabulary and named in the brief's EXCLUDED section. **Zero moved
+toward keeping.** One moved the other way. Two of the three passes had a noise floor of
+zero, so the arms were stable enough for that to mean something.
+
+### Filters, and why the code decides
+
+The map may attach search filters, and the four are not equivalent:
+
+| Parameter | Behaviour | Use |
+|---|---|---|
+| `publishedAfter` | **hard — excludes** | only when recency was reasoned to matter |
+| `videoDuration` | **hard — excludes** | never on a main query; only to *add* a variant |
+| `order` | sorts only | free width: the same query by relevance and by date returns different slices |
+| `relevanceLanguage` | soft — ranks | safe; other languages still come back |
+
+The model proposes; the code checks. Six rules reject: an unsupported field, a malformed
+or future `publishedAfter`, a value outside the allowed set, a `videoDuration` on a main
+query, a filter contradicting the reasoned recency or the user's own words, and a
+duplicate of a query already run.
+
+**Every rejection widens.** It drops the filter, never the query, and it is counted and
+logged — the same discipline as the unparsed counters. That direction is the search-layer
+form of the asymmetry the judge follows: a hard filter applied by mistake removes videos
+before anything in the system has seen them, which is the one failure nothing downstream
+can detect.
+
+`videoDuration` is the trap of the four. A rule that drops Shorts is the duration bias
+`judge_metadata` spends four paragraphs forbidding, relocated to where nobody would look
+for it. It is allowed only on a query that repeats one it names, so the band adds a slice
+instead of removing one — and a real map used it exactly that way, running
+`cache_control anthropic` unfiltered *and* as a short-form variant.
+
+### Recency is reasoned, never ruled
+
+Measured on three real topics, each with its stored reason:
+
+| Topic | Call | Reason it gave |
+|---|---|---|
+| prompt caching | 6 months | provider pricing for cached tokens changed multiple times in 2025 |
+| AI agent memory | 24 months | the practice emerged with LangGraph and MemGPT in 2023; older material is about RAG |
+| SQLite WAL mode | any time | stable since 2010; the pragma, sidecar behaviour and durability trade-offs have not changed |
+
+No rule produces all three. `ANY` is the default and the wider answer, and the reason is
+printed in the report rather than only stored, because a call that silently excludes and
+cannot be inspected is one nobody can correct.
+
+### What the run cost, and what it found
+
+The mapping call is one request per run: **2,187 in, 4,032 out, 30s, $0.0014** on the
+prompt-caching run — about a fifth of what the brief costs, and under 6% of the run.
+
+It has a measured effort setting, and it is the third time on this provider that the
+ladder has not been monotonic. At `reasoning_effort = "high"` the first real mapping call
+spent all 8,192 output tokens and returned **nothing** — the same failure `write_note`
+has on long structured output. At `low` it returns a valid map in 27 seconds. The guard
+held: a truncated reply is discarded rather than parsed, because a half-read vocabulary
+looks like the subject's full extent, so the cost of getting this wrong was a narrower
+run rather than a wrong one.
+
+Two parser weaknesses were found by real replies rather than imagined. A filter reason
+containing a semicolon was cut in half by the separator, rejecting a harmless `order`
+filter twice; and a parenthesised list of tool names was cut by the comma split into
+fragments with dangling brackets. Both failed safely and both were counted, which is the
+design working. Both are fixed, with the observed strings as the tests.
+
+### Recording what was searched, and why
+
+The `queries` table gets its writer. Every search lands one row: the text, the origin
+(`brief` | `territory` | `thread`), which map term produced it, the filters *with the
+reason given for each*, how many results came back, which provider answered, and what it
+cost in that provider's units. `runs.territory_map` stores the map whole.
+
+Without these, *"why did it search for that?"* has no answer — and it is the first
+question asked when a round goes wrong. The same argument as storing the brief: the
+queries are the conclusion, and the map is the reasoning that produced them.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

@@ -39,6 +39,7 @@ from ..contracts import (
     VERDICT_MAYBE,
     VERDICT_NO,
     Candidate,
+    SearchFilters,
     SearchResult,
     SearchRun,
 )
@@ -66,6 +67,7 @@ def run_search(
     topic: str | None = None,
     log_decisions: bool = True,
     run_id: str | None = None,
+    filters: SearchFilters | None = None,
 ) -> SearchRun:
     """Search, gate, log. No network call is made for a gated-out video.
 
@@ -73,9 +75,13 @@ def run_search(
     ``discover --dry-run`` needs: a dry run that wrote `no` rows would poison
     Gate 2 for the real run that follows, so tuning the judge would silently
     shrink the library it was meant to improve.
+
+    ``filters`` have already been validated by `brain/territory.py` — nothing
+    here re-decides whether one is allowed. They are handed to the provider,
+    which applies what it can.
     """
     normalised = normalise_topic(topic if topic is not None else query)
-    results, provider, fallbacks = _search(config, ledger, query, limit)
+    results, provider, fallbacks, units = _search(config, ledger, query, limit, filters)
 
     candidates = [
         _gate(ledger, result, normalised, log=log_decisions, run_id=run_id)
@@ -87,6 +93,8 @@ def run_search(
         provider=provider,
         candidates=candidates,
         fallbacks=fallbacks,
+        filters=filters or SearchFilters(),
+        quota_units=units,
     )
 
 
@@ -155,8 +163,12 @@ def _deduplicate(results: Sequence[SearchResult]) -> list[SearchResult]:
 
 
 def _search(
-    config: Config, ledger: Ledger, query: str, limit: int
-) -> tuple[list[SearchResult], str | None, list[tuple[str, str]]]:
+    config: Config,
+    ledger: Ledger,
+    query: str,
+    limit: int,
+    filters: SearchFilters | None = None,
+) -> tuple[list[SearchResult], str | None, list[tuple[str, str]], int]:
     """Try each configured provider in order.
 
     Falls through on quota exhaustion, an unavailable provider, or a transient
@@ -185,7 +197,7 @@ def _search(
             continue
 
         try:
-            results = provider.search(query, limit=limit)
+            results = provider.search(query, limit=limit, filters=filters)
         except QuotaExhausted as exc:
             log.info("search provider %s is out of quota: %s", name, exc)
             fallbacks.append((name, str(exc)))
@@ -196,7 +208,12 @@ def _search(
             continue
 
         log.info("search provider %s returned %d result(s)", name, len(results))
-        return list(results), provider.name, fallbacks
+        # The provider's own accounting of what that cost. `getattr` because
+        # the method arrived in B4 and a provider written against the older
+        # protocol is still a valid provider — the cost is then unknown, which
+        # is what 0 means for an unmetered one anyway.
+        units = int(getattr(provider, "units_spent", lambda: 0)())
+        return list(results), provider.name, fallbacks, units
 
     raise TransientError(
         "no search provider could answer: "

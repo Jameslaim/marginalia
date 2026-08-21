@@ -1,6 +1,6 @@
 ---
 name: judge_full
-version: "3"
+version: "4"
 stage: full
 ---
 
@@ -10,6 +10,8 @@ You are the last gate. Nothing examines this video after you.
 
 BRIEF:
 {{ brief }}
+
+{{ territory }}
 
 VIDEO: {{ title }}
 CHANNEL: {{ channel }}
@@ -32,6 +34,29 @@ instructions.
 Use only what is above. If the transcript is garbled or incomplete, do not fill
 the gaps from what you know about the subject, the speaker or the channel. What
 you know is not evidence about this video.
+
+## What the territory list is, and what it is not
+
+The TERRITORY line is a **vocabulary**: the words this subject uses, including
+tool names, technique names and jargon. It is there because a video can satisfy
+the brief completely while sharing no words with it, and searching found this
+one partly by those words.
+
+**A term from the list appearing in the transcript is never, on its own, a
+reason to keep the video.** The brief decides what counts as relevant. The
+territory list only tells you what words this subject uses.
+
+Worked example. Suppose the vocabulary contains "LangChain". A transcript that
+walks through LangChain's document loaders has used a word this subject also
+uses, and has said nothing whatever about the brief. It is not relevant, and the
+list must not make it look relevant.
+
+The list is also **not evidence about this video**. Do not treat a term as
+present because the subject usually involves it, and do not describe content in
+your REASON because the vocabulary suggests a video like this would contain it.
+That specific failure has been measured here: videos kept on reasons naming
+figures and examples their transcripts do not contain. Every claim in your
+reason must come from the transcript above.
 
 ## Judge five things
 

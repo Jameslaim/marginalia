@@ -28,15 +28,17 @@ import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
-from .chapters import parse_description_chapters
+from ..contracts import FILTER_PUBLISHED_AFTER
 from .base import (
     PermanentError,
     ProviderUnavailable,
     QuotaExhausted,
     QuotaLedger,
+    SearchFilters,
     SearchResult,
     TransientError,
 )
+from .chapters import parse_description_chapters
 
 log = logging.getLogger(__name__)
 
@@ -101,15 +103,22 @@ class YouTubeApiProvider:
         self._quota = quota
         self._daily_units = daily_units
         self._get = transport or _urlopen
+        self._units_spent = 0
 
     # -- public API --------------------------------------------------------
 
-    def search(self, query: str, limit: int = 25) -> list[SearchResult]:
+    def search(
+        self, query: str, limit: int = 25, filters: SearchFilters | None = None
+    ) -> list[SearchResult]:
         if not query.strip():
             # A bad query is the caller's mistake. Surfacing beats falling
             # through to a second provider that will fail the same way.
             raise PermanentError("empty query")
 
+        # Reset per call: `units_spent` answers "what did *this* query cost",
+        # which is the number a queries row records. Running totals are the
+        # quota table's job and are already kept there.
+        self._units_spent = 0
         wanted = max(1, int(limit))
         if wanted > _MAX_PAGE:
             log.warning(
@@ -128,6 +137,7 @@ class YouTubeApiProvider:
             type="video",
             maxResults=str(wanted),
             q=query,
+            **_filter_params(filters),
         )
 
         results = [item for item in _items(payload) if _video_id(item)]
@@ -142,6 +152,16 @@ class YouTubeApiProvider:
         if self._quota is None:
             return None
         return max(0, self._daily_units - self._quota.quota_used(self.name))
+
+    def units_spent(self) -> int:
+        """What the last search cost. 100 for the search, plus 1 if details ran.
+
+        Counted from what was actually reserved rather than from the published
+        costs, so a search whose ``videos.list`` was refused for want of quota
+        reports 100 and not 101. The number is written into the queries row, and
+        a cost that says what it would usually have been is not a record.
+        """
+        return self._units_spent
 
     # -- internals ---------------------------------------------------------
 
@@ -214,6 +234,9 @@ class YouTubeApiProvider:
     def _reserve(self, cost: int) -> None:
         """Charge the cost before sending. Refuse rather than get a 403."""
         if self._quota is None:
+            # Still counted. An unmetered *caller* — no ledger passed — does not
+            # make the call free, and the queries row should say what it cost.
+            self._units_spent += cost
             return
         used = self._quota.quota_used(self.name)
         if used + cost > self._daily_units:
@@ -222,9 +245,32 @@ class YouTubeApiProvider:
                 f"this call costs {cost}"
             )
         self._quota.spend_quota(self.name, cost)
+        self._units_spent += cost
 
 
 # -- parsing ---------------------------------------------------------------
+
+
+def _filter_params(filters: SearchFilters | None) -> dict[str, str]:
+    """Validated filters, in the shape ``search.list`` wants them.
+
+    Nothing is *decided* here — `brain/territory.py` already refused every
+    filter the rules would not allow, and a second opinion in the provider
+    would be a rule in a place nobody would think to look for one. What happens
+    here is translation, and exactly one field needs it.
+
+    ``publishedAfter`` must be RFC 3339. The map writes a plain ``YYYY-MM-DD``,
+    because that is what a model reliably produces and what a person reading
+    the ledger can check at a glance; sending it unconverted earns a 400 that
+    reads as a rejected key. Midnight UTC, which is the wider end of the day.
+    """
+    if filters is None:
+        return {}
+    params = filters.as_dict()
+    published = params.get(FILTER_PUBLISHED_AFTER)
+    if published and len(published) == 10:
+        params[FILTER_PUBLISHED_AFTER] = f"{published}T00:00:00Z"
+    return params
 
 
 def _items(payload: dict[str, Any]) -> list[dict[str, Any]]:

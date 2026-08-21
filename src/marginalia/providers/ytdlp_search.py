@@ -20,7 +20,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
-from .base import PermanentError, SearchResult, TransientError
+from .base import PermanentError, SearchFilters, SearchResult, TransientError
 from .chapters import parse_description_chapters
 from .ytdlp import _SilentLogger, _classify
 
@@ -34,12 +34,29 @@ class YtDlpSearchProvider:
 
     name = "ytdlp_search"
 
-    def search(self, query: str, limit: int = 25) -> list[SearchResult]:
+    def search(
+        self, query: str, limit: int = 25, filters: SearchFilters | None = None
+    ) -> list[SearchResult]:
         import yt_dlp  # local import: nothing outside providers/ may import this
 
         cleaned = " ".join(query.split())
         if not cleaned:
             raise PermanentError("empty query")
+
+        if filters:
+            # Said out loud, and the query runs anyway. `ytsearch:` takes no
+            # parameters, and the direction of that failure is the safe one:
+            # the two filters that matter *exclude*, so ignoring them returns a
+            # superset of what was asked for. A superset gets judged; a subset
+            # would be invisible. What must never happen is this passing
+            # silently — the queries row records `provider`, and reading it as
+            # "these filters ran" when they did not is the kind of mistake that
+            # makes an experiment unrepeatable.
+            log.info(
+                "ytdlp_search: cannot apply %s; running %r unfiltered",
+                ", ".join(sorted(filters.as_dict())),
+                cleaned,
+            )
 
         target = f"ytsearch{max(1, int(limit))}:{cleaned}"
         with yt_dlp.YoutubeDL(_OPTIONS) as ydl:
@@ -61,6 +78,10 @@ class YtDlpSearchProvider:
     def quota_remaining(self) -> int | None:
         """``None``: this provider has no quota concept. That is the point."""
         return None
+
+    def units_spent(self) -> int:
+        """``0``, and that is a fact rather than a placeholder — this is free."""
+        return 0
 
     def _to_result(self, entry: Any) -> SearchResult | None:
         if not isinstance(entry, dict):

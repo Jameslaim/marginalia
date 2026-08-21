@@ -37,9 +37,11 @@ from . import __version__
 from .config import Config, ConfigError, library_root, load_config
 from .contracts import (
     FAILED,
+    HARD_FILTERS,
     KNOWN,
     NEW,
     NOTED,
+    ORIGIN_TERRITORY,
     REJECTED,
     SKIPPED,
     STATUS_HAS_TRANSCRIPT,
@@ -265,6 +267,7 @@ def _cmd_discover(args: argparse.Namespace) -> int:
 
 def _discover_report(run: DiscoverRun) -> list[str]:
     lines = [f"brief:    {run.brief.intent}"]
+    lines.extend(_territory_lines(run))
     for report in run.rounds:
         source = "queries from threads" if report.from_threads else "queries"
         line = (
@@ -288,6 +291,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.flipped_to_no, "kept on disk, declined here"),
             (report.degraded, "degraded evidence, not noted"),
             (report.unparsed, "broke the reply format"),
+            (report.filters_rejected, "filters rejected"),
         ]
         detail = ", ".join(f"{count} {label}" for count, label in notes if count)
         if detail:
@@ -314,6 +318,60 @@ def _discover_report(run: DiscoverRun) -> list[str]:
     return lines
 
 
+def _territory_lines(run: DiscoverRun) -> list[str]:
+    """The map, the recency call and its reason, and what the map surfaced alone.
+
+    The recency reason is printed rather than only stored, because it is the one
+    judgement in this phase that silently *excludes* — a twelve-month cutoff
+    removes older material with no trace anywhere a reader would look. A call
+    you cannot inspect is one you cannot correct.
+    """
+    territory = run.territory
+    if not territory and not run.rejected_filters:
+        return []
+
+    lines = []
+    if territory:
+        lines.append(
+            f"map:      {len(territory.concepts)} concepts, "
+            f"{len(territory.vocabulary)} vocabulary terms, "
+            f"{len(territory.queries)} queries"
+        )
+        reason = territory.recency.reason or "no reason given"
+        lines.append(f"recency:  {territory.recency.label} — {reason}")
+    if not territory.parsed and territory.problem:
+        lines.append(f"map:      unusable ({territory.problem})")
+
+    # Printed even at zero, like the unparsed count, so the number is
+    # trustworthy on the day it is not zero.
+    lines.append(f"filters:  {len(run.rejected_filters)} rejected before executing")
+    for rejection in run.rejected_filters[:5]:
+        # Whether the refusal prevented an *exclusion* is what a reader wants
+        # first. A rejected `order` cost that query some ranking; a rejected
+        # `publishedAfter` or `videoDuration` stopped content disappearing
+        # before anything in this system had seen it.
+        excludes = " (would have excluded)" if rejection.field in HARD_FILTERS else ""
+        lines.append(
+            f"          {rejection.field}={rejection.value} on {rejection.query!r}"
+            f"{excludes} — {rejection.reason}"
+        )
+
+    exclusive = [
+        video_id
+        for report in run.rounds
+        for video_id in report.only_from(ORIGIN_TERRITORY)
+    ]
+    if run.rounds:
+        # The phase's value in one number: candidates the map's own queries
+        # surfaced that no brief-derived query returned. A video the search
+        # never returns is invisible to every stage after it, so this is the
+        # whole difference the map makes.
+        lines.append(
+            f"map-only: {len(exclusive)} candidate(s) no brief query surfaced"
+        )
+    return lines
+
+
 def _discover_json(run: DiscoverRun) -> dict[str, Any]:
     return {
         "run_id": run.run_id,
@@ -323,6 +381,26 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         "brief": run.brief.text,
         "brief_version": run.brief.version,
         "brief_intent": run.brief.intent,
+        # The map in full, and what it cost. Same argument as printing the
+        # brief: when results look wrong the first question is what the run
+        # thought this topic covered, and a list of queries is the conclusion
+        # rather than the reasoning.
+        "territory_version": run.territory.version,
+        "territory": json.loads(run.territory.as_json()),
+        "territory_call": {
+            "input_tokens": run.territory.input_tokens,
+            "output_tokens": run.territory.output_tokens,
+            "seconds": round(run.territory.latency_s, 2),
+        },
+        "rejected_filters": [
+            {
+                "query": rejection.query,
+                "field": rejection.field,
+                "value": rejection.value,
+                "reason": rejection.reason,
+            }
+            for rejection in run.rejected_filters
+        ],
         "stopped_because": run.stopped_because,
         "requests": run.requests,
         "input_tokens": run.input_tokens,
@@ -335,6 +413,28 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "number": report.number,
                 "from_threads": report.from_threads,
                 "queries": report.queries,
+                # The same queries with their provenance. `queries` above stays
+                # a bare list of strings: it is what every earlier baseline
+                # carries, and a comparison against one should not need a
+                # reader to learn a new shape.
+                "planned": [
+                    {
+                        "text": query.text,
+                        "origin": query.origin,
+                        "origin_detail": query.origin_detail,
+                        "filters": query.filters.as_dict(),
+                        "variant_of": query.variant_of,
+                    }
+                    for query in report.planned
+                ],
+                "filters_rejected": report.filters_rejected,
+                # Which origins' queries returned each candidate, and the
+                # subset only the map returned — the phase's value, per round.
+                "surfaced_by": {
+                    video_id: sorted(origins)
+                    for video_id, origins in report.surfaced_by.items()
+                },
+                "territory_only": sorted(report.only_from(ORIGIN_TERRITORY)),
                 # What stage 2 found unexplained in this round's videos. These
                 # are what the *next* round is supposed to have searched for,
                 # so they are the only way to check the loop-back really fed

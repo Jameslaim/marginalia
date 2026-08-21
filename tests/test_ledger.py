@@ -17,6 +17,8 @@ import pytest
 from marginalia.contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
+    ORIGIN_BRIEF,
+    ORIGIN_TERRITORY,
     STATUS_DUPLICATE,
     STATUS_FAILED,
     STATUS_HAS_TRANSCRIPT,
@@ -1127,3 +1129,65 @@ def test_degraded_evidence_beats_an_existing_note() -> None:
     noted = row(STATUS_HAS_TRANSCRIPT, noted_at="2026-01-01T00:00:00+00:00")
 
     assert wanted_for_a_note(noted, [degraded]) is False
+
+
+# -- B4: queries and territory maps -----------------------------------------
+
+
+def test_a_query_is_recorded_with_everything_the_row_holds(ledger: Ledger) -> None:
+    ledger.start_run("run1", "prompt caching", brief="B")
+    ledger.log_query(
+        "run1",
+        round=1,
+        query="kv cache reuse",
+        origin=ORIGIN_TERRITORY,
+        origin_detail="vocabulary: KV cache",
+        filters_json='{"order": {"value": "date", "why": "moves fast"}}',
+        results_count=10,
+        provider="youtube_api",
+        quota_units=101,
+    )
+
+    row = ledger.queries_for_run("run1")[0]
+    assert row.query == "kv cache reuse"
+    assert row.origin == ORIGIN_TERRITORY
+    assert row.origin_detail == "vocabulary: KV cache"
+    assert row.results_count == 10
+    assert row.quota_units == 101
+    assert row.ran_at
+
+
+def test_queries_come_back_in_the_order_they_ran(ledger: Ledger) -> None:
+    """Rank order is meaning here too: it is the sequence a round actually
+    issued, and a set would lose which query surfaced a video first."""
+    ledger.start_run("run1", "t", brief="B")
+    for name in ("first", "second", "third"):
+        ledger.log_query("run1", round=1, query=name, origin=ORIGIN_BRIEF)
+
+    assert [row.query for row in ledger.queries_for_run("run1")] == ["first", "second", "third"]
+
+
+def test_queries_are_scoped_to_their_run(ledger: Ledger) -> None:
+    ledger.start_run("run1", "t", brief="B")
+    ledger.start_run("run2", "t", brief="B")
+    ledger.log_query("run1", round=1, query="mine", origin=ORIGIN_BRIEF)
+    ledger.log_query("run2", round=1, query="theirs", origin=ORIGIN_BRIEF)
+
+    assert [row.query for row in ledger.queries_for_run("run1")] == ["mine"]
+
+
+def test_a_territory_map_is_stored_on_its_run(ledger: Ledger) -> None:
+    ledger.start_run("run1", "t", brief="B")
+
+    ledger.save_territory("run1", '{"concepts": ["caching"]}', "1")
+
+    row = ledger.get_run("run1")
+    assert row.territory_map == '{"concepts": ["caching"]}'
+    assert row.territory_version == "1"
+
+
+def test_a_territory_map_needs_a_run_to_belong_to(ledger: Ledger) -> None:
+    """Same rule as `mark_has_transcript`: a row that says a run reasoned about
+    something, with no run, is a claim about nothing."""
+    with pytest.raises(LedgerError):
+        ledger.save_territory("nope", "{}", "1")

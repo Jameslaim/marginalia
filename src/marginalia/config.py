@@ -66,6 +66,16 @@ DEFAULT_MAX_REQUESTS = 120
 DEFAULT_QUIET_ROUNDS = 2
 DEFAULT_QUERIES_PER_ROUND = 9
 DEFAULT_RESULTS_PER_QUERY = 10
+# B4. Queries the territory map is asked for, on top of the brief's own
+# expansion, and they run once — in round one. Both sets run, deliberately: the
+# brief's queries are what discovery did before the map existed, and keeping
+# them lets `queries.origin` answer "did the map find anything the old
+# expansion would not have?" from the ledger rather than from an opinion.
+#
+# It is a real cost. Each query is a search, and on the official API a search
+# is 100 quota units out of 10,000 a day, so this number and
+# `queries_per_round` add rather than replace.
+DEFAULT_TERRITORY_QUERIES = 8
 # Whether to believe `contentDetails.caption` when it says a video has no
 # captions, and skip the fetch.
 #
@@ -202,6 +212,9 @@ class DiscoverConfig:
     # Skip the fetch when the search provider reports no caption track. Off by
     # default and measured; see DEFAULT_TRUST_CAPTION_HINT.
     trust_caption_hint: bool = DEFAULT_TRUST_CAPTION_HINT
+    # B4. How many queries the territory map is asked to write. Added to
+    # `queries_per_round` in round one, never substituted for it.
+    territory_queries: int = DEFAULT_TERRITORY_QUERIES
 
 
 @dataclass(frozen=True)
@@ -459,6 +472,9 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         ),
         trust_caption_hint=_flag(
             section, "trust_caption_hint", DEFAULT_TRUST_CAPTION_HINT, config_path, "discover"
+        ),
+        territory_queries=_positive(
+            section, "territory_queries", DEFAULT_TERRITORY_QUERIES, config_path, "discover"
         ),
     )
 

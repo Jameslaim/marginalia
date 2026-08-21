@@ -15,6 +15,9 @@ Contract for ``TranscriptProvider.fetch``:
 
 Contract for ``SearchProvider.search``:
 
+* takes optional :class:`SearchFilters`, and applies whatever of them it can —
+  a provider that cannot apply a filter logs it and runs the query unfiltered,
+  because the filters that matter *exclude* and ignoring one returns a superset
 * returns a list of :class:`SearchResult`, possibly empty
 * raises :class:`QuotaExhausted` when the daily allowance is spent — the
   caller falls through to the next provider
@@ -29,7 +32,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol, runtime_checkable
 
-from ..contracts import SearchResult, TranscriptLine, TranscriptResult
+from ..contracts import SearchFilters, SearchResult, TranscriptLine, TranscriptResult
 
 __all__ = [
     "ProviderError",
@@ -41,6 +44,7 @@ __all__ = [
     "TranscriptResult",
     "TranscriptProvider",
     "SearchResult",
+    "SearchFilters",
     "SearchProvider",
     "QuotaLedger",
 ]
@@ -111,11 +115,34 @@ class MetadataCapable(Protocol):
 class SearchProvider(Protocol):
     name: str
 
-    def search(self, query: str, limit: int = 25) -> list[SearchResult]: ...
+    def search(
+        self, query: str, limit: int = 25, filters: SearchFilters | None = None
+    ) -> list[SearchResult]: ...
 
     def quota_remaining(self) -> int | None:
         """Units left today, or ``None`` for providers with no quota concept."""
         ...
+
+    def units_spent(self) -> int:
+        """What the last :meth:`search` cost this provider, in its own units.
+
+        Read after each search so the run can record what a query cost beside
+        what it found. On the protocol rather than computed by the caller
+        because pricing is the provider's own fact — ``search.list`` costing 100
+        units and ``videos.list`` costing 1 is a YouTube API detail, and a
+        module above `providers/` working it out would be a module that knows
+        which provider ran.
+
+        ``0`` is the honest answer for an unmetered provider, not a placeholder.
+        """
+        ...
+
+
+# ``filters`` is optional on every provider, and a provider that cannot honour
+# one **must say so and run the query anyway**. The reason is the direction of
+# the error: the two filters that do anything irreversible — `publishedAfter`
+# and `videoDuration` — *exclude*, so a provider that ignores them returns a
+# superset of what was asked for. A superset is judged; a subset is invisible.
 
 
 class QuotaLedger(Protocol):

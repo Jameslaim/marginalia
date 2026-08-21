@@ -312,3 +312,90 @@ def test_the_raw_reply_goes_to_debug_and_not_higher(caplog) -> None:
         "free text nobody asked for" not in (record.getMessage())
         for record in caplog.records
     )
+
+
+# -- B4: the map reaches the judge, and only as a word list -----------------
+
+
+def test_the_map_renders_as_a_flat_word_list() -> None:
+    from marginalia.brain.judge import territory_lines
+    from marginalia.contracts import TerritoryMap
+
+    territory = TerritoryMap(
+        topic="t",
+        version="1",
+        concepts=["episodic memory"],
+        vocabulary=["ReAct", "LangGraph"],
+    )
+
+    line = territory_lines(territory)
+    assert "episodic memory" in line and "ReAct" in line
+    assert "TERRITORY" in line
+
+
+def test_the_judge_is_never_shown_the_queries_or_the_filters() -> None:
+    """The judge is being told what words this subject uses, not what the map
+    concluded. Showing it the queries would be handing it the reasoning it is
+    supposed to check independently."""
+    from marginalia.brain.judge import territory_lines
+    from marginalia.contracts import (
+        ORIGIN_TERRITORY,
+        PlannedQuery,
+        SearchFilters,
+        TerritoryMap,
+    )
+
+    territory = TerritoryMap(
+        topic="t",
+        version="1",
+        vocabulary=["ReAct"],
+        queries=[
+            PlannedQuery(
+                text="a very distinctive query string",
+                origin=ORIGIN_TERRITORY,
+                filters=SearchFilters(order="date"),
+            )
+        ],
+    )
+
+    line = territory_lines(territory)
+    assert "a very distinctive query string" not in line
+    assert "order" not in line
+
+
+def test_an_absent_map_says_so_rather_than_rendering_blank() -> None:
+    """`Prompt.render` refuses unfilled placeholders, and a blank section reads
+    to a model like a subject with no vocabulary rather than a run with no map."""
+    from marginalia.brain.judge import territory_lines
+    from marginalia.contracts import TerritoryMap
+
+    assert "none mapped" in territory_lines(None)
+    assert "none mapped" in territory_lines(TerritoryMap(topic="t", version="1"))
+
+
+def test_both_judging_prompts_take_the_map() -> None:
+    from marginalia.brain.judge import FULL_PROMPT
+    from marginalia.llm import load_prompt, prompts_dir
+
+    for name in ("judge_metadata", FULL_PROMPT):
+        assert "{{ territory }}" in load_prompt(name, directory=prompts_dir()).text
+
+
+def test_both_judging_prompts_state_the_vocabulary_rule() -> None:
+    """The rule is load-bearing and it goes in as a rule, not a note.
+
+    B3 measured this judge confabulating from suggestive context, and a
+    vocabulary list is a page of suggestive context. Each prompt has to say, in
+    as many words, that a term appearing is never on its own a reason to keep —
+    and show the LangChain-document-loader case that makes it concrete.
+    """
+    from marginalia.brain.judge import FULL_PROMPT
+    from marginalia.llm import load_prompt, prompts_dir
+
+    for name in ("judge_metadata", FULL_PROMPT):
+        # Whitespace-collapsed: these prompts are hard-wrapped, and a rule that
+        # only holds while nobody reflows a paragraph is not being enforced.
+        text = " ".join(load_prompt(name, directory=prompts_dir()).text.split())
+        assert "never, on its own, a reason to keep" in text
+        assert "The brief decides what counts as relevant" in text
+        assert "LangChain" in text, "the rule needs its worked example"

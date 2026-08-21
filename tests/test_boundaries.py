@@ -352,6 +352,22 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "ORIGIN_TERRITORY",
         "ORIGIN_PLANNER",
         "ORIGIN_THREAD",
+        # search filters — the vocabulary the model writes, the validator
+        # reads and the provider sends. Shared three ways, so it is here.
+        "FILTER_PUBLISHED_AFTER",
+        "FILTER_ORDER",
+        "FILTER_RELEVANCE_LANGUAGE",
+        "FILTER_VIDEO_DURATION",
+        "FILTER_FIELDS",
+        "HARD_FILTERS",
+        "ORDER_VALUES",
+        "VIDEO_DURATION_VALUES",
+        "SearchFilters",
+        # territory
+        "Recency",
+        "PlannedQuery",
+        "FilterRejection",
+        "TerritoryMap",
         # verdict vocabulary
         "VERDICT_YES",
         "VERDICT_NO",

@@ -32,6 +32,13 @@ from marginalia.contracts import (
     EVIDENCE_DEGRADED,
     FullVerdict,
     MetadataVerdict,
+    ORIGIN_BRIEF,
+    ORIGIN_TERRITORY,
+    ORIGIN_THREAD,
+    PlannedQuery,
+    Recency,
+    SearchFilters,
+    TerritoryMap,
     Usage,
 )
 from marginalia.flow.discover import (
@@ -119,6 +126,11 @@ class FakeJudge:
         self.query_calls: list[tuple[int, tuple[str, ...]]] = []
         self.batch_sizes: list[int] = []
         self.unparsed: set[str] = set()
+        # What the judge was shown of the territory map, at each stage. Both
+        # stages receive it since B4, and the tests assert that rather than
+        # trusting it.
+        self.territory_seen: list[object] = []
+        self.full_territory_seen: list[object] = []
 
     def prompt(self, name):
         return FakePrompt()
@@ -130,8 +142,9 @@ class FakeJudge:
         self.query_calls.append((len(self.query_calls) + 1, tuple(concepts)))
         return self._queries.pop(0) if self._queries else []
 
-    def judge_metadata(self, brief, candidates, *, batch_size):
+    def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
         self.batch_sizes.append(batch_size)
+        self.territory_seen.append(territory)
         return [
             MetadataVerdict(
                 c.video_id, *self._metadata.get(c.video_id, (VERDICT_YES, "kept"))
@@ -139,9 +152,12 @@ class FakeJudge:
             for c in candidates
         ]
 
-    def judge_full(self, brief, candidate, *, transcript, chapters=(), duration_s=None):
+    def judge_full(
+        self, brief, candidate, *, transcript, chapters=(), duration_s=None, territory=None
+    ):
         self.opening_calls.append(candidate.video_id)
         self.transcripts_seen.append(transcript)
+        self.full_territory_seen.append(territory)
         scripted = self._openings.get(candidate.video_id, (VERDICT_YES, "good", []))
         verdict, reason, concepts = scripted[:3]
         evidence = scripted[3] if len(scripted) > 3 else EVIDENCE_CLEAR
@@ -212,12 +228,15 @@ def searches(monkeypatch: pytest.MonkeyPatch):
         class P:
             name = "fake"
 
-            def search(self, query, limit=25):
+            def search(self, query, limit=25, filters=None):
                 calls.append(query)
                 return list(table.get(query, table.get("*", [])))
 
             def quota_remaining(self):
                 return None
+
+            def units_spent(self):
+                return 101
 
         return P()
 
@@ -226,10 +245,44 @@ def searches(monkeypatch: pytest.MonkeyPatch):
     return table
 
 
-def run(config, ledger, library, client, judge, provider=None, topic=TOPIC, **kwargs):
+class FakeMapper:
+    """A scripted territory map, or none at all.
+
+    ``None`` is the default and it matters: every test written before B4 exists
+    ran without a map, and each of them must keep passing unchanged. A map that
+    is absent has to leave the loop exactly as it was, or the new step would be
+    able to change behaviour on a topic it failed to map.
+    """
+
+    def __init__(self, territory: TerritoryMap | None = None) -> None:
+        self.territory = territory or TerritoryMap(topic=TOPIC, version="1")
+        self.calls = 0
+
+    def map(self, brief, *, count=8):
+        self.calls += 1
+        return self.territory
+
+
+def mapped(*queries: str, concepts=("caching",), vocabulary=("kv cache",), **kwargs):
+    """A map whose queries are exactly these, all of territory origin."""
+    return TerritoryMap(
+        topic=TOPIC,
+        version="1",
+        concepts=list(concepts),
+        vocabulary=list(vocabulary),
+        queries=[
+            PlannedQuery(text=text, origin=ORIGIN_TERRITORY, origin_detail="vocabulary: kv cache")
+            for text in queries
+        ],
+        **kwargs,
+    )
+
+
+def run(config, ledger, library, client, judge, provider=None, topic=TOPIC, mapper=None, **kwargs):
     return discover(
         config, ledger, library, client, topic,
-        judge=judge, provider=provider or FakeTranscripts(), **kwargs,
+        judge=judge, mapper=mapper or FakeMapper(),
+        provider=provider or FakeTranscripts(), **kwargs,
     )
 
 
@@ -660,9 +713,11 @@ def test_the_run_row_exists_before_judging(config, ledger, library, client, sear
     seen: list[bool] = []
 
     class Watcher(FakeJudge):
-        def judge_metadata(self, brief, candidates, *, batch_size):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
             seen.append(bool(ledger.list_runs()))
-            return super().judge_metadata(brief, candidates, batch_size=batch_size)
+            return super().judge_metadata(
+                brief, candidates, batch_size=batch_size, territory=territory
+            )
 
     run(config, ledger, library, client, Watcher(), max_rounds=1)
     assert seen == [True]
@@ -686,7 +741,7 @@ def test_a_crashed_run_leaves_a_row_without_finished_at(
     searches["*"] = [result("aaaaaaaaaaa")]
 
     class Exploding(FakeJudge):
-        def judge_metadata(self, brief, candidates, *, batch_size):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
             raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError):
@@ -1179,3 +1234,287 @@ def test_no_transcript_content_reaches_the_report(
     assert secret not in capsys.readouterr().out
     assert secret not in repr(outcome)
     assert all(secret not in " ".join(r.concepts) for r in outcome.rounds)
+
+
+# -- B4: the territory map -------------------------------------------------
+
+
+def test_the_map_is_stored_on_the_run(config, ledger, library, client, searches) -> None:
+    """Same argument as storing the brief. When results look wrong the first
+    question is *what did it think this topic covered?*, and a list of the
+    queries that ran is the conclusion rather than the reasoning."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    mapper = FakeMapper(mapped("kv cache reuse llm"))
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1, mapper=mapper)
+
+    row = ledger.get_run(outcome.run_id)
+    assert row.territory_version == "1"
+    assert "kv cache" in row.territory_map
+
+
+def test_the_map_is_stored_before_any_judging(config, ledger, library, client, searches) -> None:
+    """The same ordering rule the brief follows. A crash mid-run must leave the
+    reasoning behind it readable, not a run whose map was never written down."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    seen: list[str | None] = []
+
+    class Watcher(FakeJudge):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+            seen.append(ledger.list_runs()[0].territory_map)
+            return super().judge_metadata(
+                brief, candidates, batch_size=batch_size, territory=territory
+            )
+
+    run(config, ledger, library, client, Watcher(), max_rounds=1,
+        mapper=FakeMapper(mapped("kv cache reuse llm")))
+
+    assert seen and seen[0] is not None
+
+
+def test_a_map_that_failed_leaves_the_loop_exactly_as_it_was(
+    config, ledger, library, client, searches
+) -> None:
+    """The new step must not be able to break a loop that worked without it."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    empty = TerritoryMap(topic=TOPIC, version="1", parsed=False, problem="mapping call failed")
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]),
+                  max_rounds=1, mapper=FakeMapper(empty))
+
+    assert outcome.stored_ids == ["aaaaaaaaaaa"]
+    assert outcome.rounds[0].queries == ["q1"]
+
+
+# -- B4: queries are recorded, with their origins --------------------------
+
+
+def test_every_query_is_recorded_with_its_origin(
+    config, ledger, library, client, searches
+) -> None:
+    """Gate 5. Without these rows a run's queries are a list with no causal
+    story, and "why did it search for that?" has no answer at all."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[["prompt caching tutorial"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1,
+                  mapper=FakeMapper(mapped("kv cache reuse llm")))
+
+    rows = ledger.queries_for_run(outcome.run_id)
+    assert [(row.query, row.origin) for row in rows] == [
+        ("prompt caching tutorial", ORIGIN_BRIEF),
+        ("kv cache reuse llm", ORIGIN_TERRITORY),
+    ]
+    assert all(row.round == 1 for row in rows)
+
+
+def test_a_recorded_query_says_what_it_found_and_cost(
+    config, ledger, library, client, searches
+) -> None:
+    """The other half of the row. "Why did it search for that?" is one question
+    and "what did that buy?" is the other, and B5's planner reads both."""
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1,
+                  mapper=FakeMapper())
+
+    row = ledger.queries_for_run(outcome.run_id)[0]
+    assert row.results_count == 2
+    assert row.provider == "fake"
+    assert row.quota_units == 101
+
+
+def test_a_thread_query_is_recorded_as_a_thread(
+    config, ledger, library, client, searches
+) -> None:
+    """Round two's queries come from what stage 2 found unexplained, and the
+    origin has to say so — otherwise the loop-back is invisible in the ledger."""
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    searches["q2"] = [result("bbbbbbbbbbb")]
+    judge = FakeJudge(
+        queries=[["q1"], ["q2"]],
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "good", ["kv cache"])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2, mapper=FakeMapper())
+
+    origins = {row.query: row.origin for row in ledger.queries_for_run(outcome.run_id)}
+    assert origins["q1"] == ORIGIN_BRIEF
+    assert origins["q2"] == ORIGIN_THREAD
+
+
+def test_the_map_only_contributes_queries_in_round_one(
+    config, ledger, library, client, searches
+) -> None:
+    """B4 builds the map. Revising it between rounds is B5's planner, and a map
+    re-run every round would be that, arrived at by accident."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[["q1"], ["q2"]])
+    mapper = FakeMapper(mapped("kv cache reuse llm"))
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2, mapper=mapper)
+
+    rows = ledger.queries_for_run(outcome.run_id)
+    territory_rounds = {row.round for row in rows if row.origin == ORIGIN_TERRITORY}
+    assert territory_rounds == {1}
+    assert mapper.calls == 1
+
+
+def test_a_query_that_failed_is_still_recorded(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    """A query that failed is a query that ran. A table holding only the
+    successful ones answers "what did this round search for?" wrongly."""
+
+    def exploding(*args, **kwargs):
+        raise TransientError("search is down")
+
+    monkeypatch.setattr("marginalia.flow.discover.run_search", exploding)
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]),
+                  max_rounds=1, mapper=FakeMapper())
+
+    rows = ledger.queries_for_run(outcome.run_id)
+    assert [(row.query, row.results_count) for row in rows] == [("q1", None)]
+
+
+def test_a_dry_run_records_its_queries_but_not_its_decisions(
+    config, ledger, library, client, searches
+) -> None:
+    """Two different kinds of record. A `no` row poisons Gate 2 for the real run
+    that follows; a queries row poisons nothing and says what a dry run really
+    did search for."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]),
+                  max_rounds=1, dry_run=True, mapper=FakeMapper())
+
+    assert [row.query for row in ledger.queries_for_run(outcome.run_id)] == ["q1"]
+    assert ledger.decisions_for_run(outcome.run_id) == []
+
+
+# -- B4: filters reach the provider, validated -----------------------------
+
+
+def _with_filters(territory, filters, reasons=None):
+    """The same map with one filtered query. Written out because a frozen
+    dataclass holding a frozen dataclass needs two replaces."""
+    return replace(
+        territory,
+        queries=[
+            replace(territory.queries[0], filters=filters, reasons=reasons or {})
+        ],
+    )
+
+
+def test_a_validated_filter_reaches_the_search(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    from marginalia.flow import discover as discover_module
+
+    seen: list[object] = []
+    real = discover_module.run_search
+
+    def watching(*args, **kwargs):
+        seen.append(kwargs.get("filters"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(discover_module, "run_search", watching)
+    searches["*"] = [result("aaaaaaaaaaa")]
+    territory = _with_filters(mapped("kv cache reuse llm"), SearchFilters(order="date"))
+
+    run(config, ledger, library, client, FakeJudge(queries=[[]]), max_rounds=1,
+        mapper=FakeMapper(territory))
+
+    assert seen[-1] == SearchFilters(order="date")
+
+
+def test_a_bad_filter_is_rejected_before_the_search_and_counted(
+    config, ledger, library, client, searches
+) -> None:
+    """Gate 3. The query still runs; only the filter is dropped, because
+    rejecting toward width is the only safe direction."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    territory = _with_filters(
+        mapped("kv cache reuse llm"), SearchFilters(published_after="not-a-date")
+    )
+    territory = replace(territory, recency=Recency(months=12, reason="turns over"))
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[[]]), max_rounds=1,
+                  mapper=FakeMapper(territory))
+
+    assert outcome.rounds[0].filters_rejected == 1
+    assert outcome.rejected_filters[0].field == "publishedAfter"
+    assert outcome.rounds[0].queries == ["kv cache reuse llm"], "the query still ran"
+    row = ledger.queries_for_run(outcome.run_id)[0]
+    assert row.filters_json is None
+
+
+def test_a_filter_that_ran_is_recorded_with_its_reason(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    territory = _with_filters(
+        mapped("kv cache reuse llm"),
+        SearchFilters(order="date"),
+        {"order": "the ecosystem turns over"},
+    )
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[[]]), max_rounds=1,
+                  mapper=FakeMapper(territory))
+
+    row = ledger.queries_for_run(outcome.run_id)[0]
+    assert "turns over" in row.filters_json
+    assert '"date"' in row.filters_json
+
+
+# -- B4: the judge receives the map ----------------------------------------
+
+
+def test_both_judging_stages_receive_the_map(
+    config, ledger, library, client, searches
+) -> None:
+    """Stage 1 especially: that is where a video whose title never says the
+    topic's words is dropped before anything reads it."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    territory = mapped("kv cache reuse llm")
+
+    run(config, ledger, library, client, judge, max_rounds=1, mapper=FakeMapper(territory))
+
+    assert judge.territory_seen[0].vocabulary == ["kv cache"]
+    assert judge.full_territory_seen[0].vocabulary == ["kv cache"]
+
+
+# -- B4: what the map surfaced alone ---------------------------------------
+
+
+def test_a_candidate_only_the_map_found_is_attributed_to_the_map(
+    config, ledger, library, client, searches
+) -> None:
+    """The phase's value, counted rather than claimed. A video the search never
+    returns is invisible to every stage after it, so this set is the entire
+    difference the map makes."""
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    searches["kv cache reuse llm"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]), max_rounds=1,
+                  mapper=FakeMapper(mapped("kv cache reuse llm")))
+
+    report = outcome.rounds[0]
+    assert report.only_from(ORIGIN_TERRITORY) == ["bbbbbbbbbbb"]
+    assert report.surfaced_by["aaaaaaaaaaa"] == {ORIGIN_BRIEF, ORIGIN_TERRITORY}
+
+
+def test_credit_is_not_first_past_the_post(
+    config, ledger, library, client, searches
+) -> None:
+    """Recording only the first origin would answer "would the old expansion
+    have found this?" with whichever set of queries happened to run earlier."""
+    searches["q1"] = [result("aaaaaaaaaaa")]
+    searches["kv cache reuse llm"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"]]), max_rounds=1,
+                  mapper=FakeMapper(mapped("kv cache reuse llm")))
+
+    assert outcome.rounds[0].only_from(ORIGIN_TERRITORY) == []

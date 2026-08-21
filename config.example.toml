@@ -198,6 +198,30 @@ extra = { reasoning_effort = "max" }
 [llm.tasks.review_brief]
 extra = { reasoning_effort = "high" }
 
+# B4. Once per topic, before anything is searched. Working out what a subject
+# is *called* — its subtopics, its jargon, the tools and people identified with
+# it — is the one call whose output decides what the search is even capable of
+# returning.
+#
+# `low`, and measured rather than chosen. This is the same shape write_note is,
+# and it fails the same way: a structured document of a dozen query blocks is
+# exactly what this provider's reasoning does not terminate on.
+#
+#   effort   finish    output tokens   result
+#   high     length            8,192   EMPTY — 71s and nothing came back
+#   low      stop              3,709   valid: 8 queries, 26 vocabulary terms, 27s
+#
+# The `high` run is not hypothetical; it was the first real call this phase
+# made. The map guard caught it — a truncated reply is discarded rather than
+# parsed, because a half-read vocabulary looks like the subject's full extent —
+# so the cost of getting this wrong is a narrower run, not a wrong one.
+#
+# The ladder is not monotonic on this task, which is the third time that has
+# been true here. "The most important call deserves the most thinking" is the
+# wrong instinct on this provider whenever the output is long and structured.
+[llm.tasks.map_territory]
+extra = { reasoning_effort = "low" }
+
 # Once per video, reading a whole transcript, producing the artifact every
 # later question is answered from. The highest-consequence call in the system,
 # and the one that must have the LEAST thinking — see the table above. `low`
@@ -248,6 +272,17 @@ trust_caption_hint = false
 # slow or heavily queued provider.
 queries_per_round = 6
 results_per_query = 10
+
+# B4. Queries the territory map writes, on top of `queries_per_round`, and they
+# run once — in round one only. Both sets run deliberately: the brief's own
+# expansion is what discovery did before the map existed, and keeping it is what
+# lets `queries.origin` answer "did the map find anything the old expansion
+# would not have?" from the ledger rather than from an opinion.
+#
+# It costs real quota. Every query is a search, and on the official API a search
+# is 100 units out of 10,000 a day — so this adds to the round rather than
+# replacing part of it. Set it to 1 to keep the mechanism and shrink the bill.
+territory_queries = 8
 
 [note]
 # The note pass reads whole transcripts, so its ceiling is a different number
