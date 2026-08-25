@@ -10,13 +10,20 @@
       expand brief -> queries, plus the map's own queries in round 1
       validate every filter before it executes (B4)
       search each query -> candidates          (M2a, unchanged)
-      gates 1 and 2                            (M2a, unchanged)
-      stage 1, batched -> yes / no / maybe
-      maybe -> fetch -> stage 2 -> yes / no + threads
-      yes -> store
+      gates 1 and 2, including what this run already stored
+      stage 1, batched -> no / fetch-or-not
+      yes or maybe -> fetch -> stage 2 -> yes / no + threads
+      stage-2 yes -> store and note; stage-2 no -> store, no note
       decide whether to run again
 
 The loop-back is the whole point. Everything else is plumbing.
+
+**Stage 1 decides whether to fetch. Stage 2 decides whether to keep.** A
+stage-1 YES used to skip stage 2 as the cheaper keeper, which meant a video
+could enter the library without anything having read it — and B3 measured this
+judge inventing content from titles, so "nothing read it" is a real risk and not
+a tidiness complaint. Every candidate that will be stored is now judged on its
+transcript.
 
 **The map runs once, before the first round.** It is what makes a query out of a
 word the user never typed — searching "AI agent memory" never returns the video
@@ -37,6 +44,7 @@ after.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 import uuid
@@ -44,15 +52,18 @@ from datetime import datetime, timezone
 from typing import Sequence
 
 from ..brain.judge import FULL_PROMPT, Judge
-from ..brain.planner import Planner, apply_revisions
+from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
 from ..brain.territory import Mapper, validate
 from ..config import Config
 from ..contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
+    KNOWN,
     NEW,
     ORIGIN_BRIEF,
     ORIGIN_THREAD,
+    REJECTED,
+    STORED_THIS_RUN,
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
@@ -362,6 +373,18 @@ def _run_planner(
         count=config.discover.planner_queries,
     )
     report.plan = plan
+    # Stored whole, immediately, for the same reason the map is. Until now a
+    # plan survived only as the one-line gap label attached to each query it
+    # produced — which says what it asked for and never why, and "why did the
+    # planner decide that?" is precisely the question storing runs exists to
+    # answer. Written before the revisions are applied, so a crash between the
+    # two leaves the reasoning on disk rather than only its consequences.
+    ledger.save_plan(
+        run.run_id,
+        round=report.number,
+        plan_json=json.dumps(plan.as_dict(), ensure_ascii=False),
+        prompt_version=planner.prompt(PLAN_PROMPT).version,
+    )
     # On the run, not on this round's counter. A filter the planner proposed was
     # rejected *between* rounds, for a query the next round would have run —
     # folding it into "filters rejected on the queries this round ran" would put
@@ -475,6 +498,15 @@ def _gather(
                 log_decisions=not run.dry_run,
                 run_id=run.run_id,
                 filters=query.filters or None,
+                # The run-scoped half of Gate 1. `in_library` cannot see these
+                # — their notes are written by a worker that starts after the
+                # run ends — so without this every round re-judges everything
+                # the previous rounds kept. Measured on run `19941ec23cb7`:
+                # `EGNykTqFDBs` was judged and accepted in round 1 and again in
+                # round 2. The disk check stopped the re-download; nothing
+                # stopped the model call or the second row in the round's
+                # evidence, which the planner then read as two findings.
+                stored_this_run=run.stored_ids,
             )
         except (PermanentError, TransientError) as exc:
             # One dead query must not end a round that has nine good ones.
@@ -491,8 +523,9 @@ def _gather(
 
         answered = True
         report.candidates += len(result.candidates)
-        report.known += len(result.of("known"))
-        report.rejected_before += len(result.of("rejected"))
+        report.known += len(result.of(KNOWN))
+        report.known_this_run += len(result.of(STORED_THIS_RUN))
+        report.rejected_before += len(result.of(REJECTED))
         _log_query(
             ledger,
             run,
@@ -610,7 +643,10 @@ def _judge_round(
         run.stopped_because = STOP_DRY_RUN
         return []
 
-    # YES first: it needs no second model call, so it is the cheaper keeper.
+    # YES first, and no longer because it is cheaper — it is not. Both verdicts
+    # now cost a fetch and a stage-2 call, so the ordering buys one thing only:
+    # when `max_videos` truncates the round, the candidates stage 1 was
+    # confident about are the ones that got the budget.
     ordered = [v for v in verdicts if v.verdict == VERDICT_YES]
     ordered += [v for v in verdicts if v.verdict == VERDICT_MAYBE]
 
@@ -620,13 +656,6 @@ def _judge_round(
             return concepts
 
         candidate = by_id[verdict.video_id]
-        # Which judgement actually decided this video, and at which stage. A
-        # stage-1 YES is stored on the strength of its metadata verdict; a
-        # MAYBE is stored on the strength of stage 2's, which read every word.
-        # The planner is shown whichever one decided, because "the transcript
-        # established X" and "the title looks right" are not the same evidence
-        # and a coverage claim built on the second would be built on a guess.
-        decided, decided_stage = verdict, STAGE_METADATA
 
         # Gate 1 asks whether a video is in the *library*, which since B1 means
         # it has a note. This asks a different question — do we already hold the
@@ -685,68 +714,96 @@ def _judge_round(
             report.failed += 1
             continue
 
-        if verdict.verdict == VERDICT_MAYBE:
-            if client.usage.requests >= max_requests:
-                run.stopped_because = STOP_MAX_REQUESTS
-                return concepts
-            if _overspent(config, client):
-                run.stopped_because = STOP_MAX_COST
-                return concepts
-            # The whole transcript, not the first thousand words. An opening
-            # cannot distinguish a video that delivers from one that promises
-            # well and never arrives — the two are identical for a thousand
-            # words, and padding is exactly what stage 2 exists to catch.
-            #
-            # Built from the lines in hand rather than read back from disk.
-            # `brain/` cannot reach the filesystem, so "the judge never reads a
-            # stored transcript into a report" is structural here, not careful.
-            judgement = judge.judge_full(
-                run.brief,
-                candidate,
-                transcript=_transcript_text(fetched),
-                chapters=[chapter.get("title", "") for chapter in fetched.chapters][:12],
-                duration_s=fetched.duration_s or candidate.duration_s,
-                territory=run.territory,
-            )
-            _log(
-                ledger,
-                run,
+        # **Every keeper is read before it is kept**, whatever stage 1 said.
+        #
+        # This used to skip a stage-1 YES, on the reasoning that it "needs no
+        # second model call, so it is the cheaper keeper". The saving is real
+        # and tiny — B3 measured stage 2 at 0.09¢ and 2.5s per video — and what
+        # it bought was a video entering the library that nothing had read.
+        #
+        # That is not a hypothetical cost. B3 measured this judge confabulating
+        # from metadata: three videos kept on reasons describing numbers their
+        # transcripts do not contain. Those were caught only because they were
+        # MAYBEs and stage 2 read them. A confident YES never reached the check
+        # that would have caught it — and one did exactly that in run
+        # `19941ec23cb7`, where the planner then reported a gap the library
+        # already held, because the only evidence anything had about the video
+        # was one sentence about its title.
+        #
+        # So stage 1 is a filter that decides whether to *fetch*, and stage 2 is
+        # the verdict that decides whether to keep.
+        if client.usage.requests >= max_requests:
+            run.stopped_because = STOP_MAX_REQUESTS
+            return concepts
+        if _overspent(config, client):
+            run.stopped_because = STOP_MAX_COST
+            return concepts
+        # The whole transcript, not the first thousand words. An opening
+        # cannot distinguish a video that delivers from one that promises
+        # well and never arrives — the two are identical for a thousand
+        # words, and padding is exactly what stage 2 exists to catch.
+        #
+        # Built from the lines in hand rather than read back from disk.
+        # `brain/` cannot reach the filesystem, so "the judge never reads a
+        # stored transcript into a report" is structural here, not careful.
+        judgement = judge.judge_full(
+            run.brief,
+            candidate,
+            transcript=_transcript_text(fetched),
+            chapters=[chapter.get("title", "") for chapter in fetched.chapters][:12],
+            duration_s=fetched.duration_s or candidate.duration_s,
+            territory=run.territory,
+        )
+        _log(
+            ledger,
+            run,
+            candidate.video_id,
+            STAGE_FULL,
+            judgement.verdict,
+            judgement.reason,
+            evidence=judgement.evidence,
+            prompt_version=judge.prompt(FULL_PROMPT).version,
+        )
+        concepts.extend(judgement.concepts)
+        if not judgement.parsed:
+            report.unparsed += 1
+        if judgement.evidence == EVIDENCE_DEGRADED:
+            # Kept, stored, and deliberately not noted. The transcript is
+            # worth keeping — it is the thing ASR would replace — but a
+            # note written from text the judge could not read would be
+            # loaded by `/ask` with no way to know it was noise.
+            report.degraded += 1
+            log.info(
+                "discover: %s kept on degraded evidence; no note will be written",
                 candidate.video_id,
-                STAGE_FULL,
-                judgement.verdict,
-                judgement.reason,
-                evidence=judgement.evidence,
-                prompt_version=judge.prompt(FULL_PROMPT).version,
             )
-            decided, decided_stage = judgement, STAGE_FULL
-            concepts.extend(judgement.concepts)
-            if not judgement.parsed:
-                report.unparsed += 1
-            if judgement.evidence == EVIDENCE_DEGRADED:
-                # Kept, stored, and deliberately not noted. The transcript is
-                # worth keeping — it is the thing ASR would replace — but a
-                # note written from text the judge could not read would be
-                # loaded by `/ask` with no way to know it was noise.
-                report.degraded += 1
+        if judgement.verdict == VERDICT_NO:
+            report.rejected.append(_judged(candidate, STAGE_FULL, judgement))
+            # Two counters, because they mean different things. A MAYBE that
+            # stage 2 declines is stage 2 doing its job; a YES that stage 2
+            # declines is stage 1 having been wrong, and that is the number
+            # this change exists to make visible.
+            if verdict.verdict == VERDICT_YES:
+                report.overturned += 1
                 log.info(
-                    "discover: %s kept on degraded evidence; no note will be written",
+                    "discover: %s was a stage-1 YES and stage 2 declined it — %s",
                     candidate.video_id,
+                    judgement.reason,
                 )
-            if judgement.verdict == VERDICT_NO:
-                report.rejected.append(_judged(candidate, STAGE_FULL, judgement))
+            else:
                 report.flipped_to_no += 1
-                # Keep the bytes. Acquisition is the one step this project
-                # calls fragile, and it is fragile in a measured way — thirteen
-                # of thirteen fetches died in nine seconds when YouTube
-                # throttled a run. Throwing away a transcript already in hand
-                # means paying that risk again for content we have.
-                #
-                # What keeps it out of the library is the absence of a *note*,
-                # not the absence of a transcript. `in_library` stays False, so
-                # a later topic still gets to judge this video on its own
-                # terms — and by then the download is already done.
-                _store(library, ledger, candidate, fetched, config)
-                continue
+            # Keep the bytes. Acquisition is the one step this project
+            # calls fragile, and it is fragile in a measured way — thirteen
+            # of thirteen fetches died in nine seconds when YouTube
+            # throttled a run. Throwing away a transcript already in hand
+            # means paying that risk again for content we have.
+            #
+            # What keeps it out of the library is the absence of a *note*,
+            # not the absence of a transcript. `in_library` stays False, so
+            # a later topic still gets to judge this video on its own
+            # terms — and by then the download is already done.
+            _store(library, ledger, candidate, fetched, config)
+            continue
 
         _store(library, ledger, candidate, fetched, config)
         run.stored_ids.append(candidate.video_id)
@@ -754,7 +811,11 @@ def _judge_round(
         # coverage answerable at all. A planner shown only rejections can only
         # ever learn what to avoid; it needs what was kept to say which part of
         # the brief is already satisfied.
-        report.kept.append(_judged(candidate, decided_stage, decided))
+        #
+        # Always the stage-2 judgement now. There is no longer a keeper whose
+        # reason describes a title rather than a transcript, which is what made
+        # a coverage claim built on one a claim built on a guess.
+        report.kept.append(_judged(candidate, STAGE_FULL, judgement))
         report.stored += 1
 
     return _dedupe_concepts(concepts)
@@ -840,6 +901,11 @@ def _judged(candidate: SearchResult, stage: str, verdict) -> JudgedVideo:
     was clear or damaged. Defaulting a stage-1 verdict to ``CLEAR`` is the
     honest reading — the metadata was legible — and it keeps the discriminator
     meaning one thing, which is *stage 2 could not read the transcript*.
+
+    The only stage-1 verdicts that now reach here are **rejections**. Every
+    keeper is judged on its transcript, so a kept video's grade is always one
+    stage 2 actually assigned rather than a default standing in for a reader
+    nobody sent.
     """
     return JudgedVideo(
         video_id=candidate.video_id,

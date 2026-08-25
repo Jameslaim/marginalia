@@ -292,7 +292,13 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.failed, "fetch failed"),
             (report.no_captions, "no captions, sent to ASR"),
             (report.already_held, "already on disk"),
+            (report.known_this_run, "stored in an earlier round"),
             (report.flipped_to_no, "kept on disk, declined here"),
+            # Its own line, and the one worth reading. This is stage 1 having
+            # been confidently wrong about a video the transcript then
+            # contradicted — the number that says how far a metadata verdict
+            # can be trusted on its own.
+            (report.overturned, "stage-1 YES overturned by the transcript"),
             (report.degraded, "degraded evidence, not noted"),
             (report.unparsed, "broke the reply format"),
             (report.filters_rejected, "filters rejected"),
@@ -512,11 +518,13 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "concepts": report.concepts,
                 "candidates": report.candidates,
                 "known": report.known,
+                "known_this_run": report.known_this_run,
                 "rejected_before": report.rejected_before,
                 "yes": report.verdict_yes,
                 "no": report.verdict_no,
                 "maybe": report.verdict_maybe,
                 "flipped_to_no": report.flipped_to_no,
+                "overturned": report.overturned,
                 "stored": report.stored,
                 "failed": report.failed,
                 "already_held": report.already_held,

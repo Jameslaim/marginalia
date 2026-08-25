@@ -863,6 +863,25 @@ def test_a_duplicate_is_in_the_library_without_a_note() -> None:
     assert in_library(row(STATUS_DUPLICATE)) is True
 
 
+def test_a_video_stored_moments_ago_is_still_not_in_the_library() -> None:
+    """The pressure that could have broken this, resisted deliberately.
+
+    A video stored in round one has no note during round two, so Gate 1 does
+    not recognise it and the round judges it again. The tempting fix is to let
+    `in_library` accept a transcript — and that would be wrong twice over: a
+    stage-2 rejection also holds a transcript and must stay re-judgeable for a
+    later topic, and `/ask` cannot answer from a video with no note, so calling
+    it a member is a claim the library contradicts.
+
+    The re-judging is fixed by passing the run's own stored ids to Gate 1 as a
+    separate question. This test exists so that fix cannot later be "simplified"
+    into this function.
+    """
+    fresh = row(STATUS_HAS_TRANSCRIPT)
+    assert fresh.noted_at is None
+    assert in_library(fresh) is False
+
+
 # -- B2: which videos are worth a note --------------------------------------
 #
 # Holding a transcript stopped implying that anyone chose the video. A stage-2
@@ -1191,3 +1210,59 @@ def test_a_territory_map_needs_a_run_to_belong_to(ledger: Ledger) -> None:
     something, with no run, is a claim about nothing."""
     with pytest.raises(LedgerError):
         ledger.save_territory("nope", "{}", "1")
+
+
+# -- plans: the reasoning behind a round's queries ---------------------------
+#
+# The `queries` table records what a plan produced. Until the `plans` table had
+# a writer, the reasoning that produced it was thrown away — so "why did the
+# planner decide that?" was unanswerable from a stored run, which is precisely
+# what storing runs is for.
+
+
+def test_a_plan_is_stored_whole_and_read_back(ledger: Ledger) -> None:
+    ledger.start_run("run1", "postgres connection pooling", brief="B")
+
+    ledger.save_plan(
+        "run1",
+        round=1,
+        plan_json='{"recommendation": "continue", "coverage": []}',
+        prompt_version="3",
+    )
+
+    row = ledger.plans_for_run("run1")[0]
+    assert row.round == 1
+    assert row.plan_json == '{"recommendation": "continue", "coverage": []}'
+    assert row.prompt_version == "3"
+    assert row.planned_at
+
+
+def test_plans_come_back_in_round_order(ledger: Ledger) -> None:
+    ledger.start_run("run1", "t", brief="B")
+    for number in (2, 1, 3):
+        ledger.save_plan("run1", round=number, plan_json="{}")
+
+    assert [row.round for row in ledger.plans_for_run("run1")] == [1, 2, 3]
+
+
+def test_plans_are_scoped_to_their_run(ledger: Ledger) -> None:
+    ledger.start_run("run1", "t", brief="B")
+    ledger.start_run("run2", "t", brief="B")
+    ledger.save_plan("run1", round=1, plan_json='{"mine": true}')
+    ledger.save_plan("run2", round=1, plan_json='{"theirs": true}')
+
+    assert [row.plan_json for row in ledger.plans_for_run("run1")] == ['{"mine": true}']
+
+
+def test_a_plan_needs_a_run_to_belong_to(ledger: Ledger) -> None:
+    """Same rule as the territory map: a stored conclusion nothing can find
+    again is not a record."""
+    with pytest.raises(LedgerError):
+        ledger.save_plan("nope", round=1, plan_json="{}")
+
+
+def test_a_run_with_no_planning_has_no_plans(ledger: Ledger) -> None:
+    """The honest answer for a run that predates the table, and for the many
+    runs — dry, single-round, budget-stopped — that never plan at all."""
+    ledger.start_run("run1", "t", brief="B")
+    assert ledger.plans_for_run("run1") == []

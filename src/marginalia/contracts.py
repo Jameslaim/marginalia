@@ -973,12 +973,24 @@ class RoundReport:
     candidates: int = 0
     # Gate 1: already in the library, so never a candidate at all.
     known: int = 0
+    # Gate 1, run-scoped: stored by an earlier round of *this* run, so it has
+    # no note yet and `in_library` cannot see it. Its own counter rather than
+    # part of `known`, because it measures something only this run can fix —
+    # every one of these used to be a candidate judged for the second time.
+    known_this_run: int = 0
     # Gate 2: carries a NO for this exact topic from an earlier run.
     rejected_before: int = 0
     verdict_no: int = 0
     verdict_maybe: int = 0
     verdict_yes: int = 0
+    # Stage 2 rejected a candidate stage 1 had called MAYBE — the routine flip,
+    # and what stage 2 was built to do.
     flipped_to_no: int = 0
+    # Stage 2 rejected a candidate stage 1 had called **YES**. Kept apart from
+    # `flipped_to_no` deliberately: a confident metadata verdict overturned by
+    # the transcript is the number that says whether stage 1 can be trusted on
+    # its own, and summing it into the routine flips would hide exactly that.
+    overturned: int = 0
     stored: int = 0
     # A fetch was attempted and did not produce a transcript. **Only** that —
     # it used to absorb the two below, which meant a round where nothing went
@@ -1031,8 +1043,14 @@ class RoundReport:
 
     @property
     def judged_here(self) -> int:
-        """Candidates this round actually reached a stage-2 verdict on."""
-        return self.stored + self.flipped_to_no
+        """Candidates this round actually reached a stage-2 verdict on.
+
+        Every stored video is now one of them. Stage 1 decides whether to
+        *fetch*; nothing enters the library without stage 2 having read the
+        transcript, so this is `stored` plus both kinds of rejection rather
+        than the MAYBE branch alone.
+        """
+        return self.stored + self.flipped_to_no + self.overturned
 
     def only_from(self, origin: str) -> list[str]:
         """Videos no other origin's queries returned. The phase's value, counted.
@@ -1089,12 +1107,18 @@ class DiscoverRun:
 NEW = "new"
 KNOWN = "known"
 REJECTED = "rejected"
+# Stored by *this run*, in an earlier round. Its own word rather than `KNOWN`,
+# because it is a different question with a different answer: Gate 1 asks
+# whether a video is in the library, and a video stored ten seconds ago is not
+# — its note has not been written yet and may never be. Folding the two
+# together would make "already in the library" a claim the ledger contradicts.
+STORED_THIS_RUN = "stored_this_run"
 
 
 @dataclass(frozen=True)
 class Candidate:
     result: SearchResult
-    verdict: str  # new | known | rejected
+    verdict: str  # new | known | rejected | stored_this_run
     reason: str  # short, printable, stable — a skill reads it
 
     @property
@@ -1133,6 +1157,7 @@ class SearchRun:
             "found": len(self.candidates),
             KNOWN: len(self.of(KNOWN)),
             REJECTED: len(self.of(REJECTED)),
+            STORED_THIS_RUN: len(self.of(STORED_THIS_RUN)),
             NEW: len(self.of(NEW)),
         }
 

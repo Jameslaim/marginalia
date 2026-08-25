@@ -10,10 +10,24 @@ Two gates run, both free, both before anything is spent:
 ============  =========================================  ================
 Gate          Drops                                      Ledger evidence
 ============  =========================================  ================
-1. known ID   videos already in the library                ``in_library()``
+1. known ID   videos already in the library, and          ``in_library()``
+              videos this run stored in an earlier        ``stored_this_run``
+              round
 2. rejection  videos with a ``no`` verdict *for this      ``decisions``
               exact topic*
 ============  =========================================  ================
+
+Gate 1 asks two questions, not one, and they have different answers for a few
+minutes at a time. ``in_library`` is about notes, and notes are written by a
+worker that runs *after* discovery finishes — so a video stored in round one is
+not in the library during round two, and every later round used to re-judge it.
+The fetch-step disk check meant no re-download, so this cost model calls and
+inflated the round counters rather than bandwidth — but the planner reads those
+counters, and a video counted as a fresh candidate three times over is three
+pieces of evidence that do not exist. ``in_library`` is *not* weakened to fix
+this; the run-scoped question is passed in separately, because "is this in the
+library?" and "did I store this ten seconds ago?" are two questions and B1's
+whole point is not to conflate them.
 
 Gate 2 matches on the normalised topic string and nothing else. Fuzzy topic
 similarity is deferred deliberately: a wrong fuzzy match hides a video
@@ -28,7 +42,7 @@ misbehaves in M2b is diagnosable only from what was actually recorded.
 from __future__ import annotations
 
 import logging
-from typing import Sequence
+from typing import Collection, Sequence
 
 from ..config import Config
 from ..contracts import (
@@ -36,6 +50,7 @@ from ..contracts import (
     NEW,
     REJECTED,
     STATUS_DUPLICATE,
+    STORED_THIS_RUN,
     VERDICT_MAYBE,
     VERDICT_NO,
     Candidate,
@@ -68,6 +83,7 @@ def run_search(
     log_decisions: bool = True,
     run_id: str | None = None,
     filters: SearchFilters | None = None,
+    stored_this_run: Collection[str] = (),
 ) -> SearchRun:
     """Search, gate, log. No network call is made for a gated-out video.
 
@@ -75,6 +91,11 @@ def run_search(
     ``discover --dry-run`` needs: a dry run that wrote `no` rows would poison
     Gate 2 for the real run that follows, so tuning the judge would silently
     shrink the library it was meant to improve.
+
+    ``stored_this_run`` is the second half of Gate 1 — the videos the caller
+    has already stored and will not want judged again. Empty by default, and
+    empty is the honest default: a single search has no run around it, and a
+    dry run stores nothing.
 
     ``filters`` have already been validated by `brain/territory.py` — nothing
     here re-decides whether one is allowed. They are handed to the provider,
@@ -86,7 +107,14 @@ def run_search(
     )
 
     candidates = [
-        _gate(ledger, result, normalised, log=log_decisions, run_id=run_id)
+        _gate(
+            ledger,
+            result,
+            normalised,
+            log=log_decisions,
+            run_id=run_id,
+            stored_this_run=stored_this_run,
+        )
         for result in _deduplicate(results)
     ]
     return SearchRun(
@@ -117,8 +145,9 @@ def _gate(
     *,
     log: bool = True,
     run_id: str | None = None,
+    stored_this_run: Collection[str] = (),
 ) -> Candidate:
-    verdict, reason, logged = _verdict(ledger, result, topic)
+    verdict, reason, logged = _verdict(ledger, result, topic, stored_this_run)
     if log:
         ledger.log_decision(
             result.video_id,
@@ -131,12 +160,25 @@ def _gate(
     return Candidate(result=result, verdict=verdict, reason=reason)
 
 
-def _verdict(ledger: Ledger, result: SearchResult, topic: str) -> tuple[str, str, str]:
+def _verdict(
+    ledger: Ledger,
+    result: SearchResult,
+    topic: str,
+    stored_this_run: Collection[str] = (),
+) -> tuple[str, str, str]:
     """Return ``(report verdict, reason, logged verdict)``.
 
     The logged verdict is one of yes/no/maybe; a survivor is ``maybe``, not
     ``yes``, because this stage has judged nothing about it.
     """
+    if result.video_id in stored_this_run:
+        # Checked first: it is the more specific answer, and the more recent
+        # one. Logged as `maybe`, not `no` — this run *kept* the video, and a
+        # `no` row here would tell Gate 2, in every later run on this topic,
+        # that the video had been turned down. That is the invisible error
+        # rule 8 exists to avoid, arriving through a counter fix.
+        return STORED_THIS_RUN, "stored earlier in this run", VERDICT_MAYBE
+
     row = ledger.get(result.video_id)
     if in_library(row):
         assert row is not None  # in_library() is False for None

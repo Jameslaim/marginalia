@@ -413,3 +413,137 @@ def test_no_transcript_or_note_text_reaches_an_export(config, ledger, library) -
         body = path.read_text(encoding="utf-8")
         assert "SECRET NOTE TEXT" not in body
         assert "SECRET TRANSCRIPT TEXT" not in body
+
+
+# -- the plan, in full, under the round that produced it ----------------------
+#
+# Before the `plans` table had a writer, a plan reached the export only as the
+# one-line gap label attached to each query it produced. That answers *what* the
+# planner asked for and never *why* — and "why did the planner decide that?" is
+# exactly the question a stored run is supposed to be able to answer.
+
+PLAN = """{
+  "round": 1,
+  "recommendation": "continue",
+  "reason": "two brief items still have nothing against them",
+  "coverage": [
+    {"part": "reproduces the too-many-connections error", "satisfied": true,
+     "detail": "both kept videos connect many clients directly"},
+    {"part": "transaction vs session pooling with SET/LISTEN/NOTIFY pitfalls",
+     "satisfied": false,
+     "detail": "prepared statements are covered, but no kept video names SET or LISTEN/NOTIFY breakage"}
+  ],
+  "queries": [
+    {"text": "pgbouncer listen notify transaction mode", "origin": "planner",
+     "origin_detail": "gap - SET/LISTEN/NOTIFY pitfalls", "filters": {}}
+  ],
+  "revisions": [
+    {"action": "add", "kind": "vocabulary", "term": "PgCat",
+     "reason": "a kept video compares it", "evidence": ""}
+  ],
+  "refused_revisions": [
+    {"term": "Odyssey", "action": "remove", "why": "no query naming it actually ran"}
+  ],
+  "rejected_filters": [
+    {"query": "pgbouncer listen notify transaction mode", "field": "videoDuration",
+     "value": "medium", "reason": "a planner query is a main query"}
+  ],
+  "parsed": true,
+  "problem": "",
+  "input_tokens": 2600,
+  "output_tokens": 2500,
+  "seconds": 24.1
+}"""
+
+
+def test_the_planner_s_assessment_is_rendered_under_its_round(
+    config, ledger, library
+) -> None:
+    a_run(ledger)
+    ledger.save_plan(RUN, round=1, plan_json=PLAN, prompt_version="1")
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "#### The plan after round 1" in report
+    assert "**continue** — two brief items still have nothing against them" in report
+    # The coverage assessment itself, both halves. A planner shown only its
+    # gaps would be a planner that only ever learned to avoid.
+    assert "reproduces the too-many-connections error" in report
+    assert "both kept videos connect many clients directly" in report
+    assert "no kept video names SET or LISTEN/NOTIFY breakage" in report
+    assert "Planning prompt v1" in report
+
+
+def test_a_satisfied_item_and_a_gap_are_told_apart(config, ledger, library) -> None:
+    a_run(ledger)
+    ledger.save_plan(RUN, round=1, plan_json=PLAN, prompt_version="1")
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    covered = next(line for line in report.splitlines() if "too-many-connections" in line)
+    gap = next(line for line in report.splitlines() if "SET or LISTEN" in line)
+    assert covered.startswith("| YES |")
+    assert gap.startswith("| **NO** |")
+
+
+def test_everything_the_code_refused_the_planner_is_in_the_report(
+    config, ledger, library
+) -> None:
+    """A refusal nobody can see is a narrowing nobody can correct — the same
+    discipline the validator's own rejections already follow."""
+    a_run(ledger)
+    ledger.save_plan(RUN, round=1, plan_json=PLAN, prompt_version="1")
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "no query naming it actually ran" in report
+    assert "a planner query is a main query" in report
+    assert "PgCat" in report
+    assert "2600 in, 2500 out" in report
+
+
+def test_a_round_with_no_plan_says_which_kind_of_none_it_is(
+    config, ledger, library
+) -> None:
+    """Two different absences, and conflating them would mislead.
+
+    A run with plans, missing one for a round, means that round genuinely was
+    not planned — the last one never is. A run with no plans at all is more
+    likely one that predates the table, whose planning was never recorded.
+    """
+    a_run(ledger)
+    ledger.save_plan(RUN, round=1, plan_json=PLAN, prompt_version="1")
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "the last round is never planned" in report
+
+
+def test_a_run_from_before_the_plans_table_says_its_planning_was_not_recorded(
+    config, ledger, library
+) -> None:
+    a_run(ledger)
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "No plan was stored for this round" in report
+    assert "gap label" in report
+
+
+def test_an_unreadable_plan_does_not_fail_the_export(config, ledger, library) -> None:
+    """Same posture as the unreadable territory map. An export is a diagnostic
+    tool, and one that refuses to render because a run is malformed is useless
+    at the moment it is most needed."""
+    a_run(ledger)
+    ledger.save_plan(RUN, round=1, plan_json="{not json", prompt_version="1")
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "could not be read" in report
+    assert "### Round 2" in report

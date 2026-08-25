@@ -172,7 +172,7 @@ def test_json_is_valid_and_complete(gated: Path, capsys) -> None:
     assert payload["topic"] == "prompt caching"
     assert payload["provider"] == "fake_search"
     assert payload["fallbacks"] == []
-    assert payload["counts"] == {"found": 3, "known": 1, "rejected": 1, "new": 1}
+    assert payload["counts"] == {"found": 3, "known": 1, "rejected": 1, "stored_this_run": 0, "new": 1}
     assert len(payload["candidates"]) == 3
 
 

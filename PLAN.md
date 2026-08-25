@@ -232,7 +232,21 @@ quota(
   units_used INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (provider, date)
 )
+
+plans(
+  run_id         TEXT NOT NULL,
+  round          INTEGER NOT NULL,
+  plan_json      TEXT NOT NULL,   -- RoundPlan.as_dict(), whole
+  prompt_version TEXT,
+  planned_at     TEXT NOT NULL
+)
+CREATE INDEX idx_plans_run ON plans(run_id, round);
 ```
+
+`plans` stores what the planner *concluded*, where `queries` stores what it asked for.
+One row per round rather than a column on `runs`, because a run has many rounds and a
+plan is identified by the round it ended. Nothing queries inside `plan_json`: it is
+written once and read back whole, by a person or by the export renderer.
 
 `decisions` replaced an earlier `rejections` table in M2a. Logging only the
 negative verdicts was too narrow in two ways: it cannot answer "why did the
@@ -363,15 +377,19 @@ which is what makes rejection topic-relative rather than global.
 
 ### Three stages, increasing cost
 
-| Stage | Sees | Verdict |
+| Stage | Sees | Decides |
 |-------|------|---------|
-| 1 | Title, channel, description, duration, date | YES / NO / MAYBE |
-| 2 | First ~1000 words + chapter titles | YES / NO |
+| 1 | Title, channel, description, chapters, duration, date | whether to **fetch** |
+| 2 | The whole transcript + chapter titles (B3) | whether to **keep** — YES / NO |
 | 3 | Whole transcript (during note pass) | Confirms or flags |
 
 **Three-way verdicts at stage 1.** Forcing yes/no on metadata alone makes the model
 guess on ambiguous cases. MAYBE routes to stage 2, which is the correct response to
 uncertainty.
+
+**Both YES and MAYBE route to stage 2** — the two columns above are what each stage
+*decides*, not two paths through the pipeline. A YES that skipped stage 2 was a video
+stored without anything having read it; see B6.
 
 Stage 3 is effectively free — the note pass reads the transcript regardless. A video
 found irrelevant there is marked and becomes signal for improving the judge prompt.
@@ -1255,6 +1273,163 @@ account of what the brief is missing.
 
 Four times out of four now, on this provider, "the most important call deserves the most
 thinking" has been the wrong instinct whenever the output is long and structured.
+
+### B6 — nothing enters the library unread
+
+Three findings, all from exporting run `19941ec23cb7` and then testing an `/ask` answer
+against the planner's own coverage claim.
+
+`/ask` answered a question the planner had declared a gap — *"SET/LISTEN/NOTIFY pitfalls
+not covered in any kept video"* — citing `EGNykTqFDBs` three times as the authority. The
+export says why. That video has **no `full`-stage decision row at all**. It was accepted
+at stage 1 on its title and description, stored, and its transcript was never judged. The
+planner's entire evidence for it was one sentence:
+
+> shows connection sharing and queueing behavior with real setup
+
+The planner was not wrong. Given that sentence, "SET/LISTEN isn't covered" is the correct
+reading. It reported honestly on the only evidence it had, and the video's actual content
+surfaced later — when `marg note` read the transcript, after the run was over.
+
+**Every keeper goes to stage 2.** A stage-1 YES used to skip it, with the comment that it
+"needs no second model call, so it is the cheaper keeper". That was true when stage 2 read
+an opening at `max` effort, and it stopped being the relevant trade at B3. What the
+shortcut actually bought was a video entering the library that nothing had read — and B3
+established, with evidence, that this judge confabulates from metadata: three videos kept
+on reasons describing numbers their transcripts do not contain. All three were caught
+because they were MAYBEs. A confident YES never reached the check.
+
+So stage 1 is now a filter deciding whether to **fetch**, and stage 2 is the verdict
+deciding whether to **keep**.
+
+**Two counters, not one.** A MAYBE stage 2 declines is `flipped_to_no` and is stage 2
+doing its job. A YES stage 2 declines is `overturned` and is stage 1 having been wrong.
+One integer holding both would hide the only number that says how far a metadata verdict
+can be trusted on its own — rule 14 applied to the case it was written for.
+
+#### Measured: the same topic, twice, on two empty libraries
+
+`marg discover "postgres connection pooling" --max-rounds 3 --max-videos 14`, run at
+5a15185 and again with the change, each against a fresh library.
+
+| | before | after |
+|---|---|---|
+| videos fetched and held | 39 | 47 |
+| **held but never read by stage 2** | **11** | **0** |
+| kept (in the library) | 14 | 8 |
+| keep rate, kept / fetched | 36% | 17% |
+| keep rate *of what stage 2 read* | 3/28 = **11%** | 8/47 = **17%** |
+| stage-1 YES rows / distinct videos | 20 / 14 | 16 / 16 |
+| videos judged twice at one stage | 9 | 1 |
+| requests | 52 | 69 |
+| cost | $0.0463 | $0.0866 |
+| wall clock | 10m 24s | 12m 29s |
+| stopped because | max_videos | max_rounds |
+
+**The headline keep rate halves, and that is not stage 2 getting harsher.** Stage 2 kept a
+*larger* share of what it read after the change than before — 17% against 11%. What
+disappeared from the numerator is the eleven videos nobody had read. The right reading of
+"36% → 17%" is that the old figure was counting unread videos as keepers.
+
+Two caveats stated rather than buried. The briefs differ between the runs — a brief is
+model-written per run and non-deterministic, and the second one is stricter, 12 coverage
+items against 8 — so some of the delta is brief variance rather than this change. And of
+the seven videos that were a stage-1 YES in *both* runs, four flipped to NO and one more
+came back `DEGRADED`: 4 in 7 is well above B3's 3 in 10, and worth watching.
+
+The confound-free comparison lives inside the second run, where one brief judged
+everything: **a stage-1 YES survives a read 40% of the time (6 of 15); a stage-1 MAYBE
+survives 6% of the time (2 of 32)**. Both halves matter. Stage 1 carries real signal — a
+YES is roughly seven times likelier to survive — and it is still wrong about the majority
+of the videos it is confident about.
+
+#### What the transcript said about the videos stage 1 was sure of
+
+The clearest case is `mtCAb1uFDxg`. Stage 1 kept it on *"dedicated PgBouncer video,
+**likely** covers configuration and pooling"* — the judge's own hedge, recorded as a keep.
+Stage 2 read it and graded it `DEGRADED`: *"largely garbled and incomplete, with the
+substantive demo portion cutting off mid-sentence"*. Under the old code that video was
+stored, noted, and answerable from. Under the new one it is stored, not noted, and
+`/ask` cannot reach it — which is what rule 13 already specified for every other video.
+
+Three of the eleven unread keepers were held on a reason containing the word "likely".
+
+The planner is the other half of the evidence. At the end of round two the **old** run said:
+
+> **NO** root problem (max_connections, memory per connection) — no kept video confirms
+> this is explained; only a title suggests it, with no transcript
+
+— all eight brief items marked uncovered, by a run that had stored fourteen videos. The
+**new** run's round-two assessment marks ten of twelve covered and names the videos:
+
+> **yes** transaction-level vs session-level pooling with application impacts (prepared
+> statements, LISTEN/NOTIFY, temp tables, advisory locks) — all three kept videos
+> explicitly distinguish pooling modes and name session-state traps
+
+That is the reported finding, closed, on the topic it was found on.
+
+#### Gate 1 asks two questions
+
+`EGNykTqFDBs` was judged and accepted twice in run `19941ec23cb7` — round 1 and round 2.
+`in_library` asks whether a video has a note, notes are written by a worker that starts
+after the run ends, so a video stored in round one is not in the library during round two.
+Nine videos were judged twice at the same stage in the baseline run.
+
+The fetch-step disk check meant no re-download, so the cost was model calls and inflated
+counters — and **the planner reads those counters**, so a kept video counted three times is
+two findings that do not exist.
+
+`in_library` is unchanged, and deliberately. The tempting fix — let it accept a
+transcript — is wrong twice: a stage-2 NO also holds a transcript and must stay
+re-judgeable for a later topic, and `/ask` cannot answer from a video with no note, so
+calling it a member is a claim the library contradicts. Instead the run's own
+`stored_ids` is passed to the gate as a second question, exactly the way B1 separated
+*is it in the library* from *do we already hold the bytes*. A test pins `in_library`
+against this specific pressure.
+
+The skip logs `maybe`, never `no`. Gate 1's library branch logs a `no`, which is right
+there; logging one here would tell Gate 2, on every later run on this topic, that a video
+this run *kept* had been turned down — rule 8's invisible error arriving through a counter
+fix. Only kept videos ever needed this: a stage-2 NO writes a `no` for the topic, so Gate
+2 already stopped those.
+
+One duplicate survives in the new run and it is correct. `B35HeNLm2Mw` has no captions —
+`needs_asr`, nothing fetched, nothing stored, no verdict recorded — so a later round is
+entitled to look at it again. The same is true of the one stage-1 YES with no stage-2 row.
+The invariant that matters holds exactly: **of 47 videos holding a transcript, 0 were
+never read.**
+
+#### The planner's reasoning is stored, not just its queries
+
+`marg run export` wrote the queries a plan produced and the short gap label on each. The
+assessment itself — the coverage table, the reasoning, the recommendation — existed only
+in memory and was gone when the process exited. So *"why did the planner decide that?"* was
+unanswerable, which is what storing runs was meant to fix.
+
+The plan is now a row per round in `plans`, stored whole as `RoundPlan.as_dict()`, and
+rendered under its round in `report.md`. Written **before** its revisions are applied, so
+a crash between the two leaves the reasoning on disk rather than only its consequences.
+
+It paid for itself on the first real run. The round-one plan carried a parse problem the
+CLI line only hinted at — four coverage lines the parser could not read — and the report
+now says so in place, above the partial table:
+
+> This reply could not be parsed. Everything below is whatever survived, and a plan the
+> code could not read is a plan the loop largely ignored.
+
+A run that predates the table says which kind of nothing it has, because "the planner said
+nothing" and "nothing recorded what it said" are different claims:
+
+> *No plan was stored for this round. Runs before the `plans` table gained a writer have
+> none — their planning survives only as the gap label on each query it produced.*
+
+#### What it costs
+
+19 extra stage-2 reads on this run: **+$0.040, +2m 05s, +17 requests** — about 0.21¢ and
+6.6s per extra video. B3 measured 0.09¢ and 2.5s; these transcripts are longer and the
+limiter is set to 20 requests a minute, so treat B3's figure as the floor rather than the
+estimate. Against a run that costs 8.7¢ and takes twelve minutes, the price of reading
+everything before keeping it is 46% of the bill and 20% of the clock.
 
 ### Structural rules
 

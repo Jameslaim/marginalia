@@ -163,6 +163,25 @@ not drift.
     arrives — for a thousand words they are the same video, and padding is the thing
     stage 2 exists to catch.
 
+    **Nothing enters the library unread. Every candidate that will be stored reaches
+    stage 2, whatever stage 1 said.** Stage 1 decides whether to *fetch*; stage 2 is the
+    verdict that decides whether to keep. A stage-1 YES used to skip it as "the cheaper
+    keeper", and the saving is real and tiny — B3 measured stage 2 at 0.09¢ and 2.5
+    seconds per video — while what it bought was a video stored because of its title.
+    That is not a tidiness complaint: B3 measured *this* judge confabulating from
+    metadata, three videos kept on reasons describing numbers their transcripts do not
+    contain, and every one of those was caught only because it was a MAYBE. A confident
+    YES never reached the check. `EGNykTqFDBs` in run `19941ec23cb7` is the case in
+    full — accepted on *"shows connection sharing and queueing behavior with real
+    setup"*, never read, and the planner then reported as a gap a subject that video
+    covers in detail. The planner was not wrong; it had one sentence of evidence and
+    reported honestly on it.
+
+    Two counters, never one. A MAYBE stage 2 declines is `flipped_to_no` and is stage 2
+    working; a **YES** stage 2 declines is `overturned` and is stage 1 having been
+    wrong. Summing them hides the only number that says how far a metadata verdict can
+    be trusted alone — rule 14, applied to the thing rule 14 was written for.
+
     The five-line reply is a **guarantee, not a request**. A NO may not rest on evidence
     the judge says it could not read; a DEGRADED must name the damage; a clear keep must
     say where the value is; and there must be five lines and nothing else. A violation
@@ -268,6 +287,41 @@ not drift.
     is an inference, so `report.md` states the method in the file rather than presenting
     it as recorded fact.
 
+22. **Gate 1 asks two questions, and `in_library` is only one of them.** *Is this in the
+    library?* is about notes and nothing else — rule 11 — and the answer for a video
+    stored ninety seconds ago is **no**, because the note worker has not run and may
+    never. So every round used to re-judge everything the previous rounds kept:
+    `EGNykTqFDBs` carries two `metadata`/`yes` rows in run `19941ec23cb7`, one per round.
+    The disk check meant no second download, so what this cost was model calls and
+    inflated counters — and the planner reads those counters, so a video counted three
+    times is two findings that do not exist.
+
+    The second question is *did I store this in this run?*, and it is passed to the gate
+    separately as `stored_this_run`. **`in_library` is not weakened to answer it**, and
+    the tempting weakening — accept a transcript — would be wrong twice: a stage-2 NO
+    also holds a transcript and must stay re-judgeable for a later topic, and `/ask`
+    cannot answer from a video with no note, so calling it a member is a claim the
+    library contradicts. Same distinction B1 drew between *is it in the library* and *do
+    we already hold the bytes*, for the third time.
+
+    **The run-scoped skip logs `maybe`, never `no`.** Gate 1's library branch logs a
+    `no` and that is right there. Logging one here would tell Gate 2, on every later run
+    on this topic, that a video this run *kept* had been turned down — rule 8's
+    invisible error arriving through a counter fix. Only *kept* videos need this: a
+    stage-2 NO writes a `no` for the topic, so Gate 2 already stops it next round.
+
+23. **A reasoning step stores its reasoning, not only its output.** The `queries` table
+    recorded what each plan produced and the one-line gap label behind it; the coverage
+    assessment, the recommendation and its reason were thrown away when the process
+    exited. So *"why did the planner call that a gap?"* was unanswerable from a stored
+    run — which is the question storing runs exists to answer, and the same argument
+    that already put the brief and the territory map on the ledger: the queries are the
+    conclusion, and the conclusion is the half you cannot correct from.
+
+    The plan is stored whole, one row per round in `plans`, and rendered under its round
+    in `report.md`. Written *before* its revisions are applied, so a crash between the
+    two leaves the reasoning on disk rather than only its consequences.
+
 ## Structure
 
 ```
@@ -331,6 +385,15 @@ assessment, the next round's queries, optional map revisions and a recommendatio
 queries run *first* in the next round and the brief's expansion still runs alongside
 them, for B4's reason: a new step that silently replaced a working one would make its own
 contribution unmeasurable.
+
+**B6 closes three holes the first real export found**: every keeper reaches stage 2, so
+nothing enters the library unread; Gate 1 is given the run's own `stored_ids`, so no video
+is judged twice in one run; and the planner's whole assessment is stored in a new `plans`
+table and rendered in `report.md`, so *why* it called something a gap survives the process
+that decided it. Measured on `postgres connection pooling`, twice, on empty libraries:
+11 videos held-but-never-read became 0, and the planner went from marking all 8 brief
+items uncovered to naming videos against 10 of 12. See `PLAN.md` §B6 for the numbers,
+including the two confounds.
 
 This completes the discovery-layer upgrade. What comes next should be decided by running
 it on real topics, not planned in advance.

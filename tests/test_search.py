@@ -18,7 +18,15 @@ import pytest
 from conftest import make_config
 
 from marginalia.config import Config
-from marginalia.contracts import KNOWN, NEW, REJECTED, VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
+from marginalia.contracts import (
+    KNOWN,
+    NEW,
+    REJECTED,
+    STORED_THIS_RUN,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
+)
 from marginalia.core.ledger import STAGE_METADATA, STAGE_SEARCH, Ledger
 from marginalia.providers.base import (
     PermanentError,
@@ -118,7 +126,7 @@ def test_an_unknown_video_is_new(config, ledger, providers) -> None:
     run = run_search(config, ledger, "prompt caching")
 
     assert [(c.video_id, c.verdict) for c in run.candidates] == [(A, NEW)]
-    assert run.counts == {"found": 1, KNOWN: 0, REJECTED: 0, NEW: 1}
+    assert run.counts == {"found": 1, KNOWN: 0, REJECTED: 0, STORED_THIS_RUN: 0, NEW: 1}
 
 
 def test_a_video_in_the_library_is_known(config, ledger, providers) -> None:
@@ -487,7 +495,7 @@ def test_an_empty_result_set_is_not_an_error(config, ledger, providers) -> None:
     run = run_search(config, ledger, TOPIC)
 
     assert run.candidates == []
-    assert run.counts == {"found": 0, KNOWN: 0, REJECTED: 0, NEW: 0}
+    assert run.counts == {"found": 0, KNOWN: 0, REJECTED: 0, STORED_THIS_RUN: 0, NEW: 0}
     assert run.provider == "primary"
 
 

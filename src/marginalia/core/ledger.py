@@ -57,6 +57,7 @@ __all__ = [
     "DecisionRow",
     "RunRow",
     "QueryRow",
+    "PlanRow",
     "skip_reason",
     "normalise_topic",
     "in_library",
@@ -186,6 +187,25 @@ CREATE TABLE IF NOT EXISTS queries (
   ran_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_queries_run ON queries(run_id, round);
+
+-- What the planner concluded at the end of each round, stored whole. The
+-- `queries` table records what the plan *produced*; this records the reasoning
+-- that produced it — the coverage assessment, the recommendation and its
+-- reason, the revisions, and everything the code refused. Same argument as
+-- storing the brief and the map: the queries are the conclusion, and a
+-- conclusion whose reasoning was thrown away cannot be corrected.
+--
+-- One row per round rather than a column on `runs`, because there is one plan
+-- per round and a run has many. Versioned by `round`, which is what a plan is
+-- identified by; `prompt_version` records which prompt wrote it.
+CREATE TABLE IF NOT EXISTS plans (
+  run_id         TEXT NOT NULL,
+  round          INTEGER NOT NULL,
+  plan_json      TEXT NOT NULL,
+  prompt_version TEXT,
+  planned_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plans_run ON plans(run_id, round);
 """
 
 # Columns added after a table shipped, which can be introduced in place.
@@ -343,6 +363,31 @@ class QueryRow:
         return cls(**{field.name: row[field.name] for field in fields(cls)})
 
 
+@dataclass(frozen=True)
+class PlanRow:
+    """One round's plan, as the planner returned it.
+
+    ``plan_json`` is ``RoundPlan.as_dict()`` — the coverage assessment, the
+    queries, the revisions, the refusals, the recommendation and its reason.
+    Stored whole rather than split into columns because nothing queries inside
+    it: it is read back in one piece, by a person or by the export renderer.
+
+    Before this existed, a plan survived only as the short gap label attached to
+    each query it produced. That answers *what* the planner asked for and not
+    *why*, which is the question storing runs was meant to make answerable.
+    """
+
+    run_id: str
+    round: int
+    plan_json: str
+    prompt_version: str | None
+    planned_at: str
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> PlanRow:
+        return cls(**{field.name: row[field.name] for field in fields(cls)})
+
+
 # Every table the current schema expects, and the columns it must have. Used
 # by the drift guard; kept beside the dataclasses so it cannot fall behind.
 _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
@@ -354,6 +399,7 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     # rest. Until then the columns were listed by hand here, deliberately: a row
     # type for a table nothing read would have been inventing its shape twice.
     "queries": frozenset(field.name for field in fields(QueryRow)),
+    "plans": frozenset(field.name for field in fields(PlanRow)),
 }
 
 
@@ -1065,6 +1111,47 @@ class Ledger:
             "SELECT * FROM queries WHERE run_id = ? ORDER BY rowid", (run_id,)
         ).fetchall()
         return [QueryRow.from_sqlite(row) for row in rows]
+
+    # -- plans -------------------------------------------------------------
+
+    def save_plan(
+        self,
+        run_id: str,
+        *,
+        round: int,
+        plan_json: str,
+        prompt_version: str | None = None,
+    ) -> PlanRow:
+        """Store one round's plan, whole.
+
+        Requires the run row, like everything else written against a run: a
+        plan belonging to no run is a plan nothing can find again.
+        """
+        if self.get_run(run_id) is None:
+            raise LedgerError(
+                f"no run row for {run_id!r}: start_run() must be called first"
+            )
+        planned_at = _utcnow()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO plans (run_id, round, plan_json, prompt_version, planned_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (run_id, round, plan_json, prompt_version, planned_at),
+            )
+        log.info("run %s stored the plan for round %d", run_id, round)
+        return PlanRow(
+            run_id=run_id,
+            round=round,
+            plan_json=plan_json,
+            prompt_version=prompt_version,
+            planned_at=planned_at,
+        )
+
+    def plans_for_run(self, run_id: str) -> list[PlanRow]:
+        rows = self._conn.execute(
+            "SELECT * FROM plans WHERE run_id = ? ORDER BY round, rowid", (run_id,)
+        ).fetchall()
+        return [PlanRow.from_sqlite(row) for row in rows]
 
     def latest_decision(
         self, video_id: str, topic: str, *, verdict: str | None = None

@@ -3,7 +3,7 @@
 ::
 
     exports/<run_id>/
-    ├── report.md       what happened, round by round
+    ├── report.md       what happened, round by round, and each round's plan
     ├── brief.md
     ├── territory.md    including revisions, with diffs and reasons
     ├── queries.tsv     query, origin, filters, results, quota
@@ -40,7 +40,7 @@ from typing import Any, Iterable, Sequence
 
 from ..config import Config
 from ..contracts import EVIDENCE_DEGRADED, ExportedRun
-from ..core.ledger import DecisionRow, Ledger, QueryRow, RunRow
+from ..core.ledger import DecisionRow, Ledger, PlanRow, QueryRow, RunRow
 from ..core.library import Library
 
 log = logging.getLogger(__name__)
@@ -65,10 +65,13 @@ def export_run(config: Config, ledger: Ledger, library: Library, run_id: str) ->
 
     queries = ledger.queries_for_run(run_id)
     decisions = ledger.decisions_for_run(run_id)
+    plans = ledger.plans_for_run(run_id)
     territory = _territory(run)
 
     written = [
-        library.write_export(run_id, "report.md", render_report(config, run, queries, decisions)),
+        library.write_export(
+            run_id, "report.md", render_report(config, run, queries, decisions, plans)
+        ),
         library.write_export(run_id, "brief.md", _render_brief(run)),
         library.write_export(run_id, "territory.md", render_map(run, territory)),
         library.write_export(run_id, "queries.tsv", _render_queries(queries)),
@@ -93,9 +96,17 @@ def render_report(
     run: RunRow,
     queries: Sequence[QueryRow],
     decisions: Sequence[DecisionRow],
+    plans: Sequence[PlanRow] = (),
 ) -> str:
-    """The run in prose and tables. Pure: everything it needs is an argument."""
+    """The run in prose and tables. Pure: everything it needs is an argument.
+
+    ``plans`` default to none, and none is what a run made before the `plans`
+    table had a writer genuinely has. Such a run's planning survives only as the
+    gap label on each query it produced, and the report says so where the plan
+    would have been rather than leaving a silent hole.
+    """
     rounds = sorted({query.round for query in queries})
+    by_round = {plan.round: plan for plan in plans}
     lines = [
         f"# {run.topic}",
         "",
@@ -152,6 +163,8 @@ def render_report(
                     number,
                     [query for query in queries if query.round == number],
                     _decisions_in(decisions, boundaries, number),
+                    by_round.get(number),
+                    planned_at_all=bool(plans),
                 )
             )
 
@@ -179,7 +192,12 @@ def render_report(
 
 
 def _round_section(
-    number: int, queries: Sequence[QueryRow], decisions: Sequence[DecisionRow]
+    number: int,
+    queries: Sequence[QueryRow],
+    decisions: Sequence[DecisionRow],
+    plan: PlanRow | None = None,
+    *,
+    planned_at_all: bool = False,
 ) -> list[str]:
     found = sum(query.results_count or 0 for query in queries)
     quota = sum(query.quota_units or 0 for query in queries)
@@ -200,6 +218,141 @@ def _round_section(
     if decisions:
         lines.extend(_verdict_table(decisions))
         lines.append("")
+    lines.extend(_plan_section(number, plan, planned_at_all=planned_at_all))
+    return lines
+
+
+def _plan_section(
+    number: int, plan: PlanRow | None, *, planned_at_all: bool
+) -> list[str]:
+    """One round's plan, in full, under the round that produced it.
+
+    The gap labels on the next round's queries are the *conclusion*. This is the
+    reasoning — which parts of the brief the planner judged covered and by what,
+    which it judged missing, what it wanted to do about it, and whether it
+    thought the run should continue. Without it, "why did the planner decide
+    that?" has no answer, which is the question storing a run is for.
+    """
+    if plan is None:
+        if not planned_at_all:
+            # Silence here would read as "the planner said nothing", which is a
+            # different claim from "nothing recorded what it said".
+            return [
+                "*No plan was stored for this round. Runs before the `plans` "
+                "table gained a writer have none — their planning survives only "
+                "as the gap label on each query it produced.*",
+                "",
+            ]
+        # A plan genuinely was not made: the last round is never planned, and
+        # neither is one the budget stopped first.
+        return [
+            "*No plan after this round — the last round is never planned, and "
+            "nor is one a budget ceiling ended.*",
+            "",
+        ]
+
+    try:
+        body = json.loads(plan.plan_json)
+    except ValueError:
+        log.warning("export: run %s has an unreadable plan for round %d", plan.run_id, number)
+        return ["*The stored plan for this round could not be read.*", ""]
+    if not isinstance(body, dict):
+        return ["*The stored plan for this round could not be read.*", ""]
+
+    lines = [f"#### The plan after round {number}", ""]
+    if plan.prompt_version:
+        lines.extend([f"Planning prompt v{plan.prompt_version}, {plan.planned_at}.", ""])
+
+    recommendation = body.get("recommendation") or MISSING
+    reason = _flat(body.get("reason")) or MISSING
+    lines.extend([f"**{recommendation}** — {reason}", ""])
+
+    if body.get("problem"):
+        lines.extend([f"> Reply problem: {_flat(body['problem'])}", ""])
+    if body.get("parsed") is False:
+        lines.extend(
+            [
+                "> This reply could not be parsed. Everything below is whatever "
+                "survived, and a plan the code could not read is a plan the loop "
+                "largely ignored.",
+                "",
+            ]
+        )
+
+    coverage = body.get("coverage") or []
+    lines.extend(["**Coverage against the brief**", ""])
+    if coverage:
+        lines.extend(["| | part of the brief | what it found |", "|---|---|---|"])
+        for item in coverage:
+            mark = "YES" if item.get("satisfied") else "**NO**"
+            lines.append(
+                f"| {mark} | {_flat(item.get('part')) or MISSING} "
+                f"| {_flat(item.get('detail')) or MISSING} |"
+            )
+    else:
+        lines.append("The planner assessed no part of the brief.")
+    lines.append("")
+
+    queries = body.get("queries") or []
+    lines.extend(["**Queries it proposed**", ""])
+    if queries:
+        for query in queries:
+            detail = _flat(query.get("origin_detail"))
+            suffix = f" — {detail}" if detail else ""
+            lines.append(f"- **{_flat(query.get('text')) or MISSING}**{suffix}")
+    else:
+        lines.append("- none")
+    lines.append("")
+
+    lines.extend(_plan_refusals(body))
+    return lines
+
+
+def _plan_refusals(body: dict[str, Any]) -> list[str]:
+    """Map revisions, and everything the code refused.
+
+    Printed even when empty is not the rule here — an absent section is fine —
+    but a refusal that happened and is not printed would be a narrowing nobody
+    can see, which is the failure the validator exists to prevent.
+    """
+    lines: list[str] = []
+    revisions = body.get("revisions") or []
+    if revisions:
+        lines.extend(["**Map revisions it asked for**", ""])
+        for item in revisions:
+            sign = "+" if item.get("action") == "add" else "−"
+            lines.append(
+                f"- {sign} **{item.get('kind')}**: {item.get('term')} — "
+                f"{_flat(item.get('reason')) or MISSING}"
+            )
+            if item.get("evidence"):
+                lines.append(f"  - evidence: {_flat(item['evidence'])}")
+        lines.append("")
+
+    refused = body.get("refused_revisions") or []
+    if refused:
+        lines.extend(["**Revisions the code refused**", ""])
+        lines.extend(
+            f"- {item.get('action')} `{item.get('term')}` — {_flat(item.get('why'))}"
+            for item in refused
+        )
+        lines.append("")
+
+    rejected = body.get("rejected_filters") or []
+    if rejected:
+        lines.extend(["**Filters the validator refused** — each one widened the search", ""])
+        lines.extend(
+            f"- `{item.get('field')}={item.get('value')}` on “{item.get('query')}” — "
+            f"{_flat(item.get('reason'))}"
+            for item in rejected
+        )
+        lines.append("")
+
+    cost = (
+        f"{body.get('input_tokens', 0)} in, {body.get('output_tokens', 0)} out, "
+        f"{body.get('seconds', 0)}s"
+    )
+    lines.extend([f"*The planning call cost {cost}.*", ""])
     return lines
 
 

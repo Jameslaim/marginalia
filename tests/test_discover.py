@@ -16,6 +16,7 @@ from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
+import json
 import pytest
 from conftest import make_config
 
@@ -64,6 +65,7 @@ from marginalia.flow.discover import (
 from marginalia.core.ledger import (
     STAGE_FULL,
     STAGE_METADATA,
+    STAGE_SEARCH,
     Ledger,
     in_library,
     skip_reason,
@@ -341,15 +343,70 @@ def test_a_maybe_routes_to_stage_two(config, ledger, library, client, searches) 
     assert judge.opening_calls == ["aaaaaaaaaaa"]
 
 
-def test_a_yes_does_not_pay_for_stage_two(config, ledger, library, client, searches) -> None:
-    """Stage 2 is one request per video. A candidate already judged relevant
-    does not need re-litigating."""
+def test_a_yes_is_read_before_it_is_kept(config, ledger, library, client, searches) -> None:
+    """Nothing enters the library unread.
+
+    This asserts the opposite of what it used to. A stage-1 YES skipped stage 2
+    on the grounds that it was the cheaper keeper — 0.09¢ and 2.5s cheaper —
+    and what that bought was a video stored on the strength of its title. B3
+    measured this judge inventing transcript content from metadata, so the
+    saving was being spent on the one check that catches it.
+    """
     searches["*"] = [result("aaaaaaaaaaa")]
     judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "clear")})
 
     run(config, ledger, library, client, judge, max_rounds=1)
 
-    assert judge.opening_calls == []
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+    assert [row.stage for row in ledger.decisions_for("aaaaaaaaaaa")] == [
+        STAGE_SEARCH,
+        STAGE_METADATA,
+        STAGE_FULL,
+    ]
+
+
+def test_a_stage_one_yes_the_transcript_contradicts_is_not_stored(
+    config, ledger, library, client, searches
+) -> None:
+    """The failure this change exists for, end to end.
+
+    A confident metadata verdict, a transcript that does not support it, and no
+    note — so `/ask` never answers from it and the planner never counts it as
+    coverage. The transcript is kept, because B2's argument is unchanged: the
+    bytes are in hand and acquisition is the fragile step.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_YES, "shows connection pooling with real setup")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "the transcript never sets anything up", [])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.stored_ids == []
+    assert outcome.rounds[0].overturned == 1
+    # Not folded into the routine flip. A MAYBE stage 2 declines is stage 2
+    # working; a YES it declines is stage 1 having been wrong, and one integer
+    # holding both would hide the second.
+    assert outcome.rounds[0].flipped_to_no == 0
+    assert library.has_transcript("aaaaaaaaaaa")
+    assert ledger.get("aaaaaaaaaaa").noted_at is None
+
+
+def test_a_maybe_stage_two_declines_is_still_a_routine_flip(
+    config, ledger, library, client, searches
+) -> None:
+    """The other side of the same split, so neither counter absorbs the other."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "title is ambiguous")},
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "off topic once read", [])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.rounds[0].flipped_to_no == 1
+    assert outcome.rounds[0].overturned == 0
 
 
 def test_a_no_is_never_fetched(config, ledger, library, client, searches) -> None:
@@ -1582,6 +1639,9 @@ class FakePlanner:
         self.quota_seen: list[object] = []
         self.rounds_left_seen: list[object] = []
 
+    def prompt(self, name):
+        return FakePrompt()
+
     def plan(self, brief, territory, report, **kwargs):
         self.calls.append(report.number)
         self.seen.append(report)
@@ -1927,22 +1987,29 @@ def test_a_kept_video_carries_the_reason_of_the_stage_that_decided_it(
     assert kept.stage == STAGE_FULL
 
 
-def test_a_stage_one_keep_says_it_was_decided_on_metadata(
+def test_a_stage_one_yes_reaches_the_planner_with_the_transcript_s_reason(
     config, ledger, library, client, searches
 ) -> None:
-    """The other half. A YES at stage 1 is stored without stage 2 ever running,
-    and calling that a full-transcript judgement would overstate the evidence
-    behind every coverage claim built on it."""
+    """The planner is never shown a metadata reason for a kept video again.
+
+    It used to be, for a stage-1 YES, and that was the honest label for the
+    evidence at the time — the problem was the evidence, not the label. Now
+    every keeper has been read, so what the planner sees for every one of them
+    is what the transcript established. A coverage claim can rest on that.
+    """
     searches["*"] = [result("aaaaaaaaaaa", "A video")]
-    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "clearly on brief")})
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_YES, "clearly on brief")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "the transcript walks through the setup", [])},
+    )
     planner = FakePlanner()
 
     run(config, ledger, library, client, judge, max_rounds=2,
         mapper=FakeMapper(), planner=planner)
 
     kept = planner.seen[0].kept[0]
-    assert kept.reason == "clearly on brief"
-    assert kept.stage == STAGE_METADATA
+    assert kept.reason == "the transcript walks through the setup"
+    assert kept.stage == STAGE_FULL
 
 
 def test_the_planner_is_told_how_much_room_is_left_in_this_run(
@@ -2039,22 +2106,33 @@ def test_a_clean_keeper_carries_clear_evidence(
     assert not planner.seen[0].kept[0].unreadable
 
 
-def test_a_stage_one_keeper_is_clear_rather_than_ungraded(
+def test_a_stage_one_yes_can_still_be_graded_degraded(
     config, ledger, library, client, searches
 ) -> None:
-    """A stage-1 YES never read a transcript, so it has no evidence grade of its
-    own. `CLEAR` is the honest default — the metadata was legible — and it keeps
-    `DEGRADED` meaning one thing: stage 2 could not read the transcript."""
+    """Every keeper now carries a grade stage 2 actually assigned.
+
+    Before this, a stage-1 YES was `CLEAR` by definition — the honest default
+    for a verdict with no transcript behind it, but also a grade no reader had
+    earned. A confident title on a garbled transcript was stored, noted, and
+    answered from. Now the same video is stored, graded `DEGRADED`, and not
+    noted, which is the outcome rule 13 already specified for everything else.
+    """
     searches["*"] = [result("aaaaaaaaaaa")]
     planner = FakePlanner()
 
     run(config, ledger, library, client,
-        FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_YES, "obviously relevant")}),
+        FakeJudge(
+            metadata={"aaaaaaaaaaa": (VERDICT_YES, "obviously relevant")},
+            openings={
+                "aaaaaaaaaaa": (VERDICT_YES, "captions are mangled", [], EVIDENCE_DEGRADED)
+            },
+        ),
         max_rounds=2, mapper=FakeMapper(), planner=planner)
 
     kept = planner.seen[0].kept[0]
-    assert kept.stage == STAGE_METADATA
-    assert kept.evidence == EVIDENCE_CLEAR
+    assert kept.stage == STAGE_FULL
+    assert kept.evidence == EVIDENCE_DEGRADED
+    assert kept.unreadable
 
 
 # -- cleanup: channel_id ----------------------------------------------------
@@ -2090,3 +2168,148 @@ def test_a_provider_that_reports_no_channel_id_does_not_erase_one(
     flow._store(library, ledger, result("aaaaaaaaaaa"), transcript_without_channel(), config)
 
     assert ledger.get("aaaaaaaaaaa").channel_id == "UCearlier"
+
+
+# -- Gate 1, run-scoped: nothing is judged twice in one run -------------------
+#
+# `in_library` asks whether a video has a note, and notes are written by a
+# worker that starts after the run ends — so a video stored in round one is
+# invisible to Gate 1 in round two and was judged all over again. Measured on
+# run `19941ec23cb7`: `EGNykTqFDBs` carries two `metadata`/`yes` rows, one per
+# round. The disk check meant no second download; nothing stopped the second
+# model call, or the second copy of the video in the round's evidence.
+
+
+def test_a_video_stored_in_round_one_is_not_judged_again_in_round_two(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[["q1"], ["q2"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2,
+                  mapper=FakeMapper(), planner=FakePlanner())
+
+    assert outcome.stored_ids == ["aaaaaaaaaaa"]
+    # Stage 1 saw it once, stage 2 saw it once. Both used to run twice.
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+    stages = [row.stage for row in ledger.decisions_for("aaaaaaaaaaa")]
+    assert stages.count(STAGE_METADATA) == 1
+    assert stages.count(STAGE_FULL) == 1
+
+
+def test_a_video_stored_this_run_gets_its_own_counter(
+    config, ledger, library, client, searches
+) -> None:
+    """Not folded into `known`, under rule 14.
+
+    `known` means Gate 1 found it in the library — a video with a note, from
+    some earlier run. This is a video *this run* stored moments ago, which has
+    no note and is a different fact about a different thing. The planner reads
+    these numbers.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=FakePlanner())
+
+    assert outcome.rounds[1].known_this_run == 1
+    assert outcome.rounds[1].known == 0
+    assert outcome.rounds[1].candidates == 1
+
+
+def test_the_run_scoped_gate_writes_no_rejection(
+    config, ledger, library, client, searches
+) -> None:
+    """Skipping is not judging, and the ledger must not say otherwise.
+
+    Gate 1's library branch logs a `no`, which is right for a video that is
+    genuinely in the library. Logging one here would tell Gate 2, in every
+    later run on this topic, that a video this run *kept* had been turned down
+    — rule 8's invisible error, arriving through a counter fix. So the row is a
+    `maybe`, which is what every other un-judged candidate gets.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+        max_rounds=2, mapper=FakeMapper(), planner=FakePlanner())
+
+    search_rows = [
+        row for row in ledger.decisions_for("aaaaaaaaaaa") if row.stage == STAGE_SEARCH
+    ]
+    assert [row.verdict for row in search_rows] == [VERDICT_MAYBE, VERDICT_MAYBE]
+    assert search_rows[1].reason == "stored earlier in this run"
+
+
+def test_a_video_the_round_rejected_is_still_stopped_by_gate_two(
+    config, ledger, library, client, searches
+) -> None:
+    """The other half of "nothing is judged twice", and it already worked.
+
+    A stage-2 NO writes a `no` for this topic, so Gate 2 catches it next round
+    without any run-scoped help. Only *kept* videos leaked, which is why the
+    fix keys on `stored_ids` and not on everything the run touched.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(
+        queries=[["q1"], ["q2"]],
+        openings={"aaaaaaaaaaa": (VERDICT_NO, "not about the brief", [])},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2,
+                  mapper=FakeMapper(), planner=FakePlanner())
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+    assert outcome.rounds[1].rejected_before == 1
+
+
+def test_a_dry_run_stores_nothing_so_the_gate_holds_nothing(
+    config, ledger, library, client, searches
+) -> None:
+    """`stored_ids` is empty on a dry run, which is the honest answer: a dry run
+    stored nothing, so there is nothing for the run-scoped gate to skip."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1, dry_run=True)
+
+    assert outcome.stored_ids == []
+    assert outcome.rounds[0].known_this_run == 0
+
+
+# -- the plan is stored, not just its conclusions -----------------------------
+
+
+def test_the_plan_is_stored_on_the_ledger_whole(
+    config, ledger, library, client, searches
+) -> None:
+    """The queries a plan produced were recorded; the reasoning was not.
+
+    So "why did the planner call that a gap?" had no answer from a stored run —
+    the one question storing runs exists to make answerable.
+    """
+    searches["*"] = [result("aaaaaaaaaaa")]
+    plan = planned(
+        "pgbouncer listen notify transaction mode",
+        coverage=[CoverageItem("SET/LISTEN pitfalls", False, "no kept video names them")],
+    )
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=FakePlanner([plan]))
+
+    rows = ledger.plans_for_run(outcome.run_id)
+    assert [row.round for row in rows] == [1], "the last round is never planned"
+    stored = json.loads(rows[0].plan_json)
+    assert stored["coverage"] == [
+        {"part": "SET/LISTEN pitfalls", "satisfied": False,
+         "detail": "no kept video names them"}
+    ]
+    assert stored["recommendation"] == RECOMMEND_CONTINUE
+    assert rows[0].prompt_version == "1"
+
+
+def test_a_run_that_never_planned_stores_no_plan(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert ledger.plans_for_run(outcome.run_id) == []
