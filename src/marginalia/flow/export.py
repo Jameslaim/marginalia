@@ -165,6 +165,7 @@ def render_report(
                     _decisions_in(decisions, boundaries, number),
                     by_round.get(number),
                     planned_at_all=bool(plans),
+                    is_last=(number == rounds[-1]),
                 )
             )
 
@@ -198,6 +199,7 @@ def _round_section(
     plan: PlanRow | None = None,
     *,
     planned_at_all: bool = False,
+    is_last: bool = False,
 ) -> list[str]:
     found = sum(query.results_count or 0 for query in queries)
     quota = sum(query.quota_units or 0 for query in queries)
@@ -218,12 +220,14 @@ def _round_section(
     if decisions:
         lines.extend(_verdict_table(decisions))
         lines.append("")
-    lines.extend(_plan_section(number, plan, planned_at_all=planned_at_all))
+    lines.extend(
+        _plan_section(number, plan, planned_at_all=planned_at_all, is_last=is_last)
+    )
     return lines
 
 
 def _plan_section(
-    number: int, plan: PlanRow | None, *, planned_at_all: bool
+    number: int, plan: PlanRow | None, *, planned_at_all: bool, is_last: bool = False
 ) -> list[str]:
     """One round's plan, in full, under the round that produced it.
 
@@ -234,20 +238,33 @@ def _plan_section(
     that?" has no answer, which is the question storing a run is for.
     """
     if plan is None:
+        # Three different absences, and one message for all of them would
+        # misattribute two of them. The first real broad-topic run said a run
+        # "predates the `plans` table" about a run three hours younger than the
+        # table — it had simply stopped on `max_videos` inside round one, and
+        # the last round is never planned.
+        if is_last:
+            # The common and entirely expected case, whatever else is true.
+            return [
+                "*No plan after this round — the last round is never planned, "
+                "and a run that a budget ceiling ended has no round after this "
+                "one to plan for.*",
+                "",
+            ]
         if not planned_at_all:
-            # Silence here would read as "the planner said nothing", which is a
-            # different claim from "nothing recorded what it said".
+            # A round in the middle with no plan anywhere in the run. Silence
+            # would read as "the planner said nothing", which is a different
+            # claim from "nothing recorded what it said".
             return [
                 "*No plan was stored for this round. Runs before the `plans` "
                 "table gained a writer have none — their planning survives only "
                 "as the gap label on each query it produced.*",
                 "",
             ]
-        # A plan genuinely was not made: the last round is never planned, and
-        # neither is one the budget stopped first.
         return [
-            "*No plan after this round — the last round is never planned, and "
-            "nor is one a budget ceiling ended.*",
+            "*No plan after this round, though the run planned elsewhere — the "
+            "planning call was skipped, which happens when a budget ceiling was "
+            "already reached.*",
             "",
         ]
 

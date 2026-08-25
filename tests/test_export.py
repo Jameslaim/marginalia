@@ -547,3 +547,28 @@ def test_an_unreadable_plan_does_not_fail_the_export(config, ledger, library) ->
 
     assert "could not be read" in report
     assert "### Round 2" in report
+
+
+def test_a_single_round_run_is_not_called_older_than_the_plans_table(
+    config, ledger, library
+) -> None:
+    """Found by the first broad-topic run, which the export libelled.
+
+    `ai agent memory` stopped on `max_videos` inside round one, three hours
+    after the `plans` table gained its writer — and the report said its planning
+    predated the table. Zero plans has three causes and they are not the same
+    claim: the last round is never planned, a ceiling can skip the call, and
+    only a genuinely old run has planning that was never recorded.
+    """
+    ledger.start_run(RUN, "t", brief=BRIEF, brief_version="1", model="m")
+    ledger.log_query(RUN, round=1, query="only round", origin=ORIGIN_BRIEF, results_count=1)
+    ledger.finish_run(
+        RUN, rounds=1, candidates_seen=1, videos_stored=1, requests_made=1,
+        input_tokens=1, output_tokens=1, stopped_because="max_videos",
+    )
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "the last round is never planned" in report
+    assert "predate" not in report and "gap label" not in report
