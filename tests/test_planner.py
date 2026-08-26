@@ -886,7 +886,7 @@ def _reply(revise: str) -> str:
 
 @pytest.mark.parametrize(
     "revise",
-    ["none", "None", "None.", "**none**", "no changes", "no revisions", "n/a", "-"],
+    ["none", "None", "None.", "**none**", "no changes", "no revisions", "n/a", "nothing"],
 )
 def test_declining_to_revise_the_map_is_not_a_problem(revise: str) -> None:
     plan = parse_plan(_reply(revise), round_number=1)
@@ -927,4 +927,38 @@ def test_no_revise_line_at_all_is_also_silent() -> None:
     plan = parse_plan(reply, round_number=1)
 
     assert plan.revisions == []
+    assert plan.problem == ""
+
+
+def test_a_no_changes_preamble_never_swallows_a_real_revision() -> None:
+    """Matching is on the whole normalised body, never a prefix.
+
+    `no changes to concepts, add vocabulary: PgCat` starts with words that mean
+    "nothing to do" and ends with a revision. A `startswith` check would drop
+    the revision in silence — the one outcome worse than dropping it loudly.
+    """
+    plan = parse_plan(_reply("no changes to concepts, add vocabulary: PgCat"), round_number=1)
+
+    assert plan.revisions == [] , "ambiguous, so nothing is applied"
+    assert "unreadable revision" in plan.problem, "and it is reported, not silent"
+
+
+def test_a_bare_hyphen_is_reported_rather_than_read_as_no_changes() -> None:
+    """A model writing one hyphen to mean "no changes" is rare. A model writing
+    a bulleted revision is not, so the hyphen must not carry that meaning."""
+    plan = parse_plan(_reply("-"), round_number=1)
+
+    assert plan.revisions == []
+    assert "unreadable revision" in plan.problem
+
+
+@pytest.mark.parametrize("bullet", ["-", "*", "•", "- ", "*  "])
+def test_a_bulleted_revision_still_parses(bullet: str) -> None:
+    """The case the hyphen was removed to protect. Losing this revision would be
+    a widening the map never gets, reported only as a log line."""
+    plan = parse_plan(_reply(f"{bullet}add vocabulary: PgCat"), round_number=1)
+
+    assert [(r.action, r.kind, r.term) for r in plan.revisions] == [
+        (REVISE_ADD, REVISE_VOCABULARY, "PgCat")
+    ]
     assert plan.problem == ""

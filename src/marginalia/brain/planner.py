@@ -93,7 +93,8 @@ _LABEL_RE = re.compile(
 
 # `remove vocabulary: semantic cache` / `add concept "cache warming"`
 _REVISE_RE = re.compile(
-    r"^\s*(add|remove)\s+(concept|vocabulary)s?\s*[:\-]?\s*(.+?)\s*$", re.IGNORECASE
+    r"^\s*[-*•]*\s*(add|remove)\s+(concept|vocabulary)s?\s*[:\-]?\s*(.+?)\s*$",
+    re.IGNORECASE,
 )
 
 _RECOMMEND_RE = re.compile(r"^\s*\**\s*(CONTINUE|STOP)\b\**\s*[-–—:]?\s*(.*)$", re.IGNORECASE)
@@ -105,9 +106,17 @@ _RECOMMEND_RE = re.compile(r"^\s*\**\s*(CONTINUE|STOP)\b\**\s*[-–—:]?\s*(.*)
 # nothing had gone wrong. That column is what anyone later reads to judge whether
 # the planner is healthy, and a parser that records the normal case as a defect
 # makes the column useless for exactly that.
+#
+# **A bare "-" is deliberately not on this list.** A model writing one hyphen to
+# mean "no changes" is rare; a model writing a bulleted revision is not, and
+# `REVISE: - add vocabulary: PgCat` must never be read as "no changes" because
+# the bullet came first. An unreadable hyphen is reported as unreadable, which
+# costs a log line; a swallowed bullet costs a revision nobody sees go missing.
+# Matching is on the whole normalised body, never a prefix, for the same reason:
+# `no changes to concepts, add vocabulary: PgCat` has to fall through.
 _NO_REVISION = frozenset(
     {
-        "", "-", "--", "n/a", "na", "no", "none", "nothing",
+        "", "n/a", "na", "no", "none", "nothing",
         "no change", "no changes", "no revision", "no revisions",
         "none needed", "none required", "no map changes",
     }
