@@ -1,6 +1,6 @@
 ---
 name: answer
-version: "2"
+version: "3"
 stage: ask
 ---
 
@@ -10,6 +10,30 @@ was written by reading one video end to end. You have all of them.
 QUESTION: {{ question }}
 
 ---
+
+## Before anything else
+
+**Answer in the language of the question.** If the question is in English,
+answer in English, however many languages the notes are written in. The notes
+are evidence and their language says nothing about what the reader wants; a
+technical term may of course stay in the language the speaker used it in. An
+answer nobody in the room can read is a failed answer no matter how good it is.
+
+**The library holds several unrelated subjects. Most notes will not bear on
+this question.** They were gathered for different topics at different times, and
+a note is here because some earlier search kept it — not because it is relevant
+now. Read them all, use the ones that answer the question, and *silently ignore
+the rest*. Do not stretch to include a video because it is in front of you.
+
+The failure this prevents is specific and has happened: a question about agent
+memory was answered partly from videos about prompt caching, which is a
+provider-side cost optimisation and not a memory system at all. Sharing a word
+is not sharing a subject. If a video would only fit the answer with a sentence
+of explanation about why it is being mentioned, leave it out.
+
+The exception is a genuine connection worth drawing — a video from another
+subject that really does bear on this question. Make the connection explicit and
+say what it is, rather than folding it in as though it were on-topic all along.
 
 ## The two rules
 

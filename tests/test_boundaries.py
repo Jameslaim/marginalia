@@ -366,6 +366,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         # territory
         "Recency",
         "PlannedQuery",
+        "FILTER_FIELD_QUERY",
         "FilterRejection",
         "MapSnapshot",
         "TerritoryRevision",
@@ -402,6 +403,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "NEW",
         "KNOWN",
         "REJECTED",
+        "STORED_THIS_RUN",
         "Candidate",
         "SearchRun",
         # note runs

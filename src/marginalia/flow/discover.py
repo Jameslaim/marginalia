@@ -184,7 +184,11 @@ def discover(
     # After the run row exists, so a crash mid-mapping leaves a run with no
     # `finished_at` rather than nothing at all — the same ordering rule the
     # brief follows, applied to the second thing that costs a request.
-    run.territory = mapper.map(brief, count=config.discover.territory_queries)
+    run.territory = mapper.map(
+        brief,
+        count=config.discover.territory_queries,
+        max_tokens=config.discover.territory_max_tokens,
+    )
     ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
     if run.territory.rejected:
         log.info(
@@ -272,7 +276,16 @@ def _loop(
             number=number,
             queries=[query.text for query in planned],
             planned=planned,
-            filters_rejected=len(rejections),
+            # Two outcomes, two counters. A refused filter widened a search that
+            # ran; a skipped duplicate means a search did not run at all. One
+            # number for both told a round it had "8 filters rejected" when
+            # every one was a duplicate skip.
+            filters_rejected=sum(
+                1 for item in rejections if not item.is_duplicate_query
+            ),
+            duplicates_skipped=sum(
+                1 for item in rejections if item.is_duplicate_query
+            ),
             from_threads=bool(threads),
         )
         run.rounds.append(report)
@@ -371,6 +384,18 @@ def _run_planner(
         # is a real input to how ambitious a plan should be.
         rounds_left=max(0, rounds_left),
         count=config.discover.planner_queries,
+        # Every video this run has kept, marked with the round that kept it —
+        # not just this round's. Coverage is a claim about what the library
+        # holds; built from one round's keepers it contradicts itself between
+        # rounds, which is exactly what run `ea18299bcea5` did. The run already
+        # carries the rounds, so this needs no new state, only for the question
+        # to be asked of the right set.
+        kept_so_far=[
+            (report.number, video)
+            for report in run.rounds
+            for video in report.kept
+        ],
+        max_tokens=config.discover.planner_max_tokens,
     )
     report.plan = plan
     # Stored whole, immediately, for the same reason the map is. Until now a

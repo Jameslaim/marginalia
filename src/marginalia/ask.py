@@ -133,21 +133,43 @@ def _seconds_of(match: re.Match[str]) -> int:
     return int(first) * 60 + int(second)
 
 
-def _find_id(entry: str, known: Sequence[str] | None) -> str | None:
-    """The video this entry refers to, resolved against the library when we can.
+def _find_id(entry: str, known: Sequence[str] | None) -> tuple[str | None, bool]:
+    """The video this entry refers to, and whether its casing had to be repaired.
 
     Without ``known`` this falls back to the eleven-character shape, which is
     right often enough for a unit test and wrong exactly where the ambiguity
     lives — `--_0uiiJfsBPI` yields `--_0uiiJfsB`. That is why the real path
     always passes the ledger's IDs.
+
+    **The case-insensitive pass is repair against a known set, not
+    normalisation, and the difference is the whole of hard rule 5.** Two YouTube
+    IDs differing only in case are routine — `dQw4w9WgXcQ` and `dqw4w9wgxcq` are
+    different videos — so lowercasing an ID to compare it against YouTube is
+    always wrong and always will be. But this compares against *the IDs this
+    library holds*, where a case-only collision would need two videos we already
+    store whose IDs differ by nothing else. It has never happened and is
+    vanishingly unlikely; if it ever does, ``len(matches) == 1`` fails and the
+    entry is refused exactly as before.
+
+    So: **never turn this into a `.lower()` on the ID itself.** The repair is
+    safe only because it ends by returning the library's own spelling, and only
+    because it refuses when the answer is ambiguous. Measured need: seven
+    citations across three real answers were lost to `57AOoAngaJA` written as
+    `57AOoangAJA` and `UVEjThz8DSo` as `UVejThz8DSo`. The parser was right to
+    refuse them; the claims beside them still read as sourced while their links
+    had silently vanished.
     """
     if known:
         for video_id in known:
             if video_id in entry:
-                return video_id
-        return None
+                return video_id, False
+        folded = entry.lower()
+        matches = [video_id for video_id in known if video_id.lower() in folded]
+        if len(matches) == 1:
+            return matches[0], True
+        return None, False
     match = _ID_SHAPE_RE.search(entry)
-    return match.group(0) if match else None
+    return (match.group(0) if match else None), False
 
 
 def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationScan:
@@ -160,6 +182,7 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
     flat = normalise_dashes(text)
     citations: list[AnswerCitation] = []
     unparsed: list[str] = []
+    repaired: list[str] = []
 
     for group in _GROUP_RE.finditer(flat):
         inside = group.group(1)
@@ -170,9 +193,11 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
             stamp = _TS_RE.search(entry)
             if stamp is None:
                 continue
-            found = _find_id(entry, known)
+            found, was_repaired = _find_id(entry, known)
             if found is not None:
                 current = found
+                if was_repaired:
+                    repaired.append(" ".join(entry.split())[:80])
             if current is None:
                 # Shaped like a citation, names a video we do not hold. Never
                 # linked — a liberal parser must not become an inventive one.
@@ -188,7 +213,9 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
 
     for fragment in unparsed:
         log.debug("ask: citation-shaped but unreadable: %s", fragment)
-    return CitationScan(citations=citations, unparsed=unparsed)
+    for fragment in repaired:
+        log.info("ask: repaired a mis-cased video id in %s", fragment)
+    return CitationScan(citations=citations, unparsed=unparsed, repaired=repaired)
 
 
 def parse_citations(text: str, known: Sequence[str] | None = None) -> list[AnswerCitation]:
@@ -446,6 +473,7 @@ def answer_question(
     scan = scan_citations(result.text, known)
     result.citations = scan.citations
     result.unparsed = scan.unparsed
+    result.repaired = scan.repaired
     result.truncated = not result.text
     _account(result, client, config)
     result.elapsed_s = time.monotonic() - started

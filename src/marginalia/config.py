@@ -83,6 +83,23 @@ DEFAULT_TERRITORY_QUERIES = 8
 # answers "did the planner find anything expansion would not have?" from the
 # ledger rather than from an opinion.
 DEFAULT_PLANNER_QUERIES = 6
+
+# Output ceilings for the two long structured calls in discovery. Both were
+# sharing the global `[llm] max_tokens = 8192` and both are the shape that
+# overruns it: a territory map is two term lists plus a dozen query blocks, and
+# a plan is a coverage assessment plus queries plus revisions.
+#
+# Measured rather than guessed. The mapping call on `AI agent memory` hit 8,192
+# and returned a fragment, which the truncation guard correctly discarded —
+# costing that run its entire territory feature. The planning call on the same
+# run reached 5,607 output tokens, 68% of the same ceiling, and the cumulative
+# kept set now makes plans longer still.
+#
+# Raising a ceiling costs nothing when it is not reached: this is per-token
+# billing and unused headroom is unused. What it buys is that the guard fires on
+# a genuine runaway rather than on an ordinary broad topic.
+DEFAULT_TERRITORY_MAX_TOKENS = 16384
+DEFAULT_PLANNER_MAX_TOKENS = 16384
 # Whether to believe `contentDetails.caption` when it says a video has no
 # captions, and skip the fetch.
 #
@@ -225,6 +242,11 @@ class DiscoverConfig:
     # B5. How many the planner is asked for at the end of each round. Added to
     # `queries_per_round` from round two, never substituted for it.
     planner_queries: int = DEFAULT_PLANNER_QUERIES
+    # Output ceilings for the mapping and planning calls. Separate from the
+    # global one because these two are the long structured outputs, and a
+    # truncated reply from either is discarded whole rather than parsed.
+    territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
+    planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
 
 
 @dataclass(frozen=True)
@@ -488,6 +510,14 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         ),
         planner_queries=_positive(
             section, "planner_queries", DEFAULT_PLANNER_QUERIES, config_path, "discover"
+        ),
+        territory_max_tokens=_positive(
+            section, "territory_max_tokens", DEFAULT_TERRITORY_MAX_TOKENS,
+            config_path, "discover",
+        ),
+        planner_max_tokens=_positive(
+            section, "planner_max_tokens", DEFAULT_PLANNER_MAX_TOKENS,
+            config_path, "discover",
         ),
     )
 

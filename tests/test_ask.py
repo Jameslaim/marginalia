@@ -381,3 +381,110 @@ def test_the_scan_reports_shaped_and_unparsed_counts():
 
 def test_unicode_dashes_normalise_to_ascii():
     assert normalise_dashes("a\u2011b\u2013c\u2014d\u2212e") == "a-b-c-d-e"
+
+
+# -- repairing a mis-cased video ID against the library ------------------------
+#
+# Seven citations were lost across three real answers because the model wrote
+# `57AOoangAJA` for `57AOoAngaJA` and `UVejThz8DSo` for `UVEjThz8DSo`. The parser
+# was right to refuse them — rule 5 forbids normalising an ID, because two
+# YouTube IDs differing only in case are two different videos. Repairing against
+# the IDs *this library holds* is a different operation with a different risk.
+
+
+def test_a_mis_cased_id_is_repaired_to_the_library_s_spelling() -> None:
+    known = ["57AOoAngaJA"]
+
+    scan = scan_citations("as shown [57AOoangAJA 02:03]", known)
+
+    assert [c.video_id for c in scan.citations] == ["57AOoAngaJA"]
+    assert scan.unparsed == []
+
+
+def test_a_repair_is_counted_rather_than_silent() -> None:
+    """A repair is the model getting an ID wrong. Fixed silently, it stops being
+    something anyone knows is happening."""
+    scan = scan_citations("[UVejThz8DSo 18:11]", ["UVEjThz8DSo"])
+
+    assert len(scan.repaired) == 1
+    assert len(scan.citations) == 1
+
+
+def test_an_exactly_matching_id_is_not_reported_as_repaired() -> None:
+    scan = scan_citations("[UVEjThz8DSo 18:11]", ["UVEjThz8DSo"])
+
+    assert scan.repaired == []
+    assert len(scan.citations) == 1
+
+
+def test_an_id_the_library_does_not_hold_is_still_refused() -> None:
+    """The repair must not become an invention. A liberal parser that starts
+    guessing is worse than a strict one that drops."""
+    scan = scan_citations("[aaaaaaaaaaa 02:03]", ["57AOoAngaJA"])
+
+    assert scan.citations == []
+    assert len(scan.unparsed) == 1
+
+
+def test_a_case_only_collision_in_the_library_refuses_rather_than_guesses() -> None:
+    """Vanishingly unlikely and the reason the repair is safe. If two stored
+    videos ever differ only in case, `len(matches) == 1` fails and the entry is
+    refused exactly as it was before — never resolved to whichever came first."""
+    scan = scan_citations("[dqw4w9wgxcq 02:03]", ["dQw4w9WgXcQ", "DQW4W9WGXCQ"])
+
+    assert scan.citations == []
+    assert len(scan.unparsed) == 1
+
+
+def test_the_seven_lost_citations_recover_on_re_parse() -> None:
+    """The measured case, both IDs, in the shapes the answers actually used."""
+    known = ["57AOoAngaJA", "UVEjThz8DSo", "dQw4w9WgXcQ"]
+    text = (
+        "history is replayed [57AOoangAJA 00:02:03] and isolated by session id "
+        "[57AOoangAJA 00:08:40], surviving restart [57AOoangAJA 00:12:53]. "
+        "Memory defense can redact [UVejThz8DSo 18:11] or block [UVejThz8DSo 18:22], "
+        "and the setting is per-preference [UVejThz8DSo 19:04]. "
+        "Unrelated but correct: [dQw4w9WgXcQ 00:18]."
+    )
+
+    scan = scan_citations(text, known)
+
+    assert len(scan.repaired) == 6
+    assert len(scan.unparsed) == 0
+    assert {c.video_id for c in scan.citations} == set(known)
+
+
+# -- what the answer prompt must say -------------------------------------------
+
+
+def test_the_answer_prompt_pins_the_answer_language() -> None:
+    """An English question over 87 English notes came back in Mandarin. One
+    occurrence in six, so intermittent — which is exactly the kind of fault a
+    passing run does not disprove. The instruction is the only durable guard."""
+    from marginalia.llm import load_prompt, prompts_dir
+
+    text = load_prompt("answer", directory=prompts_dir()).text.lower()
+
+    assert "language of the question" in text
+
+
+def test_the_answer_prompt_says_off_topic_notes_are_to_be_ignored() -> None:
+    """`/ask` loads every note in the library, and the library holds several
+    unrelated subjects. The brief governs what enters the library, not what an
+    answer draws on — so an agent-memory question was answered partly from
+    prompt-caching videos that that topic's brief explicitly excluded."""
+    from marginalia.llm import load_prompt, prompts_dir
+
+    text = load_prompt("answer", directory=prompts_dir()).text.lower()
+
+    assert "unrelated subjects" in text
+    assert "ignore" in text
+
+
+def test_the_answer_prompt_still_names_no_model_family() -> None:
+    from marginalia.llm import load_prompt, prompts_dir
+
+    text = load_prompt("answer", directory=prompts_dir()).text.lower()
+
+    for family in ("claude", "gpt-", "gemini", "llama", "kimi", "deepseek", "qwen"):
+        assert family not in text

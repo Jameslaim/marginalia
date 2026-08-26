@@ -299,9 +299,11 @@ class FakeMapper:
     def __init__(self, territory: TerritoryMap | None = None) -> None:
         self.territory = territory or TerritoryMap(topic=TOPIC, version="1")
         self.calls = 0
+        self.max_tokens_seen: int | None = None
 
-    def map(self, brief, *, count=8):
+    def map(self, brief, *, count=8, max_tokens=None):
         self.calls += 1
+        self.max_tokens_seen = max_tokens
         return self.territory
 
 
@@ -1638,6 +1640,8 @@ class FakePlanner:
         self.seen: list[RoundReport] = []
         self.quota_seen: list[object] = []
         self.rounds_left_seen: list[object] = []
+        self.kept_so_far_seen: list[list] = []
+        self.max_tokens_seen: list[object] = []
 
     def prompt(self, name):
         return FakePrompt()
@@ -1647,6 +1651,8 @@ class FakePlanner:
         self.seen.append(report)
         self.quota_seen.append(kwargs.get("quota_remaining"))
         self.rounds_left_seen.append(kwargs.get("rounds_left"))
+        self.kept_so_far_seen.append(list(kwargs.get("kept_so_far") or []))
+        self.max_tokens_seen.append(kwargs.get("max_tokens"))
         if self._plans:
             return self._plans.pop(0)
         return RoundPlan(round_number=report.number)
@@ -2313,3 +2319,91 @@ def test_a_run_that_never_planned_stores_no_plan(
     outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
 
     assert ledger.plans_for_run(outcome.run_id) == []
+
+
+# -- the planner is handed the run, not the round ------------------------------
+
+
+def test_the_planner_is_given_every_video_kept_so_far(
+    config, ledger, library, client, searches
+) -> None:
+    """The loop's half of the cumulative-coverage fix.
+
+    Round 2's planning call must see round 1's keeper. Without it, coverage is
+    assessed against six videos when the run has found twenty — which is how one
+    run marked an item covered in round 1 and a gap in round 2.
+    """
+    searches["q1"] = [result("aaaaaaaaaaa", "Round one keeper")]
+    searches["q2"] = [result("bbbbbbbbbbb", "Round two keeper")]
+    planner = FakePlanner([planned("next"), planned("next again")])
+
+    run(config, ledger, library, client,
+        FakeJudge(queries=[["q1"], ["q2"], ["q3"]]),
+        max_rounds=3, mapper=FakeMapper(), planner=planner)
+
+    second = planner.kept_so_far_seen[1]
+    assert [number for number, _ in second] == [1, 2]
+    assert [video.title for _, video in second] == [
+        "Round one keeper", "Round two keeper"
+    ]
+
+
+def test_the_first_plan_sees_only_the_first_round(
+    config, ledger, library, client, searches
+) -> None:
+    """Cumulative does not mean inflated: in round one the two are the same set."""
+    searches["*"] = [result("aaaaaaaaaaa", "The only one")]
+    planner = FakePlanner([planned("next")])
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+        max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert [number for number, _ in planner.kept_so_far_seen[0]] == [1]
+
+
+def test_the_mapping_call_gets_its_own_ceiling(
+    config, ledger, library, client, searches
+) -> None:
+    """The map is a long structured document and it overran the global 8,192,
+    losing a whole run its territory queries."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    mapper = FakeMapper()
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1, mapper=mapper)
+
+    assert mapper.max_tokens_seen == config.discover.territory_max_tokens
+    assert config.discover.territory_max_tokens > config.llm.max_tokens
+
+
+def test_the_planning_call_gets_its_own_ceiling(
+    config, ledger, library, client, searches
+) -> None:
+    """Raised for a reason created by this change: a cumulative kept set makes
+    both halves of the call bigger, and a truncated plan is discarded whole."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner([planned("next")])
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+        max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert planner.max_tokens_seen[0] == config.discover.planner_max_tokens
+
+
+# -- a refused filter and a skipped duplicate are different things -------------
+
+
+def test_a_duplicate_query_is_not_reported_as_a_rejected_filter(
+    config, ledger, library, client, searches
+) -> None:
+    """Round 1 of a real run announced "8 filters rejected" when all eight were
+    duplicate-query skips and not one filter had been refused. Rule 14, third
+    occurrence, in the counter the planner reads."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    # The same query twice in one round: the second is a duplicate skip.
+    judge = FakeJudge(queries=[["q1", "q1"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1,
+                  mapper=FakeMapper())
+
+    assert outcome.rounds[0].duplicates_skipped == 1
+    assert outcome.rounds[0].filters_rejected == 0

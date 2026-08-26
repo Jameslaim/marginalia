@@ -398,7 +398,7 @@ def test_the_planner_sees_what_was_kept_as_well_as_what_was_rejected() -> None:
 
     assert "Caching deep dive" in rendered
     assert "Some promo" in rendered
-    assert "KEPT (1)" in rendered and "REJECTED (1)" in rendered
+    assert "KEPT SO FAR IN THIS RUN (1)" in rendered and "REJECTED (1)" in rendered
 
 
 def test_a_long_round_says_how_much_it_did_not_show() -> None:
@@ -472,7 +472,7 @@ def test_the_planner_is_shown_the_kept_video_alongside_the_pattern() -> None:
     if the round looks like nothing but rejections."""
     rendered = render_round(POISONED)
 
-    assert "KEPT (1)" in rendered
+    assert "KEPT SO FAR IN THIS RUN (1)" in rendered
     assert "covers cache_control in depth" in rendered
 
 
@@ -660,13 +660,13 @@ def test_an_unreadable_keeper_is_listed_apart_from_the_keepers() -> None:
 
     rendered = render_round(report)
 
-    assert "KEPT (1):" in rendered
+    assert "KEPT SO FAR IN THIS RUN (1)" in rendered
     assert "KEPT BUT UNREADABLE (1)" in rendered
     assert "do NOT count toward coverage" in rendered
     # The video is still named. It was found and stored, and hiding it entirely
     # would invite the planner to keep searching for a video it already has.
     assert "Garbled one" in rendered
-    kept_block = rendered.split("KEPT (1):")[1].split("KEPT BUT UNREADABLE")[0]
+    kept_block = rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT UNREADABLE")[0]
     assert "Garbled one" not in kept_block
     assert "Readable one" in kept_block
 
@@ -690,3 +690,96 @@ def test_the_planner_prompt_says_an_unreadable_video_satisfies_nothing() -> None
     text = " ".join(load_prompt(PLAN_PROMPT, directory=prompts_dir()).text.split())
     assert "KEPT BUT UNREADABLE" in text
     assert "Only videos under KEPT can satisfy anything" in text
+
+
+# -- coverage is judged against the run, not the round -------------------------
+#
+# Run `ea18299bcea5`: round 1 marked "comparison across two or more frameworks"
+# covered, citing a video literally titled "Agent Memory Explained: LangChain vs
+# CrewAI Approaches Compared". Round 2, shown only its own six keepers, called
+# the same item a gap. Round 3 spent five of six queries chasing it.
+
+
+def test_the_planner_is_shown_every_video_the_run_kept() -> None:
+    report = _round(kept=[_video("Round two find", "a new one", verdict="yes")])
+
+    rendered = render_round(
+        report,
+        kept_so_far=[
+            (1, _video("LangChain vs CrewAI compared", "compares two frameworks",
+                       verdict="yes")),
+            (2, _video("Round two find", "a new one", verdict="yes")),
+        ],
+    )
+
+    assert "LangChain vs CrewAI compared" in rendered
+    assert "Round two find" in rendered
+    assert "KEPT SO FAR IN THIS RUN (2)" in rendered
+
+
+def test_each_kept_video_says_which_round_found_it() -> None:
+    """Cumulative without the marking would lose what this round contributed,
+    which is the other half of what the planner reasons about."""
+    rendered = render_round(
+        _round(),
+        kept_so_far=[
+            (1, _video("Earlier", "kept in round one", verdict="yes")),
+            (3, _video("Later", "kept in round three", verdict="yes")),
+        ],
+    )
+
+    assert "[round 1] Earlier" in rendered
+    assert "[round 3] Later" in rendered
+
+
+def test_an_unreadable_keeper_from_an_earlier_round_stays_out_of_coverage() -> None:
+    """The DEGRADED split has to survive going cumulative — otherwise a video
+    nobody could read becomes permanent evidence of coverage."""
+    rendered = render_round(
+        _round(),
+        kept_so_far=[
+            (1, _video("Garbled", "captions unreadable", verdict="yes",
+                       evidence=EVIDENCE_DEGRADED)),
+            (2, _video("Clean", "walks through it", verdict="yes")),
+        ],
+    )
+
+    kept = rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT UNREADABLE")[0]
+    assert "Clean" in kept and "Garbled" not in kept
+    assert "KEPT BUT UNREADABLE (1)" in rendered
+
+
+def test_rejections_stay_scoped_to_this_round() -> None:
+    """Deliberate, and the opposite choice for the opposite reason. Rejections
+    are evidence about the judge; accumulating them would make a systematic
+    judge error look more and more like a fact about YouTube, which is the one
+    failure this whole module is built around."""
+    report = _round(rejected=[_video("This round's reject", "off topic")])
+
+    rendered = render_round(
+        report, kept_so_far=[(1, _video("Old keeper", "good", verdict="yes"))]
+    )
+
+    assert "REJECTED (1)" in rendered
+    assert "This round's reject" in rendered
+
+
+def test_the_oldest_keepers_are_dropped_first_when_the_list_is_capped() -> None:
+    """When the cap bites, the round being reasoned about must survive it —
+    and the drop is announced, like every other cap here."""
+    kept = [(1, _video(f"Old {n}", "kept early", verdict="yes")) for n in range(30)]
+    kept.append((4, _video("Newest", "kept just now", verdict="yes")))
+
+    rendered = render_round(_round(number=4), kept_so_far=kept)
+
+    assert "Newest" in rendered
+    assert "kept in earlier rounds, not shown" in rendered
+
+
+def test_without_a_cumulative_set_the_round_renders_alone() -> None:
+    """A direct call still produces something coherent rather than an empty
+    KEPT section — the fallback the loop never takes."""
+    rendered = render_round(_round(kept=[_video("Only", "kept", verdict="yes")]))
+
+    assert "Only" in rendered
+    assert "KEPT SO FAR IN THIS RUN (1)" in rendered

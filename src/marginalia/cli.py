@@ -302,6 +302,10 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.degraded, "degraded evidence, not noted"),
             (report.unparsed, "broke the reply format"),
             (report.filters_rejected, "filters rejected"),
+            # Named apart from the line above, because they are opposite
+            # directions: a rejected filter widened a search that ran, a
+            # skipped duplicate removed a search entirely.
+            (report.duplicates_skipped, "duplicate queries skipped"),
         ]
         detail = ", ".join(f"{count} {label}" for count, label in notes if count)
         if detail:
@@ -498,6 +502,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                     for query in report.planned
                 ],
                 "filters_rejected": report.filters_rejected,
+                "duplicates_skipped": report.duplicates_skipped,
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next
                 # round, the map revisions it proposed and the ones the code

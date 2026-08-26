@@ -419,6 +419,7 @@ def render_round(
     *,
     searched: Sequence[tuple[PlannedQuery, int | None]] = (),
     quota_remaining: int | None = None,
+    kept_so_far: Sequence[tuple[int, JudgedVideo]] = (),
 ) -> str:
     """The round as evidence, in plain text.
 
@@ -427,6 +428,22 @@ def render_round(
     reaches this prompt. The structure the planner is given cannot carry more
     than that, which makes hard rule 1 a property of the types rather than a
     habit of this function.
+
+    ``kept_so_far`` is **the run's kept videos, not this round's**, each marked
+    with the round that kept it. Coverage is a claim about what the library
+    holds, and it cannot be made from one round's worth of it. Measured, in run
+    `ea18299bcea5`: round 1 marked "comparison across two or more frameworks"
+    covered, citing a video titled *"Agent Memory Explained: LangChain vs CrewAI
+    Approaches Compared"*; round 2, shown only its own six keepers, called the
+    same item a gap; round 3 then spent five of six queries chasing it. Third
+    instance of one bug family — Gate 1 not knowing what the run had already
+    stored was the second.
+
+    **Rejections stay per-round, deliberately.** They are evidence about the
+    judge rather than about the world, and accumulating them across rounds would
+    make any systematic judge error look more and more like a fact about
+    YouTube — which is precisely the failure the whole module is built around.
+    Coverage needs everything kept; nothing needs everything rejected.
     """
     lines = [f"ROUND {report.number}"]
 
@@ -447,12 +464,20 @@ def render_round(
     # planner would conclude a part of the brief is satisfied by evidence that
     # does not exist, and stop searching for the video that would have
     # satisfied it. Two headings say what one adjective inside a list does not.
-    readable = [video for video in report.kept if not video.unreadable]
-    unreadable = [video for video in report.kept if video.unreadable]
+    # Falls back to this round alone when the caller gave nothing, so a direct
+    # call to this function still renders something coherent.
+    cumulative = list(kept_so_far) or [(report.number, video) for video in report.kept]
+    readable = [(number, v) for number, v in cumulative if not v.unreadable]
+    unreadable = [(number, v) for number, v in cumulative if v.unreadable]
 
     lines.append("")
-    lines.append(f"KEPT ({len(readable)}):")
-    lines.extend(_video_lines(readable) or ["- none"])
+    lines.append(
+        f"KEPT SO FAR IN THIS RUN ({len(readable)}) — every round, not just this "
+        "one. This is what the library now holds for this topic, and it is what "
+        "coverage must be judged against. The round number says which round "
+        "found each one, so you can still see what this round added."
+    )
+    lines.extend(_marked_video_lines(readable) or ["- none"])
 
     lines.append("")
     lines.append(
@@ -461,7 +486,7 @@ def render_round(
         "They do NOT count toward coverage: treat the part of the brief they look "
         "like they cover as still unmet."
     )
-    lines.extend(_video_lines(unreadable) or ["- none"])
+    lines.extend(_marked_video_lines(unreadable) or ["- none"])
 
     lines.append("")
     lines.append(f"REJECTED ({len(report.rejected)}):")
@@ -495,6 +520,26 @@ def render_round(
         lines.append(f"SEARCH QUOTA REMAINING: {quota_remaining} units (a search costs ~101)")
 
     return "\n".join(lines)
+
+
+def _marked_video_lines(videos: Sequence[tuple[int, JudgedVideo]]) -> list[str]:
+    """Kept videos, each carrying the round that kept it.
+
+    The cap is applied to the *oldest* first when it bites, so the most recent
+    round — the one the planner is reasoning about — is never the part that
+    disappears. Said out loud either way, for the reason every cap here is.
+    """
+    if len(videos) <= _MAX_SHOWN:
+        shown, dropped = videos, 0
+    else:
+        shown, dropped = videos[-_MAX_SHOWN:], len(videos) - _MAX_SHOWN
+    lines = [
+        f"- [round {number}] {video.title[:_MAX_TITLE]} [{video.stage}] — {video.reason}"
+        for number, video in shown
+    ]
+    if dropped:
+        lines.insert(0, f"- (+{dropped} kept in earlier rounds, not shown)")
+    return lines
 
 
 def _video_lines(videos: Sequence[JudgedVideo]) -> list[str]:
@@ -550,6 +595,8 @@ class Planner:
         quota_remaining: int | None = None,
         rounds_left: int = 1,
         count: int = 6,
+        kept_so_far: Sequence[tuple[int, JudgedVideo]] = (),
+        max_tokens: int | None = None,
     ) -> RoundPlan:
         """One call. A failure leaves the loop exactly as it was before B5.
 
@@ -566,12 +613,20 @@ class Planner:
                     brief=brief.text,
                     territory=render_territory(territory),
                     round=render_round(
-                        report, searched=searched, quota_remaining=quota_remaining
+                        report,
+                        searched=searched,
+                        quota_remaining=quota_remaining,
+                        kept_so_far=kept_so_far,
                     ),
                     rounds_left=rounds_left,
                     count=count,
                 ),
                 task="plan_round",
+                # The cumulative kept set makes both halves of this call bigger:
+                # more evidence in, and a coverage assessment that now cites
+                # across rounds out. At 8,192 the round-2 call was already at
+                # 68% of its ceiling, and a truncated plan is discarded whole.
+                max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 - a failed plan must not end the run
             log.warning("planner: call failed (%s) — the round falls back to expansion", exc)

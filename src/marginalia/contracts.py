@@ -55,6 +55,7 @@ __all__ = [
     # territory
     "Recency",
     "PlannedQuery",
+    "FILTER_FIELD_QUERY",
     "FilterRejection",
     "MapSnapshot",
     "TerritoryRevision",
@@ -93,6 +94,7 @@ __all__ = [
     "NEW",
     "KNOWN",
     "REJECTED",
+    "STORED_THIS_RUN",
     "Candidate",
     "SearchRun",
     # note runs
@@ -313,6 +315,12 @@ class Recency:
         return f"last {self.months} months" if self.months else "any time"
 
 
+# The `field` a duplicate-query rejection carries. A sentinel, so the producer
+# in `brain/territory.py` and every consumer that counts agree on one string
+# rather than each spelling it out — rule 10 applied to a two-outcome type.
+FILTER_FIELD_QUERY = "query"
+
+
 @dataclass(frozen=True)
 class FilterRejection:
     """A filter the code refused to execute. Counted, logged, never silent.
@@ -320,12 +328,23 @@ class FilterRejection:
     Same discipline as the unparsed counters: something the model proposed was
     dropped, and a drop nobody counts is indistinguishable from a proposal that
     was never made.
+
+    Two different outcomes travel in this one type, and they must stay tellable
+    apart. A refused *filter* means the search ran wider than the model asked.
+    A skipped *duplicate query* means a search did not run at all because an
+    identical one already had. Reporting them as one number is rule 14's failure
+    for the third time — and it happened: a round announced "8 filters rejected"
+    when all eight were duplicate-query skips and no filter had been refused.
     """
 
     query: str
     field: str
     value: str
     reason: str
+
+    @property
+    def is_duplicate_query(self) -> bool:
+        return self.field == FILTER_FIELD_QUERY
 
 
 @dataclass(frozen=True)
@@ -1013,7 +1032,18 @@ class RoundReport:
     # like everything else here: a rejected filter is neither a failure nor a
     # rejection nor a parse problem, and a round that reported it as any of
     # those would be reporting three causes in one number.
+    #
+    # **Filters only.** A duplicate query the validator skipped travels in the
+    # same list and is counted below instead. They were one number until a round
+    # reported "8 filters rejected" where every one was a duplicate skip and no
+    # filter had been refused — rule 14's failure, third occurrence, in the
+    # counter the planner reads.
     filters_rejected: int = 0
+    # Queries dropped because an identical text-and-filters pair had already run
+    # this round. A search that did not happen because it would have repeated
+    # one — not a filter refusal, and the opposite direction: a refused filter
+    # widens what a search sees, a skipped duplicate removes a search entirely.
+    duplicates_skipped: int = 0
     concepts: list[str] = field(default_factory=list)
     from_threads: bool = False
     # B4. The queries as planned, with their origins and filters. `queries`
@@ -1231,6 +1261,11 @@ class CitationScan:
 
     citations: list[AnswerCitation]
     unparsed: list[str]
+    # Citations whose video ID was mis-cased by the model and resolved against
+    # the library's own spelling. Counted rather than silently fixed, for the
+    # reason `unparsed` exists: a repair is a thing that happened to an answer,
+    # and a repair nobody counts is how you stop noticing the model needs one.
+    repaired: list[str] = field(default_factory=list)
 
     @property
     def shaped(self) -> int:
@@ -1265,6 +1300,11 @@ class Answer:
     # Citation-shaped strings the parser could not read. Reported rather than
     # discarded: a parser that drops most of its input must say so.
     unparsed: list[str] = field(default_factory=list)
+    # Citations that resolved only after their video ID's casing was repaired
+    # against the library. Surfaced for the same reason as `unparsed`: this is
+    # the model getting an ID wrong, and a repair nobody counts is a defect
+    # nobody sees.
+    repaired: list[str] = field(default_factory=list)
     titles: dict[str, str] = field(default_factory=dict)
     requests: int = 0
     input_tokens: int = 0

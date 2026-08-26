@@ -695,7 +695,9 @@ class Mapper:
             self._cache[name] = load_prompt(name, directory=self._directory)
         return self._cache[name]
 
-    def map(self, brief: Brief, *, count: int = 12) -> TerritoryMap:
+    def map(
+        self, brief: Brief, *, count: int = 12, max_tokens: int | None = None
+    ) -> TerritoryMap:
         """One call. A failure returns an empty map rather than raising.
 
         Discovery still has the brief's own queries, so a run whose mapping call
@@ -708,6 +710,14 @@ class Mapper:
                 "You map out what a subject covers and what words it uses.",
                 prompt.render(topic=brief.topic, brief=brief.text, count=count),
                 task="map_territory",
+                # A map is a long structured document — a dozen query blocks,
+                # two term lists, a recency call — and it is the one call whose
+                # output decides what the search is even capable of returning.
+                # On `AI agent memory` it hit the 8,192 ceiling and returned a
+                # fragment, which the guard below discarded: B4's entire feature
+                # contributed nothing to that run. Effort is already at `low`,
+                # so the ceiling is what was left to raise.
+                max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 - a failed map must not end the run
             log.warning("territory: mapping call failed (%s) — searching from the brief alone", exc)
