@@ -255,3 +255,20 @@ def test_a_save_that_fails_does_not_fail_the_answer(
 
     assert cli.main(["ask", "q"]) == 0
     assert "Answered" in capsys.readouterr().out
+
+
+def test_a_repaired_id_is_named_in_the_summary_line() -> None:
+    """The counter exists to be seen. It was added to the scan and the contract
+    and not to the line anyone reads, which is the same silence it was built to
+    end."""
+    from marginalia.cli import _ask_summary
+
+    assert "1 id(s) repaired" in _ask_summary(answer(repaired=["57AOoangAJA 00:02:03"]))
+
+
+def test_a_clean_answer_says_nothing_about_repairs() -> None:
+    """Unlike `unparsed`, zero is the normal state here and printing it every
+    time would be noise rather than a number worth trusting."""
+    from marginalia.cli import _ask_summary
+
+    assert "repaired" not in _ask_summary(answer())

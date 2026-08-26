@@ -779,13 +779,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         for video_id, why in answer.opened:
             print(f"  {video_id}  {why}")
 
-    print(
-        f"\nask:      {answer.notes_loaded} notes, "
-        f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
-        f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
-        f"{answer.requests} requests, ${answer.cost_usd:.4f}, {_elapsed(answer.elapsed_s)}"
-        f", v{answer.version}"
-    )
+    print()
+    print(_ask_summary(answer))
     if saved is not None:
         print(f"saved:    {saved}")
     if answer.unparsed:
@@ -795,6 +790,30 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         for fragment in answer.unparsed:
             log.debug("ask: unreadable citation: %s", fragment)
     return EXIT_OK
+
+
+def _ask_summary(answer: Answer) -> str:
+    """The one accounting line after an answer. Pure, so it can be asserted on.
+
+    `unparsed` is printed even at zero — that is the number which makes the
+    count trustworthy on the day it is not zero. `repaired` is printed only when
+    it happened, because zero is the normal state there and a permanent
+    "0 id(s) repaired" would be noise rather than a signal.
+    """
+    line = (
+        f"ask:      {answer.notes_loaded} notes, "
+        f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
+        f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
+    )
+    if answer.repaired:
+        # The model got a video ID's casing wrong and the parser covered for it.
+        # Worth seeing rather than inferring from a debug log.
+        line += f"{len(answer.repaired)} id(s) repaired, "
+    line += (
+        f"{answer.requests} requests, ${answer.cost_usd:.4f}, "
+        f"{_elapsed(answer.elapsed_s)}, v{answer.version}"
+    )
+    return line
 
 
 def _save_answer(library: Library, answer: Answer, *, no_save: bool) -> Path | None:
