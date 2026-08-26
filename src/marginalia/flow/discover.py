@@ -69,6 +69,7 @@ from ..contracts import (
     VERDICT_YES,
     DiscoverRun,
     JudgedVideo,
+    LibraryCoverage,
     PlannedQuery,
     RoundPlan,
     RoundReport,
@@ -85,6 +86,7 @@ from ..core.ledger import (
     Ledger,
     normalise_topic,
 )
+from ..ask import load_notes, render_notes
 from ..core.library import Library, format_timestamp
 from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
@@ -190,6 +192,20 @@ def discover(
         max_tokens=config.discover.territory_max_tokens,
     )
     ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
+
+    # What the library *already* answers, before a single search runs.
+    #
+    # The planner cannot see this any other way. Gate 1 drops videos that have
+    # notes before they become candidates, and the fetch-step disk check skips
+    # stored-but-unnoted ones — so neither reaches `report.kept`, and "no kept
+    # video covers X" has always meant "no video this run newly fetched covers
+    # X". Measured: a run called retrieval-scoring a gap while a note written
+    # the previous day gave the exact formula the gap asked for, and the next
+    # round spent five of six queries re-finding it.
+    #
+    # Skipped on a dry run and on an empty library — the first plans nothing,
+    # and the second has nothing to assess.
+    run.baseline = _assess_library(config, ledger, library, planner, run)
     if run.territory.rejected:
         log.info(
             "discover: %d proposed filter(s) rejected before any search ran",
@@ -353,6 +369,45 @@ def _loop(
     run.stopped_because = STOP_MAX_ROUNDS
 
 
+def _assess_library(
+    config: Config,
+    ledger: Ledger,
+    library: Library,
+    planner: Planner,
+    run: DiscoverRun,
+) -> LibraryCoverage:
+    """One call over the notes already on disk. Returns empty when there are none.
+
+    The notes are loaded **here** rather than in `brain/`, which may not touch
+    the filesystem. Same arrangement as stage 2, where the transcript is read by
+    the loop and handed to the judge: it makes "the reasoning layer never opens a
+    file" a property of the import graph instead of a habit.
+    """
+    if run.dry_run:
+        return LibraryCoverage()
+    notes = load_notes(library, ledger)
+    if not notes:
+        # A fresh topic on an empty library. Nothing to assess, and the call
+        # would cost the whole prompt to be told so.
+        log.info("discover: the library holds no notes; nothing to assess")
+        return LibraryCoverage()
+
+    baseline = planner.assess_library(
+        run.brief,
+        render_notes(notes),
+        notes_read=len(notes),
+        max_tokens=config.discover.baseline_max_tokens,
+    )
+    ledger.save_baseline(run.run_id, baseline.as_json())
+    log.info(
+        "discover: the library already covers %d of %d assessed brief item(s), from %d note(s)",
+        len(baseline.satisfied),
+        len(baseline.items),
+        baseline.notes_read,
+    )
+    return baseline
+
+
 def _run_planner(
     config: Config,
     ledger: Ledger,
@@ -395,6 +450,9 @@ def _run_planner(
             for report in run.rounds
             for video in report.kept
         ],
+        # What the library already held when this run started. Without it the
+        # planner reads an empty shelf and names gaps the library can answer.
+        baseline=run.baseline.items,
         max_tokens=config.discover.planner_max_tokens,
     )
     report.plan = plan

@@ -166,7 +166,8 @@ CREATE TABLE IF NOT EXISTS runs (
   output_tokens   INTEGER NOT NULL DEFAULT 0,
   stopped_because TEXT,
   territory_map     TEXT,        -- the map B4 worked from, stored whole
-  territory_version TEXT
+  territory_version TEXT,
+  library_baseline  TEXT         -- what the library already covered, before round 1
 );
 CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs(topic);
 
@@ -233,6 +234,10 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("decisions", "prompt_version", "TEXT"),
     ("runs", "territory_map", "TEXT"),
     ("runs", "territory_version", "TEXT"),
+    # What the library already satisfied before this run searched. NULL on
+    # every run made before the planner had a coverage baseline, which is
+    # the honest answer: nobody asked.
+    ("runs", "library_baseline", "TEXT"),
 )
 
 # Tables an older marginalia created that no longer exist. Their presence is
@@ -326,6 +331,7 @@ class RunRow:
     # B1. B4 writes these; nothing reads them yet.
     territory_map: str | None = None
     territory_version: str | None = None
+    library_baseline: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> RunRow:
@@ -1031,6 +1037,23 @@ class Ledger:
         if cursor.rowcount == 0:
             raise LedgerError(f"no run row for {run_id!r}: start_run() must be called first")
         log.info("run %s stored a territory map (version %s)", run_id, version)
+        return self.get_run(run_id)  # type: ignore[return-value]
+
+    def save_baseline(self, run_id: str, baseline: str) -> RunRow:
+        """Store what the library already covered when this run started.
+
+        On the run rather than in `plans`, because it is a property of the run's
+        starting conditions — like the brief and the map — not a decision made
+        during a round. It is also the only one of the three that describes
+        something the run did *not* do: the videos it names were never fetched,
+        judged or counted anywhere else.
+        """
+        with self._conn:
+            cursor = self._conn.execute(
+                "UPDATE runs SET library_baseline = ? WHERE run_id = ?", (baseline, run_id)
+            )
+        if cursor.rowcount == 0:
+            raise LedgerError(f"no run row for {run_id!r}: start_run() must be called first")
         return self.get_run(run_id)  # type: ignore[return-value]
 
     def get_run(self, run_id: str) -> RunRow | None:

@@ -50,6 +50,8 @@ __all__ = [
     "answer_question",
     "deep_link",
     "load_notes",
+    "render_notes",
+    "render_notes",
     "normalise_dashes",
     "parse_citations",
     "scan_citations",
@@ -106,6 +108,12 @@ _TS_RE = re.compile(r"(?<![\d.:])(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})
 # Fallback when no ledger is available (unit tests, mostly). Shape only.
 _ID_SHAPE_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 
+# Candidate tokens for prefix repair. Eight characters is the floor: shorter
+# than that and a prefix stops identifying one video and starts matching
+# whatever the library happens to hold. Ten of eleven characters is the real
+# case; eight leaves room without inviting a guess.
+_ID_SHAPE_PREFIX_RE = re.compile(r"[A-Za-z0-9_-]{8,11}")
+
 # Entries inside one bracket. A range separator is a dash and must NOT split.
 _ENTRY_SPLIT_RE = re.compile(r"[;,]")
 
@@ -158,6 +166,23 @@ def _find_id(entry: str, known: Sequence[str] | None) -> tuple[str | None, bool]
     `57AOoangAJA` and `UVEjThz8DSo` as `UVejThz8DSo`. The parser was right to
     refuse them; the claims beside them still read as sourced while their links
     had silently vanished.
+
+    **A truncated ID is repaired on the same terms**: an id-shaped token that is
+    a prefix of exactly one library ID resolves to that ID. `VIg_7sqS2D` for
+    `VIg_7sqS2dE` — the model dropped the last character, and it wrote that same
+    video's ID three different ways in one answer (correct, mis-cased, cut
+    short). One rule, one justification: match what the library holds, and
+    refuse the moment the answer is not unique.
+
+    **What is deliberately NOT repaired: a dropped character, a transposition,
+    or any other edit-distance match.** The same answer also produced
+    `aYfZN8tAQs` for `aYfZN8t6AQs` and `o6vU4u_yEuE` for `o6v4Uu_yEuE`, and both
+    stay refused. Two YouTube IDs one character apart are two different videos,
+    so an edit-distance "repair" can silently point a claim at the wrong video —
+    and a wrong link is worse than a missing one, because a missing link is
+    visible in the count while a wrong one reads as a working citation. Prefix
+    and case are safe because neither invents a character the model did not
+    write; edit distance does exactly that. Do not add it.
     """
     if known:
         for video_id in known:
@@ -167,6 +192,15 @@ def _find_id(entry: str, known: Sequence[str] | None) -> tuple[str | None, bool]
         matches = [video_id for video_id in known if video_id.lower() in folded]
         if len(matches) == 1:
             return matches[0], True
+        if matches:
+            # Ambiguous: never guess which of several the model meant.
+            return None, False
+        # Truncation. Only id-shaped tokens are considered, so a stray word in
+        # the entry cannot become a prefix that matches half the library.
+        for token in _ID_SHAPE_PREFIX_RE.findall(entry):
+            starts = [v for v in known if v.lower().startswith(token.lower())]
+            if len(starts) == 1:
+                return starts[0], True
         return None, False
     match = _ID_SHAPE_RE.search(entry)
     return (match.group(0) if match else None), False
@@ -395,7 +429,14 @@ def _touch(ledger: Ledger | None, video_id: str) -> None:
         log.info("ask: %s has stored text but no ledger row; not recording the read", video_id)
 
 
-def _notes_block(notes: Sequence[LoadedNote]) -> str:
+def render_notes(notes: Sequence[LoadedNote]) -> str:
+    """Every note as one block, each headed by its video ID.
+
+    Public because the discovery loop's library-coverage call renders notes
+    the same way. Two spellings of this would mean the coverage assessment
+    and the answer read subtly different text, and any disagreement between
+    them could not be attributed to either.
+    """
     return "\n\n".join(
         f"===== VIDEO {note.video_id} =====\n{note.text}" for note in notes
     )
@@ -495,7 +536,7 @@ def _call(
         prompt.render(
             question=question,
             count=len(notes),
-            notes=_notes_block(notes),
+            notes=render_notes(notes),
             transcripts=_transcripts_block([(item.video_id, item.text) for item in opened]),
             escalation=ESCALATION_ALLOWED if allow else ESCALATION_SPENT,
         ),

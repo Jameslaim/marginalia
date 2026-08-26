@@ -42,6 +42,7 @@ from marginalia.contracts import (
     REVISE_ADD,
     REVISE_VOCABULARY,
     CoverageItem,
+    LibraryCoverage,
     FilterRejection,
     PlannedQuery,
     Recency,
@@ -1636,8 +1637,12 @@ class FakePlanner:
     the loop exactly as it was.
     """
 
-    def __init__(self, plans=None) -> None:
+    def __init__(self, plans=None, baseline=()) -> None:
         self._plans = list(plans or [])
+        self._baseline = list(baseline)
+        self.assessed = 0
+        self.baseline_seen: list[list] = []
+        self.assess_max_tokens_seen = None
         self.calls: list[int] = []
         self.seen: list[RoundReport] = []
         self.quota_seen: list[object] = []
@@ -1648,12 +1653,18 @@ class FakePlanner:
     def prompt(self, name):
         return FakePrompt()
 
+    def assess_library(self, brief, notes, *, notes_read=0, max_tokens=None):
+        self.assessed += 1
+        self.assess_max_tokens_seen = max_tokens
+        return LibraryCoverage(items=list(self._baseline), notes_read=notes_read)
+
     def plan(self, brief, territory, report, **kwargs):
         self.calls.append(report.number)
         self.seen.append(report)
         self.quota_seen.append(kwargs.get("quota_remaining"))
         self.rounds_left_seen.append(kwargs.get("rounds_left"))
         self.kept_so_far_seen.append(list(kwargs.get("kept_so_far") or []))
+        self.baseline_seen.append(list(kwargs.get("baseline") or []))
         self.max_tokens_seen.append(kwargs.get("max_tokens"))
         if self._plans:
             return self._plans.pop(0)
@@ -2425,3 +2436,95 @@ def test_the_brief_calls_get_their_own_ceiling(
 
     assert judge.brief_max_tokens_seen == config.discover.brief_max_tokens
     assert config.discover.brief_max_tokens > config.llm.max_tokens
+
+
+# -- the library baseline, computed once before round one ----------------------
+
+
+def test_the_library_is_assessed_before_the_first_round(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# An old note\n\nIt covers the mechanism in code.\n")
+    planner = FakePlanner(baseline=[CoverageItem("shows code", True, "the old note")])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert planner.assessed == 1, "assessed once, before any round"
+    assert [i.part for i in outcome.baseline.items] == ["shows code"]
+
+
+def test_the_baseline_reaches_the_planner(
+    config, ledger, library, client, searches
+) -> None:
+    """The whole point. Without it the planner reads an empty shelf and names
+    gaps for things the library can already answer."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers retrieval scoring.\n")
+    planner = FakePlanner(baseline=[CoverageItem("retrieval scoring", True, "the old note")])
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+        max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert [i.part for i in planner.baseline_seen[0]] == ["retrieval scoring"]
+
+
+def test_an_empty_library_is_not_assessed_at_all(
+    config, ledger, library, client, searches
+) -> None:
+    """A fresh topic on a fresh library. The call would spend the whole prompt
+    to be told there is nothing there."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert planner.assessed == 0
+    assert outcome.baseline.items == []
+
+
+def test_a_dry_run_does_not_assess_the_library(
+    config, ledger, library, client, searches
+) -> None:
+    """A dry run plans nothing, so the baseline would be computed for a reader
+    that never runs."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# A note\n\nSomething.\n")
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1,
+        dry_run=True, mapper=FakeMapper(), planner=planner)
+
+    assert planner.assessed == 0
+
+
+def test_the_baseline_is_stored_on_the_run(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# A note\n\nCovers the write path.\n")
+    planner = FakePlanner(baseline=[CoverageItem("write path", True, "the old note")])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    stored = json.loads(ledger.get_run(outcome.run_id).library_baseline)
+    assert stored["items"] == [
+        {"part": "write path", "satisfied": True, "detail": "the old note"}
+    ]
+    assert stored["notes_read"] == 1
+
+
+def test_the_assessment_call_gets_its_own_ceiling(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# A note\n\nSomething.\n")
+    planner = FakePlanner()
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+        max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert planner.assess_max_tokens_seen == config.discover.baseline_max_tokens

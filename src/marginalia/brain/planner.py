@@ -45,6 +45,7 @@ from typing import Iterable, Sequence
 
 from ..contracts import (
     ORIGIN_PLANNER,
+    LibraryCoverage,
     RECOMMEND_CONTINUE,
     RECOMMEND_STOP,
     REVISE_ADD,
@@ -67,8 +68,10 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "PLAN_PROMPT",
+    "BASELINE_PROMPT",
     "Planner",
     "parse_plan",
+    "parse_baseline",
     "validate_revisions",
     "render_round",
 ]
@@ -76,6 +79,11 @@ __all__ = [
 # Beside `territory/map.md`, because a planner revising a map is the same
 # decision continued rather than a different one.
 PLAN_PROMPT = "plan/round"
+
+# The library-coverage call, run once before round one. Beside the round plan
+# because it answers the same question — what does the brief still need — from
+# the other half of the evidence.
+BASELINE_PROMPT = "plan/baseline"
 
 _LABEL_RE = re.compile(
     r"^\s*\**\s*(COVERAGE|QUERY|FROM|FILTERS|REVISE|WHY|EVIDENCE|RECOMMENDATION)"
@@ -252,6 +260,42 @@ def parse_plan(text: str, *, round_number: int) -> RoundPlan:
     )
 
 
+def parse_baseline(text: str, *, notes_read: int = 0) -> LibraryCoverage:
+    """Read a library-coverage reply. Only COVERAGE lines; everything else drops.
+
+    Deliberately narrower than :func:`parse_plan`: this call proposes no
+    queries, revises no map and recommends nothing, so a reply containing any of
+    those has misunderstood the task and the extra lines are ignored rather than
+    acted on.
+
+    An unreadable reply yields an **empty** assessment, not a guessed one. Empty
+    means "assume the library covers nothing", which leaves the planner exactly
+    where it was before this call existed — the same direction every failure in
+    this project resolves: toward doing more work, never toward silently
+    skipping it.
+    """
+    items: list[CoverageItem] = []
+    problems: list[str] = []
+    for line in text.splitlines():
+        found = _LABEL_RE.match(line.strip())
+        if found is None:
+            continue
+        label, body = found.group(1).upper(), found.group(2).strip()
+        if label != "COVERAGE":
+            continue
+        item = _parse_coverage(body)
+        if item is None:
+            problems.append(f"unreadable coverage line {body[:60]!r}")
+        elif len(items) < _MAX_COVERAGE:
+            items.append(item)
+    return LibraryCoverage(
+        items=items,
+        notes_read=notes_read,
+        parsed=not problems and bool(items),
+        problem="; ".join(problems[:3]) or ("no coverage lines in the reply" if not items else ""),
+    )
+
+
 def _parse_coverage(body: str) -> CoverageItem | None:
     """``<part of the brief> | YES | <which videos>`` -> a :class:`CoverageItem`.
 
@@ -420,6 +464,7 @@ def render_round(
     searched: Sequence[tuple[PlannedQuery, int | None]] = (),
     quota_remaining: int | None = None,
     kept_so_far: Sequence[tuple[int, JudgedVideo]] = (),
+    baseline: Sequence[CoverageItem] = (),
 ) -> str:
     """The round as evidence, in plain text.
 
@@ -491,6 +536,20 @@ def render_round(
     lines.append("")
     lines.append(f"REJECTED ({len(report.rejected)}):")
     lines.extend(_video_lines(report.rejected) or ["- none"])
+
+    lines.append("")
+    already = [item for item in baseline if item.satisfied]
+    lines.append(
+        f"ALREADY IN THE LIBRARY BEFORE THIS RUN ({len(already)}) — assessed from the "
+        "notes the library already held, which this run never re-fetched and which "
+        "therefore appear nowhere above. **Treat these parts of the brief as "
+        "covered.** Naming one as a gap sends the next round searching for "
+        "something that can already be answered."
+    )
+    lines.extend(
+        [f"- {item.part} — {item.detail}" for item in already]
+        or ["- none (or the library was not assessed)"]
+    )
 
     lines.append("")
     lines.append("MENTIONED BUT UNEXPLAINED (from videos that were kept):")
@@ -584,6 +643,68 @@ class Planner:
             self._cache[name] = load_prompt(name, directory=self._directory)
         return self._cache[name]
 
+    def assess_library(
+        self,
+        brief: Brief,
+        notes: str,
+        *,
+        notes_read: int = 0,
+        max_tokens: int | None = None,
+    ) -> LibraryCoverage:
+        """What the library already satisfies, before any searching.
+
+        ``notes`` arrives as rendered text. `brain/` may not touch the disk, so
+        the caller loads the notes and hands them over — the same arrangement
+        that keeps the judge from ever reading a stored transcript itself.
+
+        Never raises, and a failure returns an **empty** assessment rather than
+        a guessed one. Empty means "assume nothing is covered", which is exactly
+        the behaviour that existed before this call, so a new step cannot make a
+        working loop worse.
+        """
+        prompt = self.prompt(BASELINE_PROMPT)
+        try:
+            reply = self.client.complete(
+                "You audit what a library of notes already covers.",
+                prompt.render(brief=brief.text, notes=notes, count=notes_read),
+                task="assess_library",
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001 - must not end the run
+            log.warning("planner: library assessment failed (%s) — assuming nothing is covered", exc)
+            return LibraryCoverage(parsed=False, problem=f"assessment call failed: {exc}")
+
+        if reply.finish_reason == "length":
+            # Same guard as the map and the plan. A half-read assessment is
+            # worse than none: the items that happened to fit read as the whole
+            # of what the library holds, and the planner would stop looking for
+            # everything the truncated tail would have marked NO.
+            log.warning(
+                "planner: library assessment was truncated (%d output tokens) — ignoring it",
+                reply.usage.output_tokens,
+            )
+            return LibraryCoverage(
+                parsed=False,
+                problem="reply hit the token ceiling before finishing",
+                notes_read=notes_read,
+                input_tokens=reply.usage.input_tokens,
+                output_tokens=reply.usage.output_tokens,
+                latency_s=reply.latency_s,
+            )
+
+        baseline = parse_baseline(reply.text, notes_read=notes_read)
+        if not baseline.parsed:
+            log.warning("planner: library assessment unusable — %s", baseline.problem)
+        return LibraryCoverage(
+            items=baseline.items,
+            notes_read=notes_read,
+            parsed=baseline.parsed,
+            problem=baseline.problem,
+            input_tokens=reply.usage.input_tokens,
+            output_tokens=reply.usage.output_tokens,
+            latency_s=reply.latency_s,
+        )
+
     def plan(
         self,
         brief: Brief,
@@ -596,6 +717,7 @@ class Planner:
         rounds_left: int = 1,
         count: int = 6,
         kept_so_far: Sequence[tuple[int, JudgedVideo]] = (),
+        baseline: Sequence[CoverageItem] = (),
         max_tokens: int | None = None,
     ) -> RoundPlan:
         """One call. A failure leaves the loop exactly as it was before B5.
@@ -617,6 +739,7 @@ class Planner:
                         searched=searched,
                         quota_remaining=quota_remaining,
                         kept_so_far=kept_so_far,
+                        baseline=baseline,
                     ),
                     rounds_left=rounds_left,
                     count=count,

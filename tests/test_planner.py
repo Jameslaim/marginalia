@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from marginalia.brain.planner import (
+    parse_baseline,
     PLAN_PROMPT,
     Planner,
     apply_revisions,
@@ -33,6 +34,7 @@ from marginalia.brain.planner import (
     validate_revisions,
 )
 from marginalia.contracts import (
+    CoverageItem,
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
     ORIGIN_PLANNER,
@@ -783,3 +785,83 @@ def test_without_a_cumulative_set_the_round_renders_alone() -> None:
 
     assert "Only" in rendered
     assert "KEPT SO FAR IN THIS RUN (1)" in rendered
+
+
+# -- the library the planner cannot otherwise see ------------------------------
+#
+# Gate 1 drops noted videos before they can become candidates, and the fetch-step
+# disk check skips stored-but-unnoted ones, so neither reaches `report.kept`.
+# "No kept video covers X" has always meant "no video this run newly fetched
+# covers X" — while `/ask` reads every note. Measured: a run called
+# retrieval-scoring a gap while a note written the previous day held the formula.
+
+
+def test_the_baseline_is_shown_as_covered_evidence() -> None:
+    rendered = render_round(
+        _round(),
+        baseline=[CoverageItem("retrieval scoring", True, "the ranking video gives the formula")],
+    )
+
+    assert "ALREADY IN THE LIBRARY BEFORE THIS RUN (1)" in rendered
+    assert "retrieval scoring" in rendered
+    assert "the ranking video gives the formula" in rendered
+
+
+def test_an_unsatisfied_baseline_item_is_not_listed_as_covered() -> None:
+    """The section is what the library *has*. Listing a NO there would tell the
+    planner something is covered on the strength of an assessment that said the
+    opposite."""
+    rendered = render_round(
+        _round(), baseline=[CoverageItem("benchmarks", False, "nothing on this")]
+    )
+
+    block = rendered.split("ALREADY IN THE LIBRARY")[1].split("MENTIONED BUT")[0]
+    assert "benchmarks" not in block
+    assert "none" in block
+
+
+def test_no_baseline_says_so_rather_than_nothing() -> None:
+    """Printed even when empty, like every other counter here: an absent section
+    reads as reassurance, and empty means the library was never assessed."""
+    rendered = render_round(_round())
+
+    assert "ALREADY IN THE LIBRARY BEFORE THIS RUN (0)" in rendered
+
+
+def test_a_baseline_reply_parses_into_coverage() -> None:
+    text = (
+        "COVERAGE: shows a mechanism in code | YES | the Mem0 walkthrough shows add/search\n"
+        "COVERAGE: benchmarks for the memory layer | NO | nothing evaluates one\n"
+    )
+
+    baseline = parse_baseline(text, notes_read=42)
+
+    assert baseline.parsed and baseline.notes_read == 42
+    assert [(i.part, i.satisfied) for i in baseline.items] == [
+        ("shows a mechanism in code", True),
+        ("benchmarks for the memory layer", False),
+    ]
+    assert len(baseline.satisfied) == 1
+
+
+def test_a_baseline_reply_with_no_coverage_lines_is_unparsed_and_empty() -> None:
+    """Empty means "assume the library covers nothing", which leaves the planner
+    exactly where it stood before this call existed — more work, never less."""
+    baseline = parse_baseline("I could not assess the library.")
+
+    assert baseline.parsed is False
+    assert baseline.items == []
+
+
+def test_a_baseline_ignores_queries_and_recommendations() -> None:
+    """This call proposes nothing. A reply carrying a plan has misunderstood the
+    task, and acting on it would let an audit start issuing searches."""
+    text = (
+        "COVERAGE: shows code | YES | the walkthrough\n"
+        "QUERY: agent memory benchmarks\n"
+        "RECOMMENDATION: STOP - looks covered\n"
+    )
+
+    baseline = parse_baseline(text)
+
+    assert [i.part for i in baseline.items] == ["shows code"]

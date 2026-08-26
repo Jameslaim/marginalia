@@ -54,7 +54,20 @@ WANTED items one at a time and ask, for each: *did anything kept this round
 actually satisfy this?*
 
 - A part satisfied by a kept video is `YES`, and name the video.
-- A part with nothing against it is `NO`, and say what is missing.
+- A part listed under ALREADY IN THE LIBRARY BEFORE THIS RUN is `YES` too, and
+  say which note covers it.
+- A part with nothing against either is `NO`, and say what is missing.
+
+**The library is older than this run, and most of it is invisible above.** Every
+list you are shown covers only what this run newly fetched. Videos the library
+already held were dropped before they could become candidates — that is the gate
+working, not an absence — so they appear under ALREADY IN THE LIBRARY and
+nowhere else. Treat that section as evidence of exactly the same weight as KEPT.
+
+Marking one of those a gap is the specific mistake this section exists to
+prevent: a real run declared retrieval scoring uncovered while a note written the
+previous day held the exact formula, and the next round spent five of its six
+queries finding it a second time.
 
 **Only videos under KEPT can satisfy anything.** A video under KEPT BUT
 UNREADABLE was stored with a transcript nobody could read: it gets no note, and

@@ -257,6 +257,14 @@ extra = { reasoning_effort = "low" }
 # Fourth non-monotonic ladder on this provider. "The most important call
 # deserves the most thinking" has now been wrong four times out of four
 # whenever the output is long and structured.
+# The library-coverage audit, run once before round one over every note on disk.
+# `low`, on the rule PLAN.md now states: on this provider a task producing long
+# structured output needs a low effort setting *and* a generous ceiling, because
+# the reasoning is what overruns and it bills against max_tokens. Fifth task of
+# that shape; the first four were measured the hard way.
+[llm.tasks.assess_library]
+extra = { reasoning_effort = "low" }
+
 [llm.tasks.plan_round]
 extra = { reasoning_effort = "low" }
 

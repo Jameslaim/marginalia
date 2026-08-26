@@ -488,3 +488,65 @@ def test_the_answer_prompt_still_names_no_model_family() -> None:
 
     for family in ("claude", "gpt-", "gemini", "llama", "kimi", "deepseek", "qwen"):
         assert family not in text
+
+
+# -- truncated ids, repaired on the same terms as case ------------------------
+
+
+def test_a_truncated_id_resolves_to_its_unique_library_match() -> None:
+    """`VIg_7sqS2D` for `VIg_7sqS2dE` — the model dropped the last character.
+    The same answer wrote that one video's ID three ways: right, mis-cased, and
+    cut short."""
+    scan = scan_citations("as shown [VIg_7sqS2D 05:45]", ["VIg_7sqS2dE"])
+
+    assert [c.video_id for c in scan.citations] == ["VIg_7sqS2dE"]
+    assert len(scan.repaired) == 1
+
+
+def test_a_prefix_matching_two_library_ids_is_refused() -> None:
+    """Unique or nothing. A prefix shared by two stored videos names neither."""
+    scan = scan_citations("[VIg_7sqS2 05:45]", ["VIg_7sqS2dE", "VIg_7sqS2xQ"])
+
+    assert scan.citations == []
+    assert len(scan.unparsed) == 1
+
+
+def test_a_dropped_character_is_still_refused() -> None:
+    """`aYfZN8tAQs` for `aYfZN8t6AQs`. Not a prefix and not a case difference,
+    so it would need edit distance — and two YouTube IDs one character apart are
+    two different videos, so that repair can point a claim at the wrong one."""
+    scan = scan_citations("[aYfZN8tAQs 11:23]", ["aYfZN8t6AQs"])
+
+    assert scan.citations == []
+    assert len(scan.unparsed) == 1
+
+
+def test_a_transposition_is_still_refused() -> None:
+    """`o6vU4u_yEuE` for `o6v4Uu_yEuE`. Correct length, wrong video. A wrong
+    link is worse than a missing one: the missing one shows up in the unparsed
+    count, the wrong one reads as a working citation."""
+    scan = scan_citations("[o6vU4u_yEuE 05:19]", ["o6v4Uu_yEuE"])
+
+    assert scan.citations == []
+    assert len(scan.unparsed) == 1
+
+
+def test_a_short_fragment_never_becomes_a_prefix_match() -> None:
+    """Below the floor a prefix stops identifying a video and starts matching
+    whatever the library happens to hold."""
+    scan = scan_citations("[VIg_ 05:45]", ["VIg_7sqS2dE"])
+
+    assert scan.citations == []
+
+
+def test_the_three_real_failures_end_with_one_repaired_and_two_refused() -> None:
+    """The measured case from the last answer, exactly as it occurred."""
+    known = ["VIg_7sqS2dE", "aYfZN8t6AQs", "o6v4Uu_yEuE"]
+    text = ("files still cost context [VIg_7sqS2D 05:45]; the extractor sees recent "
+            "messages [aYfZN8tAQs 11:23]; tiers differ [o6vU4u_yEuE 05:19].")
+
+    scan = scan_citations(text, known)
+
+    assert [c.video_id for c in scan.citations] == ["VIg_7sqS2dE"]
+    assert len(scan.repaired) == 1
+    assert len(scan.unparsed) == 2

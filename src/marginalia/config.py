@@ -119,6 +119,10 @@ DEFAULT_PLANNER_QUERIES = 6
 # has to cover a reasoning excursion, and unused headroom costs nothing under
 # per-token billing.
 DEFAULT_BRIEF_MAX_TOKENS = 16384
+# The library-coverage call. One line per brief item, so the output is small —
+# but it is the fifth long-structured-output task on this provider and the
+# reasoning is what overruns, not the answer. Sized like the others.
+DEFAULT_BASELINE_MAX_TOKENS = 16384
 DEFAULT_TERRITORY_MAX_TOKENS = 16384
 DEFAULT_PLANNER_MAX_TOKENS = 16384
 # Whether to believe `contentDetails.caption` when it says a video has no
@@ -267,6 +271,7 @@ class DiscoverConfig:
     # global one because these two are the long structured outputs, and a
     # truncated reply from either is discarded whole rather than parsed.
     brief_max_tokens: int = DEFAULT_BRIEF_MAX_TOKENS
+    baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
 
@@ -535,6 +540,10 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         ),
         brief_max_tokens=_positive(
             section, "brief_max_tokens", DEFAULT_BRIEF_MAX_TOKENS,
+            config_path, "discover",
+        ),
+        baseline_max_tokens=_positive(
+            section, "baseline_max_tokens", DEFAULT_BASELINE_MAX_TOKENS,
             config_path, "discover",
         ),
         territory_max_tokens=_positive(

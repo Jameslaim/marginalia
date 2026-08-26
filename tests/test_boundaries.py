@@ -380,6 +380,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "REVISE_VOCABULARY",
         "JudgedVideo",
         "CoverageItem",
+        "LibraryCoverage",
         "RoundPlan",
         # verdict vocabulary
         "VERDICT_YES",

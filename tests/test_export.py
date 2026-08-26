@@ -13,6 +13,8 @@ is one more than this project has.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from marginalia.contracts import (
@@ -572,3 +574,47 @@ def test_a_single_round_run_is_not_called_older_than_the_plans_table(
 
     assert "the last round is never planned" in report
     assert "predate" not in report and "gap label" not in report
+
+
+def test_the_starting_coverage_is_rendered_above_the_rounds(config, ledger, library) -> None:
+    """It describes the shelf the run began from, which is what it was computed
+    for and when."""
+    a_run(ledger)
+    ledger.save_baseline(RUN, json.dumps({
+        "notes_read": 182,
+        "items": [
+            {"part": "retrieval scoring", "satisfied": True,
+             "detail": "the ranking note gives the three-signal formula"},
+            {"part": "benchmarks", "satisfied": False, "detail": "nothing evaluates one"},
+        ],
+        "parsed": True, "problem": "", "input_tokens": 480000,
+        "output_tokens": 900, "seconds": 40.0,
+    }))
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "## Starting coverage" in report
+    assert "182 note(s)" in report
+    assert "**1 of 2**" in report
+    assert "the ranking note gives the three-signal formula" in report
+    assert report.index("## Starting coverage") < report.index("## Rounds")
+
+
+def test_a_run_with_no_baseline_says_so(config, ledger, library) -> None:
+    a_run(ledger)
+
+    export_run(config, ledger, library, RUN)
+
+    assert "No library assessment was stored" in read(library, "report.md")
+
+
+def test_an_unreadable_baseline_does_not_fail_the_export(config, ledger, library) -> None:
+    a_run(ledger)
+    ledger.save_baseline(RUN, "{not json")
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "could not be read" in report
+    assert "### Round 1" in report

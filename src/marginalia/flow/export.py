@@ -139,6 +139,7 @@ def render_report(
             ]
         )
 
+    lines.extend(_baseline_section(run))
     lines.extend(["## Rounds", ""])
     if not rounds:
         lines.extend(
@@ -190,6 +191,57 @@ def render_report(
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _baseline_section(run: RunRow) -> list[str]:
+    """What the library already covered when the run started.
+
+    Rendered above the rounds because that is when it was computed and what it
+    describes: the shelf the run began from. A run with no baseline says so
+    rather than showing nothing — every run before this existed has none, and an
+    absent section would read as "the library covered nothing".
+    """
+    if not run.library_baseline:
+        return [
+            "## Starting coverage",
+            "",
+            "*No library assessment was stored. Runs before the planner had a "
+            "coverage baseline have none, and so does any run on an empty library.*",
+            "",
+        ]
+    try:
+        body = json.loads(run.library_baseline)
+    except ValueError:
+        log.warning("export: run %s has an unreadable library baseline", run.run_id)
+        return ["## Starting coverage", "", "*The stored assessment could not be read.*", ""]
+    if not isinstance(body, dict):
+        return ["## Starting coverage", "", "*The stored assessment could not be read.*", ""]
+
+    items = body.get("items") or []
+    covered = [item for item in items if item.get("satisfied")]
+    lines = [
+        "## Starting coverage",
+        "",
+        f"Assessed from {body.get('notes_read', 0)} note(s) already in the library, "
+        f"before any search ran. **{len(covered)} of {len(items)}** parts of the brief "
+        "were already satisfied — the planner is told to treat these as covered, so it "
+        "does not send a round looking for what the library can already answer.",
+        "",
+    ]
+    if body.get("problem"):
+        lines.extend([f"> {_flat(body['problem'])}", ""])
+    if items:
+        lines.extend(["| | part of the brief | what already covers it |", "|---|---|---|"])
+        for item in items:
+            mark = "YES" if item.get("satisfied") else "**NO**"
+            lines.append(
+                f"| {mark} | {_flat(item.get('part')) or MISSING} "
+                f"| {_flat(item.get('detail')) or MISSING} |"
+            )
+    else:
+        lines.append("The assessment returned nothing.")
+    lines.append("")
+    return lines
 
 
 def _round_section(

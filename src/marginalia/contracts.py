@@ -69,6 +69,7 @@ __all__ = [
     "REVISE_VOCABULARY",
     "JudgedVideo",
     "CoverageItem",
+    "LibraryCoverage",
     "RoundPlan",
     # verdict vocabulary
     "VERDICT_YES",
@@ -658,6 +659,53 @@ class CoverageItem:
 
 
 @dataclass(frozen=True)
+class LibraryCoverage:
+    """What the library already satisfied before this run searched for anything.
+
+    The planner is otherwise blind to the library. Gate 1 drops videos that have
+    notes before they can become candidates, and the fetch-step disk check skips
+    stored-but-unnoted ones — so neither reaches ``RoundReport.kept``, and the
+    planner's *"no kept video covers X"* means *"no video this run newly fetched
+    covers X"*. Meanwhile `/ask` reads every note. Measured: a run declared
+    retrieval-scoring a gap while `lgCzmVkk1W4`, noted the previous day, gave the
+    same three-signal recipe the gap asked for.
+
+    Computed once, before round one, from the notes on disk. An empty library
+    yields an empty assessment, which is the honest answer for a fresh topic and
+    costs nothing because the call is skipped.
+    """
+
+    items: list[CoverageItem] = field(default_factory=list)
+    notes_read: int = 0
+    parsed: bool = True
+    problem: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+    latency_s: float = 0.0
+
+    @property
+    def satisfied(self) -> list[CoverageItem]:
+        return [item for item in self.items if item.satisfied]
+
+    def as_dict(self) -> dict:
+        return {
+            "notes_read": self.notes_read,
+            "items": [
+                {"part": item.part, "satisfied": item.satisfied, "detail": item.detail}
+                for item in self.items
+            ],
+            "parsed": self.parsed,
+            "problem": self.problem,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "seconds": round(self.latency_s, 2),
+        }
+
+    def as_json(self) -> str:
+        return json.dumps(self.as_dict(), ensure_ascii=False)
+
+
+@dataclass(frozen=True)
 class RoundPlan:
     """What the planner concluded at the end of one round.
 
@@ -1118,6 +1166,11 @@ class DiscoverRun:
     # a mapping call that failed leaves discovery narrower, not broken.
     territory: TerritoryMap = field(default_factory=lambda: TerritoryMap(topic="", version=""))
     rejected_filters: list[FilterRejection] = field(default_factory=list)
+    # What the library already satisfied before round one. Empty is a real
+    # state: a fresh library, or a dry run, or an assessment that failed — and
+    # empty means "assume nothing is covered", which is where the planner stood
+    # before this existed.
+    baseline: LibraryCoverage = field(default_factory=LibraryCoverage)
 
     @property
     def candidates_seen(self) -> int:
