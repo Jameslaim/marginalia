@@ -450,6 +450,44 @@ against 33.2s. The parameter is honoured. It is not *validated*: an invalid
 value is accepted silently, so a typo in config degrades to the default rather
 than erroring.
 
+### Long structured output needs both a low effort and a generous ceiling
+
+**On this provider, any task whose output is a long structured document needs
+`reasoning_effort` low *and* a `max_tokens` well above what the answer itself
+costs.** Four tasks have now hit this — `write_note`, `review_brief`,
+`map_territory`, `plan_round` — and it is one rule, not four coincidences.
+
+The mechanism is that **reasoning bills against `max_tokens`**. Above `low` the
+reasoning does not terminate; it expands to fill whatever budget exists, so
+raising the ceiling alone buys a larger bill and lowering the effort alone still
+leaves no room when a call reasons longer than usual. Both halves are required.
+
+The measurement that makes this concrete is `review_brief`, whose *answer* is
+small and whose *failure* was total:
+
+| ceiling | call | finish | output | result |
+|---|---|---|---|---|
+| 8192 | review | length | 8,192 | EMPTY — 0 chars back, unreviewed draft kept |
+| 16384 | draft | stop | 1,556 | valid |
+| 16384 | review | stop | 1,703 | valid, 3,343-char brief |
+
+It converges at roughly a tenth of the raised ceiling and still spent all of the
+old one. So **a ceiling sized to the expected output is sized to the wrong
+thing**: the headroom exists to absorb a reasoning excursion, and under
+per-token billing headroom that goes unused costs nothing.
+
+**Both failure modes look identical from outside, and neither looks like an
+error.** A truncated reply is discarded by the guard that catches it, and what
+the caller sees is an absence: a map with no queries, a plan that never arrives,
+a note that was not written, a brief that was silently not reviewed. The run
+continues, exits zero, and reports one warning line among many. `review_brief`
+is the worst of the four because its fallback is *plausible* — the unreviewed
+draft is a real brief, so every verdict in that run is measured against a
+document whose gaps were never closed, and nothing downstream can tell.
+
+The corollary for anything added later: a new call that emits a structured
+document is assumed to have this problem until measured, not assumed not to.
+
 ### Decision logging — required from day one
 
 Every judgment is logged with its reason:

@@ -482,17 +482,29 @@ class Judge:
 
     # -- the brief ---------------------------------------------------------
 
-    def write_brief(self, topic: str) -> Brief:
+    def write_brief(self, topic: str, *, max_tokens: int | None = None) -> Brief:
         """Two calls: write it, then close its gaps.
 
         The reviewer returns a revised brief rather than a critique, because a
         critique is a brief that never gets improved.
+
+        ``max_tokens`` covers **both** calls. A brief is a long structured
+        document — intent, must-contain, also-wanted, excluded, edge cases — and
+        so is the revision of one, so the two carry the same risk. Only the
+        review has been seen to truncate, but the draft succeeding at 8,192 was
+        luck rather than a difference in shape.
+
+        A truncated review is quiet in a way the map's was not: `usable` falls
+        back to the draft, so the run continues with an *unreviewed* brief and
+        one warning line. Everything judged in that run is then measured against
+        a brief that never had its gaps closed.
         """
         first = self.prompt("write_brief")
         drafted = self.client.complete(
             "You write precise research briefs.",
             first.render(topic=topic),
             task="write_brief",
+            max_tokens=max_tokens,
         )
 
         second = self.prompt("review_brief")
@@ -500,6 +512,7 @@ class Judge:
             "You improve research briefs and return the improved brief itself.",
             second.render(topic=topic, brief=drafted.text),
             task="review_brief",
+            max_tokens=max_tokens,
         )
 
         # A reviewer that returns a sentence has answered the wrong question.

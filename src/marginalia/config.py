@@ -98,6 +98,27 @@ DEFAULT_PLANNER_QUERIES = 6
 # Raising a ceiling costs nothing when it is not reached: this is per-token
 # billing and unused headroom is unused. What it buys is that the guard fires on
 # a genuine runaway rather than on an ordinary broad topic.
+# The brief and its review. Fourth task on this provider to overrun the global
+# ceiling, and the quietest failure of the four: a truncated review falls back
+# to the unreviewed draft with one warning line, and every verdict in that run
+# is then measured against a brief whose gaps were never closed.
+#
+# MEASURED on `AI agent memory`, the topic that failed:
+#
+#   ceiling   call      finish   output   result
+#   8192      review    length    8,192   EMPTY — 0 chars back, draft kept
+#   16384     draft     stop      1,556   valid
+#   16384     review    stop      1,703   valid, 3,343-char brief, review used
+#
+# Total 3,259 output tokens, 35.7s, $0.0011 for both calls.
+#
+# **The review converges at ~10% of the new ceiling and still spent all of the
+# old one.** That is the whole shape of this failure: the variance is in the
+# reasoning, which bills against `max_tokens`, not in the length of the answer.
+# A ceiling sized to the output is therefore sized to the wrong thing — headroom
+# has to cover a reasoning excursion, and unused headroom costs nothing under
+# per-token billing.
+DEFAULT_BRIEF_MAX_TOKENS = 16384
 DEFAULT_TERRITORY_MAX_TOKENS = 16384
 DEFAULT_PLANNER_MAX_TOKENS = 16384
 # Whether to believe `contentDetails.caption` when it says a video has no
@@ -245,6 +266,7 @@ class DiscoverConfig:
     # Output ceilings for the mapping and planning calls. Separate from the
     # global one because these two are the long structured outputs, and a
     # truncated reply from either is discarded whole rather than parsed.
+    brief_max_tokens: int = DEFAULT_BRIEF_MAX_TOKENS
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
 
@@ -510,6 +532,10 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         ),
         planner_queries=_positive(
             section, "planner_queries", DEFAULT_PLANNER_QUERIES, config_path, "discover"
+        ),
+        brief_max_tokens=_positive(
+            section, "brief_max_tokens", DEFAULT_BRIEF_MAX_TOKENS,
+            config_path, "discover",
         ),
         territory_max_tokens=_positive(
             section, "territory_max_tokens", DEFAULT_TERRITORY_MAX_TOKENS,

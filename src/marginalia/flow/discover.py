@@ -163,7 +163,7 @@ def discover(
     # written — but the row must exist before any *judging* happens, which is
     # what the ordering rule is protecting. A crash during brief-writing leaves
     # no run, and also no decisions to explain.
-    brief = judge.write_brief(topic)
+    brief = judge.write_brief(topic, max_tokens=config.discover.brief_max_tokens)
 
     ledger.start_run(
         run_id,

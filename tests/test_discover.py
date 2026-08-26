@@ -161,11 +161,13 @@ class FakeJudge:
         # trusting it.
         self.territory_seen: list[object] = []
         self.full_territory_seen: list[object] = []
+        self.brief_max_tokens_seen: int | None = None
 
     def prompt(self, name):
         return FakePrompt()
 
-    def write_brief(self, topic: str) -> Brief:
+    def write_brief(self, topic: str, *, max_tokens=None) -> Brief:
+        self.brief_max_tokens_seen = max_tokens
         return BRIEF
 
     def expand_queries(self, brief, *, count=9, concepts=()):
@@ -2407,3 +2409,19 @@ def test_a_duplicate_query_is_not_reported_as_a_rejected_filter(
 
     assert outcome.rounds[0].duplicates_skipped == 1
     assert outcome.rounds[0].filters_rejected == 0
+
+
+def test_the_brief_calls_get_their_own_ceiling(
+    config, ledger, library, client, searches
+) -> None:
+    """Fourth task on this provider to overrun the global ceiling, and the
+    quietest: a truncated review falls back to the unreviewed draft with one
+    warning line, so every verdict in that run is measured against a brief whose
+    gaps were never closed."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge()
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.brief_max_tokens_seen == config.discover.brief_max_tokens
+    assert config.discover.brief_max_tokens > config.llm.max_tokens
