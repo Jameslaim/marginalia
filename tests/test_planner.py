@@ -865,3 +865,66 @@ def test_a_baseline_ignores_queries_and_recommendations() -> None:
     baseline = parse_baseline(text)
 
     assert [i.part for i in baseline.items] == ["shows code"]
+
+
+# -- "REVISE: none" is an answer, not a defect ---------------------------------
+#
+# The prompt asks for a REVISE line, and a round that needs no map change is the
+# common case. Refusing it filed "unreadable revision 'none'" into
+# `plans.problem` on a run where nothing had gone wrong — and that column is
+# what anyone later reads to decide whether the planner is healthy.
+
+def _reply(revise: str) -> str:
+    return (
+        "COVERAGE: shows configuration | YES | the pgbouncer walkthrough\n"
+        "QUERY: pgbouncer pool sizing\n"
+        "FROM: gap - sizing\n"
+        f"REVISE: {revise}\n"
+        "RECOMMENDATION: CONTINUE - one item still open\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "revise",
+    ["none", "None", "None.", "**none**", "no changes", "no revisions", "n/a", "-"],
+)
+def test_declining_to_revise_the_map_is_not_a_problem(revise: str) -> None:
+    plan = parse_plan(_reply(revise), round_number=1)
+
+    assert plan.revisions == []
+    assert plan.parsed is True
+    assert plan.problem == ""
+
+
+def test_a_real_revision_still_parses() -> None:
+    """The fix must not swallow the case the line exists for."""
+    plan = parse_plan(_reply("add vocabulary: PgCat"), round_number=1)
+
+    assert [(r.action, r.kind, r.term) for r in plan.revisions] == [
+        (REVISE_ADD, REVISE_VOCABULARY, "PgCat")
+    ]
+    assert plan.problem == ""
+
+
+def test_a_genuinely_unreadable_revision_is_still_reported() -> None:
+    """Accepting "none" must not become accepting anything. A line that meant to
+    revise and could not be read is still a defect worth recording."""
+    plan = parse_plan(_reply("frobnicate the map"), round_number=1)
+
+    assert plan.revisions == []
+    assert "unreadable revision" in plan.problem
+
+
+def test_no_revise_line_at_all_is_also_silent() -> None:
+    """Omitting the line and writing "none" mean the same thing, and neither is
+    a problem — otherwise the fix would only move the noise."""
+    reply = (
+        "COVERAGE: shows configuration | YES | the walkthrough\n"
+        "QUERY: pgbouncer pool sizing\n"
+        "RECOMMENDATION: CONTINUE - one item still open\n"
+    )
+
+    plan = parse_plan(reply, round_number=1)
+
+    assert plan.revisions == []
+    assert plan.problem == ""

@@ -98,6 +98,21 @@ _REVISE_RE = re.compile(
 
 _RECOMMEND_RE = re.compile(r"^\s*\**\s*(CONTINUE|STOP)\b\**\s*[-–—:]?\s*(.*)$", re.IGNORECASE)
 
+# `REVISE: none` — the planner saying, correctly, that it wants no map changes.
+# **Wanting nothing is an answer, not a malformed one.** The prompt asks for a
+# REVISE line and a round needing no revision is the common case, so refusing
+# this filed "unreadable revision 'none'" into `plans.problem` on a run where
+# nothing had gone wrong. That column is what anyone later reads to judge whether
+# the planner is healthy, and a parser that records the normal case as a defect
+# makes the column useless for exactly that.
+_NO_REVISION = frozenset(
+    {
+        "", "-", "--", "n/a", "na", "no", "none", "nothing",
+        "no change", "no changes", "no revision", "no revisions",
+        "none needed", "none required", "no map changes",
+    }
+)
+
 # Ceilings. One over-enthusiastic reply must not become thirty searches at a
 # hundred quota units each, and truncation is logged rather than silent.
 _MAX_QUERIES = 12
@@ -163,9 +178,14 @@ def parse_plan(text: str, *, round_number: int) -> RoundPlan:
         nonlocal pending_revise
         if pending_revise is None:
             return
-        match = _REVISE_RE.match(pending_revise["REVISE"])
+        body = pending_revise["REVISE"]
+        if _means_no_revision(body):
+            # Not a problem, and not a revision either. The planner answered.
+            pending_revise = None
+            return
+        match = _REVISE_RE.match(body)
         if match is None:
-            problems.append(f"unreadable revision {pending_revise['REVISE']!r}")
+            problems.append(f"unreadable revision {body!r}")
             pending_revise = None
             return
         action = match.group(1).lower()
@@ -294,6 +314,17 @@ def parse_baseline(text: str, *, notes_read: int = 0) -> LibraryCoverage:
         parsed=not problems and bool(items),
         problem="; ".join(problems[:3]) or ("no coverage lines in the reply" if not items else ""),
     )
+
+
+def _means_no_revision(body: str) -> bool:
+    """Is this REVISE line the planner declining to change the map?
+
+    Stripped of the decoration a model puts around a one-word answer — quotes,
+    asterisks, brackets, a trailing full stop. A bare "none" can never be a real
+    revision anyway: the grammar is `add|remove concept|vocabulary: <term>`, so
+    nothing that means "no changes" could ever have parsed as one.
+    """
+    return body.strip().strip("*_\"'()[]. ").lower() in _NO_REVISION
 
 
 def _parse_coverage(body: str) -> CoverageItem | None:
