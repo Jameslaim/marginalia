@@ -525,3 +525,58 @@ def test_the_json_says_no_plan_rather_than_an_empty_one(stubbed, capsys) -> None
     main(["discover", "prompt caching", "--json"])
 
     assert json.loads(capsys.readouterr().out)["rounds"][0]["plan"] is None
+
+
+def test_the_run_summary_does_not_call_a_duplicate_query_a_rejected_filter() -> None:
+    """The sibling of the round-line fix, and it survived one commit longer.
+
+    A run whose only refusal was a duplicate query announced "1 filter rejected
+    before executing" — the opposite of what happened. No filter was refused;
+    one search did not run.
+    """
+    from marginalia.cli import _territory_lines
+    from marginalia.contracts import (
+        DiscoverRun,
+        FILTER_FIELD_QUERY,
+        FilterRejection,
+        TerritoryMap,
+    )
+
+    run = DiscoverRun(
+        run_id="r", topic="t", brief=BRIEF, model="m",
+        territory=TerritoryMap(topic="t", version="1"),
+        rejected_filters=[
+            FilterRejection("a query", FILTER_FIELD_QUERY, "a query",
+                            "identical query and filters already run this round"),
+        ],
+    )
+
+    lines = "\n".join(_territory_lines(run))
+
+    assert "filters:  0 rejected before executing" in lines
+    assert "1 quer(ies) skipped as already run" in lines
+
+
+def test_a_genuinely_refused_filter_is_still_named_in_the_run_summary() -> None:
+    from marginalia.cli import _territory_lines
+    from marginalia.contracts import (
+        DiscoverRun,
+        FILTER_PUBLISHED_AFTER,
+        FilterRejection,
+        TerritoryMap,
+    )
+
+    run = DiscoverRun(
+        run_id="r", topic="t", brief=BRIEF, model="m",
+        territory=TerritoryMap(topic="t", version="1"),
+        rejected_filters=[
+            FilterRejection("a query", FILTER_PUBLISHED_AFTER, "2027-01-01",
+                            "recency was not reasoned"),
+        ],
+    )
+
+    lines = "\n".join(_territory_lines(run))
+
+    assert "filters:  1 rejected before executing" in lines
+    assert "would have excluded" in lines
+    assert "skipped as already run" not in lines

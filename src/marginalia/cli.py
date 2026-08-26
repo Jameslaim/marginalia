@@ -360,8 +360,15 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
 
     # Printed even at zero, like the unparsed count, so the number is
     # trustworthy on the day it is not zero.
-    lines.append(f"filters:  {len(run.rejected_filters)} rejected before executing")
-    for rejection in run.rejected_filters[:5]:
+    #
+    # Split the same way the round line is. This renderer had the same bug and
+    # kept it one commit longer: a run whose only refusal was a duplicate query
+    # announced "1 filter rejected before executing", which is the opposite of
+    # what happened — no filter was refused, and one search did not run.
+    refused = [item for item in run.rejected_filters if not item.is_duplicate_query]
+    duplicates = [item for item in run.rejected_filters if item.is_duplicate_query]
+    lines.append(f"filters:  {len(refused)} rejected before executing")
+    for rejection in refused[:5]:
         # Whether the refusal prevented an *exclusion* is what a reader wants
         # first. A rejected `order` cost that query some ranking; a rejected
         # `publishedAfter` or `videoDuration` stopped content disappearing
@@ -370,6 +377,14 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
         lines.append(
             f"          {rejection.field}={rejection.value} on {rejection.query!r}"
             f"{excludes} — {rejection.reason}"
+        )
+
+    if duplicates:
+        # Its own line, and only when it happened. A duplicate skipped is a
+        # search that did not run because an identical one already had — worth
+        # seeing, and not a filter refusal.
+        lines.append(
+            f"dupes:    {len(duplicates)} quer(ies) skipped as already run this round"
         )
 
     exclusive = [
