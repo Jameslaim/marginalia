@@ -43,6 +43,7 @@ from marginalia.core.ledger import (
     Ledger,
     LedgerError,
     in_library,
+    quota_day,
     skip_reason,
     wanted_for_a_note,
 )
@@ -1266,3 +1267,76 @@ def test_a_run_with_no_planning_has_no_plans(ledger: Ledger) -> None:
     runs — dry, single-round, budget-stopped — that never plan at all."""
     ledger.start_run("run1", "t", brief="B")
     assert ledger.plans_for_run("run1") == []
+
+
+# -- the quota day is the API's, not UTC --------------------------------------
+#
+# The YouTube Data API resets at midnight Pacific. Keying this table to UTC meant
+# that for ~7-8 hours a day the counter reported an allowance Google had not
+# granted. Run `7da933b180fd` began 05:51 UTC, read 3,308 of 10,000 locally, and
+# was refused on its second query.
+
+
+@pytest.mark.parametrize(
+    "utc,expected",
+    [
+        # The run that exposed this: 05:51 UTC on the 27th is still the 26th in
+        # Pacific, where the allowance had already been spent.
+        ("2026-08-27T05:51:00+00:00", "2026-08-26"),
+        # After the Pacific rollover (07:00 UTC in summer) the day advances.
+        ("2026-08-27T07:30:00+00:00", "2026-08-27"),
+        # Winter: the offset is -8, so the rollover is 08:00 UTC.
+        ("2026-01-15T07:30:00+00:00", "2026-01-14"),
+        ("2026-01-15T08:30:00+00:00", "2026-01-15"),
+        # The DST switch itself, which is why this is derived from the rule and
+        # not a fixed offset. The same wall-clock UTC time falls on different
+        # quota days either side of it: daylight starts the 2nd Sunday in March
+        # (2026-03-08), so 07:30 UTC is the previous day before and the same day
+        # after.
+        ("2026-03-08T07:30:00+00:00", "2026-03-07"),
+        ("2026-03-09T07:30:00+00:00", "2026-03-09"),
+        # Going the other way, daylight ends the 1st Sunday in November, so
+        # 07:30 UTC lands on the 1st on both sides — the rollover has moved an
+        # hour later and no longer happens before this time.
+        ("2026-11-01T07:30:00+00:00", "2026-11-01"),
+        ("2026-11-02T07:30:00+00:00", "2026-11-01"),
+    ],
+)
+def test_the_quota_day_follows_pacific_not_utc(utc: str, expected: str) -> None:
+    from datetime import datetime
+
+    assert quota_day(datetime.fromisoformat(utc)) == expected
+
+
+def test_a_refusal_is_recorded_and_outranks_the_local_count(ledger: Ledger) -> None:
+    """Google's 429 is a fact; `units_used` is an estimate built from published
+    per-call costs. When they disagree the estimate is wrong."""
+    ledger.spend_quota("youtube_api", 3308)
+    assert ledger.quota_exhausted("youtube_api") is False
+
+    ledger.mark_quota_exhausted("youtube_api")
+
+    assert ledger.quota_exhausted("youtube_api") is True
+    assert ledger.quota_used("youtube_api") == 3308, "the estimate is kept, not rewritten"
+
+
+def test_exhaustion_is_scoped_to_the_quota_day(ledger: Ledger) -> None:
+    """It lifts when the API's day rolls over, not when ours does."""
+    ledger.mark_quota_exhausted("youtube_api", date="2026-08-26")
+
+    assert ledger.quota_exhausted("youtube_api", date="2026-08-26") is True
+    assert ledger.quota_exhausted("youtube_api", date="2026-08-27") is False
+
+
+def test_recording_exhaustion_twice_keeps_the_first_time(ledger: Ledger) -> None:
+    ledger.mark_quota_exhausted("youtube_api")
+    first = ledger._conn.execute(
+        "SELECT exhausted_at FROM quota WHERE provider = ?", ("youtube_api",)
+    ).fetchone()["exhausted_at"]
+
+    ledger.mark_quota_exhausted("youtube_api")
+
+    again = ledger._conn.execute(
+        "SELECT exhausted_at FROM quota WHERE provider = ?", ("youtube_api",)
+    ).fetchone()["exhausted_at"]
+    assert again == first

@@ -27,7 +27,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from dataclasses import dataclass, fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Sequence
@@ -62,6 +62,7 @@ __all__ = [
     "normalise_topic",
     "in_library",
     "wanted_for_a_note",
+    "quota_day",
     "FAIL_PERMANENT",
     "FAIL_TRANSIENT",
     "STAGE_SEARCH",
@@ -145,8 +146,12 @@ CREATE INDEX IF NOT EXISTS idx_decisions_run   ON decisions(run_id);
 
 CREATE TABLE IF NOT EXISTS quota (
   provider   TEXT NOT NULL,
-  date       TEXT NOT NULL,   -- UTC calendar date, YYYY-MM-DD
+  date       TEXT NOT NULL,   -- the API's own quota day (Pacific), YYYY-MM-DD
   units_used INTEGER NOT NULL DEFAULT 0,
+  -- When the API itself said the day was spent. Authoritative over
+  -- `units_used`: the local count is an estimate, and Google's refusal is a
+  -- fact. Set once, and every later call that day refuses before sending.
+  exhausted_at TEXT,
   PRIMARY KEY (provider, date)
 );
 
@@ -238,6 +243,7 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # every run made before the planner had a coverage baseline, which is
     # the honest answer: nobody asked.
     ("runs", "library_baseline", "TEXT"),
+    ("quota", "exhausted_at", "TEXT"),
 )
 
 # Tables an older marginalia created that no longer exist. Their presence is
@@ -250,6 +256,60 @@ _LEGACY_TABLES: dict[str, str] = {
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+# The YouTube Data API's daily quota resets at **midnight Pacific**, not at
+# midnight UTC. Keying the quota table to UTC meant that for the ~7-8 hours
+# between 00:00 UTC and the Pacific rollover, the local counter reported a fresh
+# allowance Google had not yet granted.
+#
+# Measured on run `7da933b180fd`, which began 05:51 UTC — 22:51 the previous day
+# in Pacific: the local ledger read 3,308 of 10,000 used while Google returned
+# HTTP 429 "Quota exceeded for ... 'Search Queries per day'". 25 of 33 queries
+# fell through to the unfiltered overflow provider, and the map's correctly
+# reasoned 12-month recency window went unapplied on all of them.
+#
+# **Derived from the rule, not from a fixed offset**, so the eight weeks a year
+# when Pacific is UTC-8 rather than UTC-7 are handled. `zoneinfo` would be
+# better, but Windows ships no IANA database and `tzdata` is a fourth dependency
+# this project does not have. US Pacific has observed the same rule since 2007:
+# daylight time from the second Sunday in March to the first Sunday in November.
+# If Congress ever settles the perennial bill to abolish the switch, this is the
+# function to change and `tests/test_ledger.py` pins the boundaries.
+_PACIFIC_STANDARD_OFFSET = timedelta(hours=-8)
+_PACIFIC_DAYLIGHT_OFFSET = timedelta(hours=-7)
+
+
+def _nth_weekday(year: int, month: int, weekday: int, nth: int) -> datetime:
+    """The ``nth`` ``weekday`` of a month, as a naive UTC-less datetime."""
+    first = datetime(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (nth - 1))
+
+
+def _pacific_is_daylight(moment: datetime) -> bool:
+    """Is this UTC instant inside US Pacific daylight time?
+
+    The switch happens at 02:00 *local*, which is 10:00 UTC in March (from
+    standard time) and 09:00 UTC in November (from daylight time).
+    """
+    year = moment.year
+    start = _nth_weekday(year, 3, 6, 2) + timedelta(hours=10)
+    end = _nth_weekday(year, 11, 6, 1) + timedelta(hours=9)
+    naive = moment.replace(tzinfo=None)
+    return start <= naive < end
+
+
+def quota_day(now: datetime | None = None) -> str:
+    """The calendar date the API is currently counting against, ``YYYY-MM-DD``.
+
+    Public because it is the answer to "which row am I spending from?", and that
+    question is asked from outside the ledger whenever a report wants to say how
+    much of today's allowance is gone.
+    """
+    moment = now or datetime.now(timezone.utc)
+    offset = _PACIFIC_DAYLIGHT_OFFSET if _pacific_is_daylight(moment) else _PACIFIC_STANDARD_OFFSET
+    return (moment + offset).strftime("%Y-%m-%d")
 
 
 def _utctoday() -> str:
@@ -399,7 +459,7 @@ class PlanRow:
 _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "videos": frozenset(field.name for field in fields(VideoRow)),
     "decisions": frozenset(field.name for field in fields(DecisionRow)),
-    "quota": frozenset({"provider", "date", "units_used"}),
+    "quota": frozenset({"provider", "date", "units_used", "exhausted_at"}),
     "runs": frozenset(field.name for field in fields(RunRow)),
     # B4 gave the table a writer and a reader, so it gets a dataclass like the
     # rest. Until then the columns were listed by hand here, deliberately: a row
@@ -1209,7 +1269,7 @@ class Ledger:
     def quota_used(self, provider: str, *, date: str | None = None) -> int:
         row = self._conn.execute(
             "SELECT units_used FROM quota WHERE provider = ? AND date = ?",
-            (provider, date or _utctoday()),
+            (provider, date or quota_day()),
         ).fetchone()
         return int(row["units_used"]) if row is not None else 0
 
@@ -1223,7 +1283,7 @@ class Ledger:
         """
         if units < 0:
             raise ValueError(f"units must not be negative, got {units}")
-        today = date or _utctoday()
+        today = date or quota_day()
         with self._conn:
             self._conn.execute(
                 """
@@ -1236,6 +1296,47 @@ class Ledger:
         total = self.quota_used(provider, date=today)
         log.info("quota: %s spent %d, %d used on %s", provider, units, total, today)
         return total
+
+    def mark_quota_exhausted(self, provider: str, *, date: str | None = None) -> None:
+        """Record that the API itself refused for the rest of its quota day.
+
+        **Google's refusal outranks the local counter.** `units_used` is an
+        estimate built from published per-call costs; a 429 naming the daily
+        limit is the service stating a fact. When the two disagree the estimate
+        is wrong, whatever it reads — as on run `7da933b180fd`, where the ledger
+        said 3,308 of 10,000 while every request was being refused.
+
+        Recording it stops the run paying for refusals. Charging before a
+        request is right (rule 6's ordering, so a crash over-counts rather than
+        under-counts), but continuing to charge *after* the service has said no
+        is spending against a budget that is not there: that run burned ~3,300
+        units on requests that returned nothing.
+        """
+        today = date or quota_day()
+        when = _utcnow()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO quota (provider, date, units_used, exhausted_at) VALUES (?, ?, 0, ?)
+                ON CONFLICT(provider, date) DO UPDATE SET
+                    exhausted_at = COALESCE(quota.exhausted_at, excluded.exhausted_at)
+                """,
+                (provider, today, when),
+            )
+        log.warning(
+            "quota: %s reported its daily quota exhausted; no further metered "
+            "calls will be sent until %s rolls over",
+            provider,
+            today,
+        )
+
+    def quota_exhausted(self, provider: str, *, date: str | None = None) -> bool:
+        """Has the API already refused today? Checked before spending anything."""
+        row = self._conn.execute(
+            "SELECT exhausted_at FROM quota WHERE provider = ? AND date = ?",
+            (provider, date or quota_day()),
+        ).fetchone()
+        return bool(row and row["exhausted_at"])
 
     # -- internals ---------------------------------------------------------
 

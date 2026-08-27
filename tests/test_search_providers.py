@@ -31,6 +31,7 @@ from marginalia.providers.youtube_api import (
     VIDEOS_COST,
     HttpStatusError,
     YouTubeApiProvider,
+    _classify,
     _duration_seconds,
 )
 
@@ -42,10 +43,11 @@ def fixture(name: str) -> bytes:
 
 
 class FakeQuota:
-    """The three lines of the ledger a metered provider is allowed to see."""
+    """The few lines of the ledger a metered provider is allowed to see."""
 
-    def __init__(self, used: int = 0) -> None:
+    def __init__(self, used: int = 0, exhausted: bool = False) -> None:
         self.used = used
+        self.exhausted = exhausted
 
     def quota_used(self, provider: str) -> int:
         return self.used
@@ -53,6 +55,12 @@ class FakeQuota:
     def spend_quota(self, provider: str, units: int) -> int:
         self.used += units
         return self.used
+
+    def quota_exhausted(self, provider: str) -> bool:
+        return self.exhausted
+
+    def mark_quota_exhausted(self, provider: str) -> None:
+        self.exhausted = True
 
 
 class FakeTransport:
@@ -600,3 +608,72 @@ def test_the_ytdlp_search_provider_parses_chapters_when_it_has_them() -> None:
 
     assert result is not None
     assert [c["title"] for c in result.chapters] == ["Intro", "Middle", "Later", "End"]
+
+
+# -- a 429 naming the daily cap stops the run spending ------------------------
+#
+# Run `7da933b180fd` paid 100 units for each of 25 refusals because Google's
+# `rateLimitExceeded` was read as ordinary throttling. The local ledger said
+# 3,308 of 10,000 while every request came back refused.
+
+
+def _daily_quota_429() -> HttpStatusError:
+    detail = (
+        "Quota exceeded for quota metric 'Search Queries' and limit "
+        "'Search Queries per day' of service 'youtube.googleapis.com'"
+    )
+    body = json.dumps(
+        {
+            "error": {
+                "errors": [{"reason": "rateLimitExceeded", "message": detail}],
+                "message": detail,
+            }
+        }
+    ).encode()
+    return HttpStatusError(429, body)
+
+
+def test_a_daily_quota_429_is_exhaustion_not_throttling() -> None:
+    """Google uses one reason string for both. Only the message separates them,
+    and they need opposite responses: back off, or stop for the day."""
+    assert isinstance(_classify(_daily_quota_429()), QuotaExhausted)
+
+
+def test_an_ordinary_429_is_still_transient() -> None:
+    body = json.dumps(
+        {
+            "error": {
+                "errors": [{"reason": "rateLimitExceeded", "message": "Too many requests"}],
+                "message": "Too many requests",
+            }
+        }
+    ).encode()
+
+    assert isinstance(_classify(HttpStatusError(429, body)), TransientError)
+
+
+def test_the_run_stops_paying_for_refusals_after_a_daily_429(tmp_path) -> None:
+    """The gate. One refusal is recorded, and every later search that day is
+    refused locally — before a request is sent and before a unit is charged."""
+    from marginalia.core.ledger import Ledger
+
+    with Ledger(tmp_path / "ledger.db") as ledger:
+        provider, transport = api(
+            *[_daily_quota_429() for _ in range(6)], quota=ledger, daily_units=10_000
+        )
+
+        with pytest.raises(QuotaExhausted):
+            provider.search("langchain", limit=10)
+        charged_once = ledger.quota_used(provider.name)
+        assert charged_once == SEARCH_COST, "the first attempt is charged, per rule 6"
+
+        for _ in range(5):
+            with pytest.raises(QuotaExhausted):
+                provider.search("langchain", limit=10)
+
+        assert len(transport.urls) == 1, "only the first refusal reaches the network"
+        assert ledger.quota_used(provider.name) == charged_once, (
+            "nothing further is charged once the API has said no"
+        )
+        assert ledger.quota_exhausted(provider.name) is True
+        assert provider.quota_remaining() == 0, "the round-level guard sees it too"

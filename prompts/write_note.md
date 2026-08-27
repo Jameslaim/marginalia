@@ -1,11 +1,12 @@
 ---
 name: write_note
-version: "4"
+version: "5"
 stage: note
-note: "v4 is a regeneration marker, not a prompt change — the text is identical
-  to v3. Bumped so that every stored note goes stale and the library is re-noted
-  in one pass under a new provider, keeping note_version honest about which
-  generation of notes a row holds. Any real edit to the text below takes v5."
+note: "v5 adds the `How current is it` section. Measured need: of 24 LangChain
+  videos kept in run 7da933b180fd, only 11 notes carried any era marker, and
+  those only because the video happened to discuss its own version. A 2023
+  pre-0.1 tutorial sat in the library described as current. The date was already
+  in the prompt and nothing asked the note to use it."
 ---
 
 You have read one video end to end. Write down what you understood, for a
@@ -38,6 +39,7 @@ heading on its own line, spelled exactly as written here:
 ## Claims
 ## Wrong or shaky
 ## Assumes you know
+## How current is it
 ## Leaves out
 ## Key moments
 ## Who's talking, what they want
@@ -113,6 +115,35 @@ acronyms that appear without ever being defined, and collect them. They are
 easy to read straight past, because by the end of a transcript every term in it
 feels familiar. A term the speaker uses once, in passing, as though everyone
 knows it is exactly what this section is for.
+
+**How current is it** — whether what this video teaches still holds.
+
+You are given `PUBLISHED`. Use it. A video is not wrong because it is old, and
+that is exactly what makes this hard: an obsolete tutorial is accurate about a
+world that has moved, and its transcript never announces the fact. A reader who
+cannot tell which era they are looking at will follow it anyway.
+
+So, where the video teaches something version-sensitive — a library API, a tool,
+a model name, a price, a limit, a practice — say which era it belongs to and
+**how a reader can tell from the video itself**. The tells are concrete: a
+version number said aloud or shown on screen, an import path, a class or method
+name, a UI that no longer looks like that, a price quoted per million tokens.
+Name the tell, not just the conclusion.
+
+Judge from the transcript and the date. **Do not judge from what you know about
+the subject.** If you believe a named API is superseded, that belief is outside
+knowledge and must be marked `[note: ...]` like any other — a reader has to be
+able to tell "this video says it is using v0.1" from "I think this is old". If
+the video gives no version signal at all, say that. *"Published 2023-11; the
+transcript names no version and shows no import paths, so its era cannot be
+established from the video"* is a complete and useful answer.
+
+Where content is plainly time-bound — pricing, model names, library APIs, rate
+limits — say so and say what a reader would need to re-check before relying on
+it.
+
+If nothing in the video is version-sensitive, write one line saying so. A
+tutorial on a stable idea does not need a caveat invented for it.
 
 **Leaves out** — the most valuable section. Objections never addressed.
 Questions raised and dropped. The obvious follow-up never taken. Where the

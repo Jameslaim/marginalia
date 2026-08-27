@@ -488,6 +488,43 @@ document whose gaps were never closed, and nothing downstream can tell.
 The corollary for anything added later: a new call that emits a structured
 document is assumed to have this problem until measured, not assumed not to.
 
+### Outside knowledge in stage 2 — one marked exception
+
+Stage 2 is told to use only the evidence supplied, and B3 measured what happens
+otherwise: three videos kept on reasons describing numbers their transcripts do
+not contain. That rule stands.
+
+**Currency is the exception, and it is marked rather than banned.** On the
+`langchain` run, 16 of 67 stage-2 rejections named a deprecated API — *"a
+deprecated pre-0.1 LangChain API (VectorStoreIndexCreator, from
+langchain.indexes) presented as current"*. Those rejections are correct and the
+library is better for them. They are also outside knowledge by construction: no
+transcript states that an import path has been superseded, and none can.
+
+Banning it would discard a real signal on the one axis where a transcript cannot
+speak for itself. Leaving it unacknowledged is worse, because it was already
+being applied inconsistently — `WyjaHXbSxBY` was rejected for
+`create_stuff_documents_chain` and `create_retrieval_chain` while `-Ueh5XBpcoY`
+was kept on a reason naming those same two calls without flagging them.
+
+So the reason must say so, in the convention the note prompt already uses:
+
+```
+REASON: teaches a pre-0.1 API surface [outside knowledge: these import paths
+were superseded]
+```
+
+That makes it **countable**: `grep '\[outside knowledge' ` over `decisions.reason`
+says how often era judgement is carrying a verdict, and comparing the marker's
+rate on keeps against rejections says whether it is being used to exclude only.
+The scope is currency and nothing else — an unmarked gap in the transcript is
+still an absence, never something known from elsewhere.
+
+**The pressure on this is reduced by fixing the quota day.** Era is properly
+enforced by `publishedAfter`, which is deterministic and auditable. The judge
+was only doing this job because 25 of 33 queries fell through to a provider that
+applies no filters, so the map's correctly reasoned 12-month window never ran.
+
 ### Decision logging — required from day one
 
 Every judgment is logged with its reason:

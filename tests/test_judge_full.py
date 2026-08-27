@@ -399,3 +399,27 @@ def test_both_judging_prompts_state_the_vocabulary_rule() -> None:
         assert "never, on its own, a reason to keep" in text
         assert "The brief decides what counts as relevant" in text
         assert "LangChain" in text, "the rule needs its worked example"
+
+
+def _full_prompt_text() -> str:
+    from marginalia.brain.judge import FULL_PROMPT
+    from marginalia.llm import load_prompt, prompts_dir
+
+    return load_prompt(FULL_PROMPT, directory=prompts_dir()).text
+
+
+def test_the_prompt_permits_marked_outside_knowledge_about_currency() -> None:
+    """Stage 2 rejects videos for deprecated APIs by recognising import paths —
+    correct, useful, and outside knowledge no transcript can supply. Marked
+    rather than banned, so `grep` over `decisions.reason` can count it."""
+    text = _full_prompt_text()
+
+    assert "[outside knowledge:" in text
+    assert "current" in text.lower()
+
+
+def test_the_prompt_still_forbids_unmarked_invention() -> None:
+    """The exception is scoped to currency. An unknown remains an absence."""
+    text = _full_prompt_text().lower()
+
+    assert "reason must come from the transcript above" in text

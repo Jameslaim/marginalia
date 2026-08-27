@@ -532,3 +532,27 @@ def test_a_bulk_run_leaves_a_rejected_video_alone(tmp_path: Path) -> None:
 
     assert [r.video_id for r in run.results if r.outcome == NOTED] == ["aaaaaaaaaaa"]
     assert not library.has_note("bbbbbbbbbbb")
+
+
+def test_a_note_without_the_currency_section_is_refused() -> None:
+    """v5. Required rather than optional, because the videos most needing it are
+    the ones giving no version signal — exactly where a model would skip it."""
+    sections = {name: "something" for name in REQUIRED_SECTIONS if name != "How current is it"}
+    text = "\n".join(f"## {name}\n\n{body}\n" for name, body in sections.items())
+
+    with pytest.raises(NoteInvalid) as caught:
+        validate_note(text)
+
+    assert "How current is it" in str(caught.value)
+
+
+def test_the_note_prompt_asks_the_currency_question() -> None:
+    """The date was already in the prompt; nothing asked the note to use it, so
+    11 of 24 LangChain notes recorded era and only by accident."""
+    from marginalia.llm import load_prompt, prompts_dir
+
+    text = load_prompt("write_note", directory=prompts_dir()).text
+
+    assert "PUBLISHED" in text
+    assert "How current is it" in text
+    assert "outside knowledge" in text.lower(), "era claims must be markable"

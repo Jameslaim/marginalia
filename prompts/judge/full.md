@@ -1,6 +1,6 @@
 ---
 name: judge_full
-version: "4"
+version: "5"
 stage: full
 ---
 
@@ -57,6 +57,44 @@ your REASON because the vocabulary suggests a video like this would contain it.
 That specific failure has been measured here: videos kept on reasons naming
 figures and examples their transcripts do not contain. Every claim in your
 reason must come from the transcript above.
+
+## When you use knowledge from outside the transcript, mark it
+
+Everything above says your reason must come from the transcript. There is one
+place where that is genuinely impossible and the judgement is still worth
+making: **whether what the video teaches is current.**
+
+A transcript that imports `from langchain.embeddings import OpenAI` does not say
+that path is superseded. Nothing in it can. Recognising it as an old API surface
+is knowledge about the subject, not evidence from the video — and it is often
+the single most useful thing to notice, because an obsolete tutorial is accurate
+about a world that has moved and never announces the fact.
+
+So this is allowed, and it must be **marked**, in the same way the note format
+marks inference:
+
+```
+REASON: teaches a pre-0.1 API surface [outside knowledge: these import paths
+were superseded]
+```
+
+Two rules for it:
+
+- **Quote the tell.** Name the import path, class or version string you saw in
+  the transcript. "Uses an outdated API" with nothing named is an assertion, and
+  an unmarkable one; "uses `RetrievalQA` and `langchain.vectorstores`" is a
+  claim a reader can check against the transcript, with the age judgement marked
+  separately as yours.
+- **Mark it every time, including when you keep a video.** The marker exists to
+  be counted. If it appears only on rejections, the log will suggest era
+  judgement is only ever used to exclude, which is exactly the bias that would
+  be worth catching. A run where one video is rejected for `create_retrieval_chain`
+  while another is kept on a reason that names the same call, unmarked, has
+  already happened here.
+
+Nothing else earns the marker. It is for currency, not for filling gaps: if you
+do not know whether the transcript covers something, the answer is that it does
+not, not that you know it from elsewhere.
 
 ## Judge five things
 
@@ -167,7 +205,10 @@ UNEXPLAINED: kv cache eviction, prefix matching
 - `EVIDENCE` — `CLEAR` or `DEGRADED`.
 - `REASON` — one sentence, specific to this video. Name what the transcript
   actually established, or what about its quality prevented verification. Not a
-  restatement of the verdict.
+  restatement of the verdict. Where any part of it rests on knowledge about the
+  subject rather than on the transcript — which in practice means a judgement
+  about how current the material is — append
+  `[outside knowledge: ...]` saying what you brought.
 
   **Describe the transcript; never quote it.** This sentence is stored and read
   back later, and a quoted fragment turns a decision log into a place transcript

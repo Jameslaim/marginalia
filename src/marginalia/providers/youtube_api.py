@@ -69,6 +69,11 @@ _DURATION_RE = re.compile(
 _QUOTA_REASONS = frozenset({"quotaExceeded", "dailyLimitExceeded", "userRateLimitExceeded"})
 _TRANSIENT_REASONS = frozenset({"rateLimitExceeded", "backendError", "internalError"})
 
+# Google's daily-cap message, e.g. "Quota exceeded for quota metric 'Search
+# Queries' and limit 'Search Queries per day'". Matched on the message because
+# the `reason` field does not distinguish it from ordinary throttling.
+_MENTIONS_DAILY_QUOTA = re.compile(r"quota exceeded|per day|daily limit", re.IGNORECASE)
+
 
 class HttpStatusError(Exception):
     """A non-2xx response, with its body — the body carries the real reason."""
@@ -153,6 +158,12 @@ class YouTubeApiProvider:
     def quota_remaining(self) -> int | None:
         if self._quota is None:
             return None
+        if self._quota.quota_exhausted(self.name):
+            # Zero, whatever the local estimate says. `quota_headroom` reads
+            # this to decide whether the next round is affordable, and a round
+            # planned against an allowance the API has withdrawn is a round of
+            # searches that can only fail.
+            return 0
         return max(0, self._daily_units - self._quota.quota_used(self.name))
 
     def units_per_search(self) -> int:
@@ -232,7 +243,12 @@ class YouTubeApiProvider:
         try:
             raw = self._get(url)
         except HttpStatusError as exc:
-            raise _classify(exc) from exc
+            failure = _classify(exc)
+            if isinstance(failure, QuotaExhausted) and self._quota is not None:
+                # Written down, not just raised. The next call in this run — and
+                # the next run today — must not rediscover it at 100 units a go.
+                self._quota.mark_quota_exhausted(self.name)
+            raise failure from exc
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as exc:
@@ -248,6 +264,12 @@ class YouTubeApiProvider:
             # make the call free, and the queries row should say what it cost.
             self._units_spent += cost
             return
+        if self._quota.quota_exhausted(self.name):
+            # The API already refused today. Charging and sending again would
+            # buy another 429 at 100 units a time.
+            raise QuotaExhausted(
+                f"{self.name} reported its daily quota exhausted; not sending again today"
+            )
         used = self._quota.quota_used(self.name)
         if used + cost > self._daily_units:
             raise QuotaExhausted(
@@ -370,6 +392,13 @@ def _classify(exc: HttpStatusError) -> Exception:
     if reason in _QUOTA_REASONS:
         return QuotaExhausted(f"quota exhausted ({reason})")
     if reason in _TRANSIENT_REASONS:
+        # `rateLimitExceeded` is Google's reason string for *both* "slow down"
+        # and "you have spent the day's Search Queries". The two need opposite
+        # responses — back off, or stop entirely — and only the message tells
+        # them apart. Run `7da933b180fd` took the daily kind for the transient
+        # kind and paid 100 units for each of 25 refusals.
+        if _MENTIONS_DAILY_QUOTA.search(message or ""):
+            return QuotaExhausted(f"daily quota exhausted ({reason}: {message[:90]})")
         return TransientError(f"rate limited ({reason})")
     if exc.status == 429:
         return TransientError("rate limited")
@@ -388,8 +417,13 @@ def _error_detail(body: bytes) -> tuple[str, str]:
     except (ValueError, UnicodeDecodeError, AttributeError):
         return "", ""
     errors = error.get("errors") or []
-    reason = errors[0].get("reason", "") if errors and isinstance(errors[0], dict) else ""
-    return str(reason), str(error.get("message", ""))
+    first = errors[0] if errors and isinstance(errors[0], dict) else {}
+    reason = first.get("reason", "")
+    # Google populates both the top-level message and the per-error one, and
+    # which carries the detail has varied. The daily-quota distinction is made
+    # from this string, so read whichever is present rather than assuming.
+    message = error.get("message") or first.get("message", "")
+    return str(reason), str(message)
 
 
 def _urlopen(url: str) -> bytes:

@@ -68,6 +68,11 @@ REQUIRED_SECTIONS: tuple[str, ...] = (
     "Claims",
     "Wrong or shaky",
     "Assumes you know",
+    # v5. Required, so a note that skips it fails validation and is retried
+    # rather than stored silent about era. An optional section is one the model
+    # omits on exactly the videos that most need it: the ones giving no version
+    # signal, where "I cannot tell" is the answer worth recording.
+    "How current is it",
     "Leaves out",
     "Key moments",
     "Who's talking, what they want",
