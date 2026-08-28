@@ -339,7 +339,7 @@ max_cost_usd = 5.0
 # note is the reading that spans four minutes and notices the contradiction.
 # Characters rather than tokens, because counting tokens needs a tokenizer and
 # a tokenizer is a provider-shaped dependency. ~4 chars per token.
-max_transcript_chars = 400000
+max_transcript_chars = 1000000
 
 # Room for a full note plus, on a thinking provider, the reasoning that bills
 # against the same ceiling. Raised from 8192 for DeepSeek at reasoning_effort
