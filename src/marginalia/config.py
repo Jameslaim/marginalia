@@ -167,7 +167,14 @@ DEFAULT_NOTE_MAX_COST_USD = 5.0
 DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS = 1_000_000
 # Higher than the global default: the reply is a full note, and on a provider
 # whose thinking is always on the reasoning bills against the same ceiling.
-DEFAULT_NOTE_MAX_TOKENS = 8192
+#
+# 32768 rather than 8192, and for the reason the shipped config has carried
+# since 554fda6 and this default did not: at 8192 the reasoning and the note
+# share a budget too small for both, a truncated reply loses a required
+# section, `validate_note` fails it, and three failures in a row stop the run.
+# The measurement lived in config.example.toml alone, so a machine that never
+# wrote the key got the pre-measurement number, and nothing said so.
+DEFAULT_NOTE_MAX_TOKENS = 32_768
 
 # The answering pass. Every note at once is a large input and a moderate output,
 # a shape this provider has not been measured on, so the ceiling is generous
