@@ -1,6 +1,6 @@
 ---
 name: plan_round
-version: "1"
+version: "2"
 stage: plan
 ---
 
@@ -69,13 +69,15 @@ prevent: a real run declared retrieval scoring uncovered while a note written th
 previous day held the exact formula, and the next round spent five of its six
 queries finding it a second time.
 
-**Only videos under KEPT can satisfy anything.** A video under KEPT BUT
-UNREADABLE was stored with a transcript nobody could read: it gets no note, and
-no question will ever be answered from it. Its title may look like exactly what
-a part of the brief asked for, and that is precisely the trap — the title is not
-the content, and here there is no content. Treat that part of the brief as still
-unmet, and if the same subject has nothing readable against it, say so in the
-gap and search for it again.
+**Only videos under KEPT can satisfy anything.** A video under KEPT BUT NOT
+ANSWERABLE was stored and will never be noted — either its transcript was too
+damaged to read, or it is past the note worker's length ceiling — so no question
+will ever be answered from it. The two causes differ and the consequence does
+not. Its title may look like exactly what a part of the brief asked for, and
+that is precisely the trap: the title is not the content, and here no content
+will ever be available. Treat that part of the brief as still unmet, and if the
+same subject has nothing answerable against it, say so in the gap and search for
+it again.
 
 A gap must be **specific**. "More depth needed" is not a gap. "Nothing found
 that shows cache expiry or TTL configuration" is a gap — it names a thing that

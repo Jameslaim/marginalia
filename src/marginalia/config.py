@@ -151,9 +151,20 @@ DEFAULT_FETCH_DELAY_S = 3.0
 # from discovery's even though it is the same kind of guard.
 DEFAULT_NOTE_MAX_COST_USD = 5.0
 # Characters, not tokens: counting tokens needs a tokenizer, and a tokenizer is
-# a provider-shaped dependency. ~4 chars per token puts this near 100k tokens,
-# comfortably inside any current context and a config change when it is not.
-DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS = 400_000
+# a provider-shaped dependency.
+#
+# MEASURED, after 400,000 turned out to be stale. Five transcripts in the
+# library exceeded it — four of them videos a run had judged YES and counted as
+# coverage, while `/ask` could never reach them because they would never be
+# noted. The longest, `yodh-oEFnb4` at 768,878 characters (~190k tokens, a
+# 7.6-hour course), notes in **2m05s for $0.04** and returns a valid v5 note.
+# The ceiling was costing far more than it saved.
+#
+# A million characters is roughly 250k tokens: ~30% headroom over the longest
+# transcript ever seen here, and about 5¢. The *reason* for a ceiling at all is
+# unchanged — one note is one model reading one thing whole, and past some
+# length that stops being true — but the number was guessed and is now measured.
+DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS = 1_000_000
 # Higher than the global default: the reply is a full note, and on a provider
 # whose thinking is always on the reasoning bills against the same ceiling.
 DEFAULT_NOTE_MAX_TOKENS = 8192

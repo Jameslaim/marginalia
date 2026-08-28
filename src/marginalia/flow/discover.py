@@ -888,6 +888,21 @@ def _judge_round(
             _store(library, ledger, candidate, fetched, config)
             continue
 
+        # Knowable now, and only now. The note worker refuses a transcript past
+        # its ceiling, which happens after this run has ended — so without this
+        # check the planner counts the video as coverage and `/ask` can never
+        # reach it. Four of one run's 24 keepers were in exactly that state.
+        too_long = len(_transcript_text(fetched)) > config.note.max_transcript_chars
+        if too_long:
+            report.too_long_to_note += 1
+            log.info(
+                "discover: %s is %d characters, past the note ceiling of %d; "
+                "it is stored but will never be noted",
+                candidate.video_id,
+                len(_transcript_text(fetched)),
+                config.note.max_transcript_chars,
+            )
+
         _store(library, ledger, candidate, fetched, config)
         run.stored_ids.append(candidate.video_id)
         # The other half of what the planner reads, and the half that makes
@@ -970,7 +985,9 @@ def _store(
     )
 
 
-def _judged(candidate: SearchResult, stage: str, verdict) -> JudgedVideo:
+def _judged(
+    candidate: SearchResult, stage: str, verdict, *, too_long: bool = False
+) -> JudgedVideo:
     """One decision, as the planner will be shown it.
 
     Title and reason only. **No description and no transcript** — the reason is

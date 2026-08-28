@@ -1,6 +1,6 @@
 ---
 name: judge_full
-version: "5"
+version: "6"
 stage: full
 ---
 
@@ -213,9 +213,12 @@ UNEXPLAINED: kv cache eviction, prefix matching
   **Describe the transcript; never quote it.** This sentence is stored and read
   back later, and a quoted fragment turns a decision log into a place transcript
   text lives. Write "the transcript is garbled", not the garbled words.
-- `RELEVANT` — `HH:MM:SS-HH:MM:SS` ranges, separated by semicolons, covering
-  where the brief-relevant value is. `NONE` when there is none. `UNAVAILABLE`
-  when there is useful content but the timestamps cannot be trusted.
+- `RELEVANT` — **at most five** `HH:MM:SS-HH:MM:SS` ranges, separated by
+  semicolons, covering where the brief-relevant value is. Choose the most
+  substantial five; this is a pointer to where to start watching, not an index
+  of the video. A long video does not earn more ranges — a seven-hour course
+  still gets five. `NONE` when there is none. `UNAVAILABLE` when there is useful
+  content but the timestamps cannot be trusted.
 - `UNEXPLAINED` — up to five brief-relevant terms, comma separated, or `NONE`.
 
 **Always emit all five lines.** When something does not apply the answer is the

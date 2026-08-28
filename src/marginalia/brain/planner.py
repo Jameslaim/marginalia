@@ -552,8 +552,8 @@ def render_round(
     # Falls back to this round alone when the caller gave nothing, so a direct
     # call to this function still renders something coherent.
     cumulative = list(kept_so_far) or [(report.number, video) for video in report.kept]
-    readable = [(number, v) for number, v in cumulative if not v.unreadable]
-    unreadable = [(number, v) for number, v in cumulative if v.unreadable]
+    readable = [(number, v) for number, v in cumulative if v.answerable]
+    unreadable = [(number, v) for number, v in cumulative if not v.answerable]
 
     lines.append("")
     lines.append(
@@ -566,10 +566,11 @@ def render_round(
 
     lines.append("")
     lines.append(
-        f"KEPT BUT UNREADABLE ({len(unreadable)}) — the transcript was too damaged to "
-        "read, so no note will be written and nothing can be answered from these. "
-        "They do NOT count toward coverage: treat the part of the brief they look "
-        "like they cover as still unmet."
+        f"KEPT BUT NOT ANSWERABLE ({len(unreadable)}) — no note will be written for "
+        "these, either because the transcript was too damaged to read or because it "
+        "is past the note worker's length ceiling, so nothing can ever be answered "
+        "from them. They do NOT count toward coverage: treat the part of the brief "
+        "they look like they cover as still unmet."
     )
     lines.extend(_marked_video_lines(unreadable) or ["- none"])
 

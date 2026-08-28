@@ -637,10 +637,26 @@ class JudgedVideo:
     # part of the brief was satisfied by evidence that does not exist, and stop
     # searching for the video that would actually have satisfied it.
     evidence: str = EVIDENCE_CLEAR
+    # Stored, readable, and past the note worker's ceiling — so it will never be
+    # noted, and `/ask` can never answer from it. Different cause from
+    # `unreadable`, identical consequence, and it needs its own flag for exactly
+    # the reason rule 14 gives: a video nobody could read and a video nobody
+    # will summarise are two findings, and one field holding both would report a
+    # ceiling as a caption failure.
+    too_long: bool = False
 
     @property
     def unreadable(self) -> bool:
         return self.evidence == EVIDENCE_DEGRADED
+
+    @property
+    def answerable(self) -> bool:
+        """Will a note ever exist for this video?
+
+        The question coverage actually turns on. A kept video that produces no
+        note satisfies no part of the brief however good it looked.
+        """
+        return not self.unreadable and not self.too_long
 
 
 @dataclass(frozen=True)
@@ -1069,6 +1085,9 @@ class RoundReport:
     # The provider said there is no caption track, so no fetch was attempted.
     # Nothing failed; the video was routed to ASR without being tried.
     no_captions: int = 0
+    # Kept, and past the note ceiling, so it will never be noted. Counted apart
+    # from `degraded`: the transcript was fine and the length was not.
+    too_long_to_note: int = 0
     # Kept, but stage 2 could not read the transcript well enough to be sure.
     # Not a rejection and not a clean keep — and it suppresses the note, which
     # is a consequence nobody should have to infer from a silent counter.

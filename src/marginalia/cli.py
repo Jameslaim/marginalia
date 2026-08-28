@@ -54,7 +54,7 @@ from .contracts import (
     TranscriptResult,
     VideoRow,
 )
-from .core.ids import extract_video_id
+from .core.ids import extract_video_id, is_video_id
 from .flow.discover import discover
 from .flow.export import export_run
 from .llm import LlmClient, LlmError
@@ -85,7 +85,7 @@ _SEARCH_TITLE_WIDTH = 46
 def main(argv: Sequence[str] | None = None) -> int:
     _force_utf8_output()
     parser = _build_parser()
-    args = parser.parse_args(argv)
+    args = parser.parse_args(_shield_leading_hyphen_ids(argv))
 
     _configure_console(verbose=args.verbose)
 
@@ -102,6 +102,42 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 - the CLI is the last line of defence
         log.debug("unhandled error", exc_info=True)
         return _error(f"{type(exc).__name__}: {exc}", EXIT_FAILED)
+
+
+def _shield_leading_hyphen_ids(argv: Sequence[str] | None) -> Sequence[str] | None:
+    """Let a video ID that begins with ``-`` be typed without ``--``.
+
+    **YouTube IDs may start with a hyphen** — `-Ueh5XBpcoY`, `-0czfBICp74` — and
+    roughly one ID in thirty-two does. argparse reads such a token as an option
+    and fails with "unrecognized arguments", which makes a documented command
+    (`marg note --regenerate -Ueh5XBpcoY`) unusable for those videos.
+
+    Same family as the citation repair: an ID is case-sensitive, may begin with
+    a hyphen, and must never be normalised to suit a parser. So the parser is
+    adjusted instead — a POSIX ``--`` is inserted before the first such token,
+    which is exactly what a user would have to type by hand.
+
+    Deliberately narrow. A token qualifies only if it starts with a single
+    hyphen, is exactly eleven characters, and satisfies ``is_video_id``. Every
+    real option here is either two characters (``-v``) or long-form (``--json``),
+    so no flag can collide; and ``--`` is only inserted when nothing has already
+    ended option parsing.
+    """
+    if argv is None:
+        argv = sys.argv[1:]
+    tokens = list(argv)
+    if "--" in tokens:
+        return tokens
+    for index, token in enumerate(tokens):
+        if (
+            token.startswith("-")
+            and not token.startswith("--")
+            and len(token) == 11
+            and is_video_id(token)
+        ):
+            log.debug("cli: shielding %r, a video id that begins with a hyphen", token)
+            return [*tokens[:index], "--", *tokens[index:]]
+    return tokens
 
 
 # -- commands --------------------------------------------------------------
@@ -300,6 +336,10 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             # can be trusted on its own.
             (report.overturned, "stage-1 YES overturned by the transcript"),
             (report.degraded, "degraded evidence, not noted"),
+            # Its own line, not folded into `degraded`: the transcript was fine
+            # and the length was not, and one number for both would report a
+            # ceiling as a caption failure.
+            (report.too_long_to_note, "too long to note, not answerable"),
             (report.unparsed, "broke the reply format"),
             (report.filters_rejected, "filters rejected"),
             # Named apart from the line above, because they are opposite
@@ -550,6 +590,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "already_held": report.already_held,
                 "no_captions": report.no_captions,
                 "degraded": report.degraded,
+                "too_long_to_note": report.too_long_to_note,
                 "unparsed": report.unparsed,
             }
             for report in run.rounds

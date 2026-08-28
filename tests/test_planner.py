@@ -95,7 +95,8 @@ def _round(number=1, **kwargs) -> RoundReport:
 
 
 def _video(
-    title, reason, *, stage="metadata", verdict="no", evidence=EVIDENCE_CLEAR
+    title, reason, *, stage="metadata", verdict="no", evidence=EVIDENCE_CLEAR,
+    too_long=False,
 ) -> JudgedVideo:
     return JudgedVideo(
         video_id=title[:11].ljust(11, "x"),
@@ -104,6 +105,7 @@ def _video(
         verdict=verdict,
         reason=reason,
         evidence=evidence,
+        too_long=too_long,
     )
 
 
@@ -663,12 +665,12 @@ def test_an_unreadable_keeper_is_listed_apart_from_the_keepers() -> None:
     rendered = render_round(report)
 
     assert "KEPT SO FAR IN THIS RUN (1)" in rendered
-    assert "KEPT BUT UNREADABLE (1)" in rendered
+    assert "KEPT BUT NOT ANSWERABLE (1)" in rendered
     assert "do NOT count toward coverage" in rendered
     # The video is still named. It was found and stored, and hiding it entirely
     # would invite the planner to keep searching for a video it already has.
     assert "Garbled one" in rendered
-    kept_block = rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT UNREADABLE")[0]
+    kept_block = rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT NOT ANSWERABLE")[0]
     assert "Garbled one" not in kept_block
     assert "Readable one" in kept_block
 
@@ -681,7 +683,7 @@ def test_a_round_with_nothing_degraded_says_none() -> None:
 
     rendered = render_round(report)
 
-    unreadable = rendered.split("KEPT BUT UNREADABLE")[1].split("REJECTED")[0]
+    unreadable = rendered.split("KEPT BUT NOT ANSWERABLE")[1].split("REJECTED")[0]
     assert "(0)" in unreadable
     assert "- none" in unreadable
 
@@ -690,7 +692,7 @@ def test_the_planner_prompt_says_an_unreadable_video_satisfies_nothing() -> None
     """The render splits them; the prompt has to say what the split means.
     Either half alone is a rule enforced by a coincidence."""
     text = " ".join(load_prompt(PLAN_PROMPT, directory=prompts_dir()).text.split())
-    assert "KEPT BUT UNREADABLE" in text
+    assert "KEPT BUT NOT ANSWERABLE" in text
     assert "Only videos under KEPT can satisfy anything" in text
 
 
@@ -746,9 +748,9 @@ def test_an_unreadable_keeper_from_an_earlier_round_stays_out_of_coverage() -> N
         ],
     )
 
-    kept = rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT UNREADABLE")[0]
+    kept = rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT NOT ANSWERABLE")[0]
     assert "Clean" in kept and "Garbled" not in kept
-    assert "KEPT BUT UNREADABLE (1)" in rendered
+    assert "KEPT BUT NOT ANSWERABLE (1)" in rendered
 
 
 def test_rejections_stay_scoped_to_this_round() -> None:
@@ -962,3 +964,39 @@ def test_a_bulleted_revision_still_parses(bullet: str) -> None:
         (REVISE_ADD, REVISE_VOCABULARY, "PgCat")
     ]
     assert plan.problem == ""
+
+
+def test_a_video_too_long_to_note_is_kept_out_of_coverage() -> None:
+    """Different cause from `DEGRADED`, identical consequence. Four of one run's
+    24 keepers were past the note ceiling: stored, judged YES, counted as
+    coverage, and unreachable by `/ask` because they would never be noted."""
+    rendered = render_round(
+        _round(),
+        kept_so_far=[
+            (1, _video("A seven-hour course", "covers the whole path", verdict="yes",
+                       too_long=True)),
+            (1, _video("A normal video", "covers it too", verdict="yes")),
+        ],
+    )
+
+    kept = rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT NOT ANSWERABLE")[0]
+    assert "A normal video" in kept
+    assert "A seven-hour course" not in kept
+    assert "KEPT BUT NOT ANSWERABLE (1)" in rendered
+    assert "length ceiling" in rendered
+
+
+def test_the_two_reasons_a_keeper_is_unanswerable_are_both_named() -> None:
+    """One heading, both causes, because the planner's action is the same for
+    each — but the counters stay apart, per rule 14."""
+    rendered = render_round(
+        _round(),
+        kept_so_far=[
+            (1, _video("Garbled", "captions unreadable", verdict="yes",
+                       evidence=EVIDENCE_DEGRADED)),
+            (1, _video("Enormous", "past the ceiling", verdict="yes", too_long=True)),
+        ],
+    )
+
+    assert "KEPT BUT NOT ANSWERABLE (2)" in rendered
+    assert "too damaged to read" in rendered and "length ceiling" in rendered

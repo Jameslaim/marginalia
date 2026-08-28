@@ -164,3 +164,52 @@ def test_a_real_run_prints_neither_the_transcript_nor_the_note(
     assert "quadratic" not in captured.out + captured.err
     assert "a phrase only the transcript contains" not in captured.out + captured.err
     assert captured.out.splitlines()[0].startswith("noted     aaaaaaaaaaa")
+
+
+# -- a video id may begin with a hyphen ---------------------------------------
+#
+# `-Ueh5XBpcoY`, `-0czfBICp74`: roughly one id in thirty-two starts with one, and
+# argparse reads such a token as an option. `marg note --regenerate -Ueh5XBpcoY`
+# failed with "unrecognized arguments" — a documented command unusable for those
+# videos. Same family as the citation repair: the id is right, the parser was not.
+
+
+@pytest.mark.parametrize(
+    "argv,expected",
+    [
+        (["note", "--regenerate", "-Ueh5XBpcoY"], ["note", "--regenerate", "--", "-Ueh5XBpcoY"]),
+        (["note", "-Ueh5XBpcoY", "dQw4w9WgXcQ"], ["note", "--", "-Ueh5XBpcoY", "dQw4w9WgXcQ"]),
+        (["snap-timestamps", "-0czfBICp74"], ["snap-timestamps", "--", "-0czfBICp74"]),
+    ],
+)
+def test_a_hyphen_leading_id_is_shielded(argv, expected) -> None:
+    from marginalia.cli import _shield_leading_hyphen_ids
+
+    assert list(_shield_leading_hyphen_ids(argv)) == expected
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["note", "--regenerate", "--all"],   # long options are untouched
+        ["note", "-v"],                      # short options are untouched
+        ["ask", "-v", "what is caching"],
+        ["note", "--", "-Ueh5XBpcoY"],       # already ended; not doubled
+        ["note", "-not-an-id"],              # wrong length
+        ["discover", "-YTupW6YG1"],          # ten characters, not an id
+    ],
+)
+def test_nothing_else_is_shielded(argv) -> None:
+    """Narrow on purpose. Every real option here is two characters or long-form,
+    so the eleven-character rule cannot collide with one."""
+    from marginalia.cli import _shield_leading_hyphen_ids
+
+    assert list(_shield_leading_hyphen_ids(argv)) == argv
+
+
+def test_the_hyphen_id_reaches_the_command(stubbed) -> None:
+    """End to end through `main`: the id argparse used to reject now arrives as
+    a video rather than as an unrecognized option."""
+    assert main(["note", "-Ueh5XBpcoY"]) in (EXIT_OK, EXIT_FAILED)
+
+    assert stubbed["video_ids"] == ["-Ueh5XBpcoY"]

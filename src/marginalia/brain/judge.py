@@ -226,6 +226,16 @@ _DAMAGE_WORDS = (
 )
 
 _MAX_UNEXPLAINED = 5
+# The same cap on `RELEVANT`, and for a measured reason. It was the one field of
+# the five with no bound in the prompt *or* the parser, and on a 458-minute
+# course (`mHxLXzYjQRE`, a 734k-character transcript) a verdict ran to 8,192
+# output tokens — roughly 640 ranges — and was discarded as truncated. Stage 2
+# then kept the video on rule 13's resolve-toward-keeping, so an unbounded list
+# cost a real judgement.
+#
+# Five is what a reader can act on. A list long enough to need scrolling is not
+# "where the value is", it is the transcript with different punctuation.
+_MAX_RELEVANT = 5
 
 # In a subdirectory because judging is about to grow more prompts, and a flat
 # `prompts/` where `judge_full.md` and `write_note.md` sit side by side stops
@@ -416,7 +426,17 @@ def _parse_relevant(body: str) -> tuple[list[str], str]:
     ranges = [f"{start}-{end}" for start, end in _RANGE_RE.findall(stripped)]
     if not ranges:
         return [], "relevant ranges were neither timestamps, NONE nor UNAVAILABLE"
-    return ranges, ""
+    if len(ranges) > _MAX_RELEVANT:
+        # Truncated rather than refused: the first ranges are still true, and a
+        # long list is an over-eager judge rather than a broken one. Said out
+        # loud, because a silent cap is how "we only show five" becomes "there
+        # were only five".
+        log.info(
+            "judge: %d relevant ranges returned; keeping the first %d",
+            len(ranges),
+            _MAX_RELEVANT,
+        )
+    return ranges[:_MAX_RELEVANT], ""
 
 
 def parse_queries(text: str, limit: int) -> list[str]:
