@@ -551,6 +551,54 @@ So attribution suppresses the check, `legacy` is not a trigger word, and the
 proxy is tuned to miss rather than over-fire: a counter that fires on every
 honest rejection measures nothing.
 
+### The verdict noise floor — measured, and it is not the problem
+
+`CPgp8MhmGVY` is stored as a stage-2 NO and then judged YES on three consecutive
+samples. That is a specific worry rather than a general one: **rule 8 protects
+against a judge that is too strict, and not at all against a judge that is
+noisy.** A coin-flip NO and a considered NO are the same row in `decisions`,
+nothing downstream can tell them apart, and the planner reads every one of them.
+
+The obvious test cannot answer it, because that video was judged under prompt v6
+and re-judged under v7 — a deterministic change and a random one produce the
+same flip. So each sampled video was judged **twice under the current prompt**,
+with the brief and territory map of the run that produced the stored verdict, so
+that the pair differs in nothing but the model. A split within the pair is
+non-determinism; a matching pair that disagrees with the stored verdict is the
+prompt change.
+
+| stored | n | split | both flipped | 95% upper bound on the split rate |
+|---|---|---|---|---|
+| NO | 50 | **0** | 0 | 6.0% |
+| YES | 10 | **0** | 0 | 30% |
+
+120 judgements, 60 pairs, $0.24. Across three topics and both stored prompt
+versions (v4 and v6), every pair agreed with itself *and* with the ledger. No
+contract violations, no `DEGRADED`.
+
+**The sampling is real, and the verdict is stable through it.** Reason wording
+inside a pair matched exactly 8 times in 60; the median similarity was 0.77 and
+the lowest 0.09. So this is not a cache returning one generation twice — the
+model writes a visibly different sentence and lands on the same verdict.
+`judge_full` runs at `reasoning_effort = "none"` with `temperature = 0` on the
+complete transcript, which is the configuration most likely to be stable, and it
+is.
+
+So `CPgp8MhmGVY` is an outlier rather than the tip of anything, and the second
+call on every rejection that a 5–15% rate would have justified is not bought by
+this evidence. What the NO arm does *not* rule out is a floor below ~6%: 0 of 50
+is consistent with one rejection in twenty being arbitrary, and finding a rate
+that low means hundreds of pairs rather than fifty. The YES arm rules out very
+little on its own — ten pairs bound it only at 30% — but it exists to say whether
+the noise is *asymmetric*, and nothing suggests it is.
+
+**The marker is noisier than the verdict.** Two pairs carried an era claim in
+both samples and the `[outside knowledge: ...]` marker in only one of them —
+`Eug2clsLtFs` and `dqz3CfLAkXk`, same video, same brief, same prompt, same
+verdict. That is the variance the parser check was added for, showing up in a
+measurement designed for something else: the judgement is stable and the
+convention around it is not.
+
 ### Decision logging — required from day one
 
 Every judgment is logged with its reason:
