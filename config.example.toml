@@ -308,7 +308,13 @@ trust_caption_hint = false
 # How wide each round casts. These multiply: queries × results is the candidate
 # count, and candidates ÷ judge_batch_size is the request count. Lower them on a
 # slow or heavily queued provider.
-queries_per_round = 6
+#
+# 9, matching `DEFAULT_QUERIES_PER_ROUND`. The two disagreed from the commit
+# that introduced them — 9 in code, 6 here — which meant the width of a round
+# depended on whether a config file happened to name the key. 9 is the side to
+# settle on: a wider search serves the asymmetry the whole judge is built on,
+# where a video never surfaced is the one failure nothing downstream can see.
+queries_per_round = 9
 results_per_query = 10
 
 # B4. Queries the territory map writes, on top of `queries_per_round`, and they
