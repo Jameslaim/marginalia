@@ -544,15 +544,20 @@ detector; folding it into `unparsed` would report a convention nobody followed
 as a format nobody could read. The verdict is untouched, because dating an API
 is usually the right call and what is missing is the attribution.
 
-**Known, and left alone: `_tidy_reason`'s cap can truncate the marker.** The
-reason is capped before it is stored, and a marker written at the end of a long
-sentence loses its content to the ellipsis — observed as
-`[outside knowledge: initialize_agent and AgentType we…`. Detection is
-unaffected, because the check matches the opening bracket, so the *count* stays
-honest. What is lost is the audit: the marker's whole job is to say which
-outside knowledge was used, and a truncated one cannot be read back. Whoever is
-next in that parser should decide whether the marker is exempt from the cap or
-the cap is raised.
+**The cap trims the prose, never the marker.** `_tidy_reason` used to cut
+whatever ran past 400 characters, and a marker written at the end of a long
+sentence lost its content to the ellipsis — observed as `[outside knowledge:
+initialize_agent and AgentType we…`. Detection was never affected, because the
+check matches the opening bracket, so the *count* stayed honest; what went was
+the audit, which is the marker's entire job.
+
+Fixed by trimming the other end. The marker is lifted out whole, the prose is
+capped to what remains, and the two are rejoined — because the prose degrades
+gracefully and the marker does not. Half a sentence about a transcript is still
+evidence about the video; half an attribution is a claim that something was
+assumed with no record of what. Below 80 characters of surviving prose the
+ordinary cap applies and logs, because a reason that is all attribution and no
+claim is not an improvement.
 
 The false positive it must avoid is a reason reporting what the *video* says
 about currency — `Zbf5Hyv2DSY` was rejected as a lecture *"comparing legacy
@@ -560,6 +565,85 @@ chains to LCEL"*, which is the transcript described, not the judge asserting.
 So attribution suppresses the check, `legacy` is not a trigger word, and the
 proxy is tuned to miss rather than over-fire: a counter that fires on every
 honest rejection measures nothing.
+
+### The markers reach their consumer — confirmed once, end to end
+
+`[note: ...]` exists for one reason: M6 answers from notes, so an unmarked
+inference becomes an asserted fact two layers away from any transcript that
+could contradict it. The convention was built for the answer layer and, until
+now, nobody had confirmed it arrives there.
+
+It does. `ask.py` reads each `note.md` whole and verbatim — `load_notes` takes
+`text.strip()` and nothing else, with no summarisation, filtering or rewriting
+between the file and the prompt — so a marker reaches the model exactly as the
+note-writer wrote it, and `prompts/answer.md` then requires it to survive: *"If
+you repeat something that was marked, mark it the same way."*
+
+Audited on the `langchain` deprecation answer: **8 of 8 markers in the answer
+trace to a marked claim in the source note**, and the answer additionally marks
+its own cross-video reasoning. The audit trail is real.
+
+**The one reverse failure, and a hypothesis about it.** Eight unmarked answer
+claims were checked against their notes; seven were unmarked in the note too,
+correctly, because they report what a speaker said. The eighth is `bind_tools`:
+`zCwuAlpQKTM`'s note marks its currency judgement — *"[note: … As of my
+knowledge, `bind_tools` … still present in LangChain, but the exact signature
+and behavior might have been updated]"* — and the answer files it under the
+heading **"What has not been deprecated"** with a bare citation. In the same
+sentence it marks the neighbouring claim about `with_structured_output`.
+
+So the marker was lost where the claim was *reclassified* rather than restated.
+**Hypothesis, from one instance and not a finding: markers survive restatement
+and not reclassification.** It predicts that losses cluster on claims an answer
+sorts into a structural category rather than repeating as a sentence — and for
+a question about currency, that category is the highest-stakes claim in the
+answer. Worth re-checking the next time an answer is audited; one case is not
+enough to act on.
+
+### `noted_at` answers one question, and a drain erases the other
+
+`noted_at` moves every time a note is rewritten, which is right for *"how old is
+this note?"* and useless for *"when did this video become answerable?"*. The
+second question is the one a before/after audit asks, and it was asked today:
+classifying the v5 answer's era distinctions as **format** rather than **added
+coverage** meant knowing which videos already had notes at the earlier answer.
+Two drains had overwritten every `noted_at` in the library, so 8 of 33 videos
+could not be classified at all — the other 25 only because their transcripts
+were acquired after the earlier answer, which is a proxy, not a record.
+
+So `first_noted_at`: set on the first note a video ever gets, never rewritten,
+via `COALESCE` so regeneration cannot move it and no caller has to remember not
+to. It is NULL on every row that predates the column and is deliberately *not*
+backfilled from `noted_at` — for a regenerated note that value is the
+regeneration date, and a first-note date invented from it would be exactly the
+fabricated provenance the column exists to prevent.
+
+Rule 23's argument, one layer down: the output was kept and the history that
+explains it was not. Second time in one session that a measurement was limited
+by something nobody wrote down.
+
+### A cited ID is checked against the notes that were loaded
+
+The same answer cited `[RsiG0kXcKkv 00:06:09]` for `RsiG0KcXkvE` — a
+transposition, eleven characters, correctly shaped. It never reached the file:
+30 of 31 citation-shaped strings parsed and that one was refused.
+
+**By rule rather than by luck, and this is a guarantee rather than a counter.**
+`scan_citations` is given `known = [note.video_id for note in notes]` — the
+notes loaded for this question — and with `known` non-empty `_find_id` resolves
+an ID only three ways: exact substring, unique case-fold, or unique prefix. All
+three end by returning *the library's own spelling*. The pattern-only fallback
+below them is unreachable whenever a note was loaded, and an empty library
+returns before any of it. So a citation naming a video the answer did not read
+cannot be linked, and the model has no legitimate source for an ID other than
+the notes it was given.
+
+Transpositions are refused deliberately, not incidentally: two YouTube IDs one
+character apart are two different videos (rule 5), so an edit-distance repair
+would silently point a claim at the wrong video, and a wrong link is worse than
+a missing one — a missing link is visible in the count while a wrong one reads
+as working. `unparsed` is therefore a real safety net and not a best-effort
+tally.
 
 ### The verdict noise floor — measured, and it is not the problem
 
@@ -601,6 +685,14 @@ is consistent with one rejection in twenty being arbitrary, and finding a rate
 that low means hundreds of pairs rather than fifty. The YES arm rules out very
 little on its own — ten pairs bound it only at 30% — but it exists to say whether
 the noise is *asymmetric*, and nothing suggests it is.
+
+**Verdicts are stable; their wording is not.** That pairing is the result: 0
+splits in 60 pairs, and reason wording identical in only 8 of them (median
+similarity 0.77, minimum 0.09). The model visibly resamples the sentence and
+lands on the same verdict, which is what rules out the boring explanation that
+one generation was returned twice. What it does not rule out is a floor below
+~6%: 0 of 50 is consistent with one rejection in twenty being arbitrary, and
+seeing a rate that low needs hundreds of pairs rather than fifty.
 
 **The marker is noisier than the verdict.** Two pairs carried an era claim in
 both samples and the `[outside knowledge: ...]` marker in only one of them —

@@ -572,11 +572,53 @@ def _parse_concepts(body: str) -> list[str]:
     return concepts[:6]
 
 
+# The marker, whole, for the one place the cap must not cut. Requires the
+# closing bracket: an unterminated marker cannot be preserved intact because
+# there is no intact thing to preserve.
+_MARKER_RE = re.compile(r"\[outside knowledge:[^\]]*\]", re.IGNORECASE)
+
+# Below this, trimming the prose has stopped leaving a reason worth reading, so
+# the marker is no longer worth protecting at its expense.
+_MIN_PROSE = 80
+
+
 def _tidy_reason(raw: str, *, limit: int = _MAX_REASON) -> str:
+    """Normalise, then cap — but never cut an `[outside knowledge: ...]` marker.
+
+    **The prose is what gets trimmed; the marker is kept whole.** A truncated
+    marker still *counts*, because the detector matches the opening bracket, so
+    the rate stays honest either way. What a cut marker loses is the only thing
+    it was written to carry: which outside knowledge was used. Observed on a
+    real reason — `[outside knowledge: `initialize_agent` and `AgentType` we…`
+    — where the claim survived and the audit did not.
+
+    Cutting the prose instead is the right trade because the prose degrades
+    gracefully and the marker does not: half a sentence about a transcript is
+    still evidence about the video, while half an attribution is a claim that
+    something was assumed and no record of what.
+    """
     cleaned = " ".join(raw.split()).lstrip("-–—:*").strip().strip("*")
-    if len(cleaned) > limit:
-        cleaned = cleaned[: limit - 1].rstrip() + "…"
-    return cleaned
+    if len(cleaned) <= limit:
+        return cleaned
+
+    marker = _MARKER_RE.search(cleaned)
+    if marker is not None:
+        prose = (cleaned[: marker.start()] + cleaned[marker.end() :]).strip()
+        budget = limit - len(marker.group(0)) - 1
+        if budget >= _MIN_PROSE:
+            if len(prose) > budget:
+                prose = prose[: budget - 1].rstrip() + "…"
+            return f"{prose} {marker.group(0)}"
+        # The marker alone is most of the budget. Nothing is preserved whole
+        # here, so say so rather than silently returning a reason that is all
+        # attribution and no claim.
+        log.info(
+            "judge: an outside-knowledge marker of %d characters does not fit a "
+            "%d-character reason; both are truncated",
+            len(marker.group(0)),
+            limit,
+        )
+    return cleaned[: limit - 1].rstrip() + "…"
 
 
 # -- the judge ---------------------------------------------------------------

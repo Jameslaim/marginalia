@@ -1340,3 +1340,41 @@ def test_recording_exhaustion_twice_keeps_the_first_time(ledger: Ledger) -> None
         "SELECT exhausted_at FROM quota WHERE provider = ?", ("youtube_api",)
     ).fetchone()["exhausted_at"]
     assert again == first
+
+
+def test_first_noted_at_survives_regeneration(tmp_path: Path) -> None:
+    """`noted_at` moves and `first_noted_at` does not — that is the whole point.
+
+    Measured need: a before/after audit of the v5 note format could not classify
+    8 of 33 videos as new coverage versus regenerated, because two drains had
+    overwritten every `noted_at` in the library. The output was kept and the
+    history that explains it was not.
+    """
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_pending("aaaaaaaaaaa")
+    ledger.mark_has_transcript(
+        "aaaaaaaaaaa", source="captions", caption_kind="auto", provider="ytdlp"
+    )
+
+    ledger.mark_noted("aaaaaaaaaaa", version="4", model="m")
+    first = ledger.get("aaaaaaaaaaa")
+    assert first.first_noted_at is not None
+    assert first.first_noted_at == first.noted_at, "on the first note they agree"
+
+    ledger.mark_noted("aaaaaaaaaaa", version="5", model="m")
+    again = ledger.get("aaaaaaaaaaa")
+    assert again.note_version == "5"
+    assert again.first_noted_at == first.first_noted_at, "regeneration must not move it"
+
+
+def test_first_noted_at_is_null_before_any_note(tmp_path: Path) -> None:
+    """NULL is the honest answer for a video nothing has read yet, and for every
+    row written before the column existed. It is never backfilled from
+    `noted_at`, which on a regenerated note is the regeneration date."""
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_pending("aaaaaaaaaaa")
+    ledger.mark_has_transcript(
+        "aaaaaaaaaaa", source="captions", caption_kind="auto", provider="ytdlp"
+    )
+
+    assert ledger.get("aaaaaaaaaaa").first_noted_at is None

@@ -1066,7 +1066,18 @@ class VideoRow:
     provider: str | None
     note_version: str | None = None
     note_model: str | None = None
+    # When the note on disk *now* was written. Regeneration moves it, which is
+    # what makes it useful for "how old is this note?" and useless for "when
+    # did this video become answerable?".
     noted_at: str | None = None
+    # The second question, and the reason both exist. Set on the first note a
+    # video ever gets and never rewritten, so a drain cannot erase the
+    # distinction between new coverage and a regenerated note. NULL on every
+    # row written before the column, and deliberately not backfilled from
+    # `noted_at`: for a regenerated note that value is the regeneration date,
+    # and a first-note date invented from it would be the fabricated
+    # provenance the column exists to prevent.
+    first_noted_at: str | None = None
     # B1. Deliberately not backfilled: 64 existing rows would have meant 64
     # network calls for a column no current feature reads. New videos populate
     # it, and NULL is the honest answer for a video seen before it existed.

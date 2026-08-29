@@ -602,3 +602,51 @@ def test_an_ordinary_call_failure_still_keeps(tmp_path) -> None:
 
     assert verdict.verdict == VERDICT_YES
     assert verdict.parsed is False
+
+
+# -- the cap must not cut the marker ----------------------------------------
+
+
+def test_a_long_reason_keeps_its_marker_whole() -> None:
+    """Observed on a real reason, where the claim survived and the audit did not:
+    `[outside knowledge: `initialize_agent` and `AgentType` we…`.
+
+    A truncated marker still counts — the detector matches the opening bracket —
+    so the rate stays honest either way. What it loses is the only thing it was
+    written to carry: *which* outside knowledge was used."""
+    marker = "[outside knowledge: initialize_agent and AgentType were superseded in 0.3]"
+    long_prose = (
+        "The video demonstrates a complete agent build with tool calling, memory "
+        "and streaming, walking through every import and running the result on "
+        "screen, but it teaches an API surface that predates the current one and "
+        "never says so anywhere in the transcript. " * 2
+    )
+    verdict = parse_full(
+        reply(VERDICT="NO", RELEVANT="NONE", REASON=f"{long_prose} {marker}"), VIDEO
+    )
+
+    assert verdict.reason.endswith(marker), "the marker survives the cap intact"
+    assert "…" in verdict.reason, "and the prose is what was trimmed"
+    assert verdict.unmarked_currency is False
+
+
+def test_an_oversized_marker_does_not_eat_the_whole_reason() -> None:
+    """A reason that is all attribution and no claim is not an improvement, so
+    below a floor of usable prose the ordinary cap applies and says so."""
+    marker = "[outside knowledge: " + "x" * 380 + "]"
+    verdict = parse_full(
+        reply(VERDICT="NO", RELEVANT="NONE", REASON=f"A short claim. {marker}"), VIDEO
+    )
+
+    assert verdict.reason.startswith("A short claim.")
+    assert verdict.reason.endswith("…")
+
+
+def test_a_short_reason_is_untouched() -> None:
+    marker = "[outside knowledge: this import path was superseded]"
+    verdict = parse_full(
+        reply(VERDICT="NO", RELEVANT="NONE", REASON=f"Teaches a pre-0.1 API. {marker}"),
+        VIDEO,
+    )
+
+    assert verdict.reason == f"Teaches a pre-0.1 API. {marker}"

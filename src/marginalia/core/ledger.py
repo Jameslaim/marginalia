@@ -122,7 +122,8 @@ CREATE TABLE IF NOT EXISTS videos (
   provider       TEXT,
   note_version   TEXT,            -- the write_note prompt version behind note.md
   note_model     TEXT,            -- which model read the transcript
-  noted_at       TEXT,
+  noted_at       TEXT,            -- when the CURRENT note.md was written
+  first_noted_at TEXT,            -- when this video first had any note; never rewritten
   channel_id     TEXT             -- B1; never backfilled, new videos only
 );
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
@@ -235,6 +236,20 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # nobody recorded a channel, an evidence grade or a territory map before
     # the columns existed, and inventing one would be worse than admitting it.
     ("videos", "channel_id", "TEXT"),
+    # Set once, on the first note a video ever gets, and never touched again.
+    # `noted_at` answers "how old is this note?" and regeneration rewrites it,
+    # which is right — but it means the library cannot answer "when did this
+    # video become answerable?" after a single drain. Measured cost: a
+    # before/after audit could not classify 8 of 33 videos as new coverage
+    # versus regenerated, because two drains had overwritten every `noted_at`
+    # in the library. Rule 23's argument, one layer down: the output was kept
+    # and the history that explains it was not.
+    #
+    # NULL on every row that predates the column, which is the honest answer —
+    # it is not backfilled from `noted_at`, because for a regenerated note that
+    # value is the regeneration date and inventing a first-note date from it
+    # would be exactly the fabricated provenance this exists to avoid.
+    ("videos", "first_noted_at", "TEXT"),
     ("decisions", "evidence", "TEXT"),
     ("decisions", "prompt_version", "TEXT"),
     ("runs", "territory_map", "TEXT"),
@@ -844,17 +859,21 @@ class Ledger:
         the one worth designing against. Notes are cheap; being wrong about
         having one is not.
         """
+        # `first_noted_at` uses COALESCE rather than a read-then-write: the
+        # existing value wins whenever there is one, so regeneration cannot
+        # move it and no caller has to remember not to.
         self._update(
             video_id,
             """
             UPDATE videos SET
-                note_version = ?,
-                note_model   = ?,
-                noted_at     = ?,
-                last_updated = ?
+                note_version   = ?,
+                note_model     = ?,
+                noted_at       = ?,
+                first_noted_at = COALESCE(first_noted_at, ?),
+                last_updated   = ?
             WHERE video_id = ?
             """,
-            (version, model, _utcnow(), _utcnow(), video_id),
+            (version, model, _utcnow(), _utcnow(), _utcnow(), video_id),
         )
         log.info("ledger: %s noted (%s, %s)", video_id, version, model)
         return self._require(video_id)
