@@ -1,6 +1,6 @@
 ---
 name: judge_full
-version: "6"
+version: "7"
 stage: full
 ---
 
@@ -91,6 +91,17 @@ Two rules for it:
   be worth catching. A run where one video is rejected for `create_retrieval_chain`
   while another is kept on a reason that names the same call, unmarked, has
   already happened here.
+
+- **This one is checked.** A reason that calls something deprecated, superseded,
+  obsolete or out of date without the marker is detected and counted. Nothing
+  happens to your verdict — dating an API is usually the right call — but the
+  omission is recorded, so the convention is measured rather than assumed. It
+  was measured once already: 4 reasons in 50 rested on currency and 1 was
+  marked.
+
+Reporting what the *video* says about currency is not this. "The speaker calls
+the old chain API legacy" is a description of the transcript and needs no
+marker; "this uses a legacy API" is your judgement and does.
 
 Nothing else earns the marker. It is for currency, not for filling gaps: if you
 do not know whether the transcript covers something, the answer is that it does

@@ -1,6 +1,6 @@
 ---
 name: plan_round
-version: "2"
+version: "3"
 stage: plan
 ---
 
@@ -107,8 +107,14 @@ Each query: two to seven words, plausibly typed by a person, no operators.
 ### Filters
 
 Same four as before, and the same rules. `order` sorts and is free to use.
-`relevanceLanguage` ranks and is safe. `publishedAfter` **excludes**, so it is
-only legitimate when the map's recency reasoning was a number of months.
+`relevanceLanguage` ranks and is safe.
+
+**`publishedAfter` is applied for you.** When the map reasoned a window, the
+code derives the date and puts it on every query you write here. Do not compute
+one. The single thing worth writing is `publishedAfter=any (reason)`, on a query
+that should escape the window — a gap that is specifically about earlier
+practice, where the window is what has been hiding the answer. Give the reason:
+this is the one way to search wider than the map decided.
 
 **`videoDuration` is not available to you.** It excludes by length, which is
 exactly the redirect the rule above forbids. It will be refused.

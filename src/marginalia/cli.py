@@ -341,11 +341,18 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             # ceiling as a caption failure.
             (report.too_long_to_note, "too long to note, not answerable"),
             (report.unparsed, "broke the reply format"),
+            # Not part of the line above: those replies were well formed. This
+            # is era knowledge carrying a verdict without being marked as
+            # coming from outside the transcript.
+            (report.unmarked_currency, "dated an API unmarked"),
             (report.filters_rejected, "filters rejected"),
             # Named apart from the line above, because they are opposite
             # directions: a rejected filter widened a search that ran, a
             # skipped duplicate removed a search entirely.
             (report.duplicates_skipped, "duplicate queries skipped"),
+            # Third direction again: not a refusal and not a skip, but the one
+            # place a reply can still widen past the derived date window.
+            (report.recency_waived, "queries waived the date window"),
         ]
         detail = ", ".join(f"{count} {label}" for count, label in notes if count)
         if detail:
@@ -367,9 +374,17 @@ def _discover_report(run: DiscoverRun) -> list[str]:
     lines.extend(_coverage_lines(run))
     read = sum(report.judged_here for report in run.rounds)
     unparsed = sum(report.unparsed for report in run.rounds)
+    unmarked = sum(report.unmarked_currency for report in run.rounds)
     if read:
         lines.append(
             f"judge-full: {read} judged, {read - unparsed} parsed, {unparsed} unparsed"
+        )
+        # Printed even at zero, like the unparsed count beside it: the rate is
+        # the whole point — era knowledge that only ever excludes is a judge
+        # with a bias, and that cannot be seen from a number that appears only
+        # when it is non-zero.
+        lines.append(
+            f"            {unmarked} dated an API without the outside-knowledge marker"
         )
     return lines
 
@@ -405,8 +420,13 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
     # kept it one commit longer: a run whose only refusal was a duplicate query
     # announced "1 filter rejected before executing", which is the opposite of
     # what happened — no filter was refused, and one search did not run.
-    refused = [item for item in run.rejected_filters if not item.is_duplicate_query]
+    refused = [
+        item
+        for item in run.rejected_filters
+        if not item.is_duplicate_query and not item.is_recency_waiver
+    ]
     duplicates = [item for item in run.rejected_filters if item.is_duplicate_query]
+    waived = [item for item in run.rejected_filters if item.is_recency_waiver]
     lines.append(f"filters:  {len(refused)} rejected before executing")
     for rejection in refused[:5]:
         # Whether the refusal prevented an *exclusion* is what a reader wants
@@ -418,6 +438,17 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
             f"          {rejection.field}={rejection.value} on {rejection.query!r}"
             f"{excludes} — {rejection.reason}"
         )
+
+    if waived:
+        # Only when it happened, and never summed with the line above. This is
+        # the reply asking for a *wider* search than the derived window would
+        # have run — the opposite direction from a refusal, and the only
+        # remaining way the date filter can be kept off a main query.
+        lines.append(
+            f"waived:   {len(waived)} quer(ies) asked for any age despite the window"
+        )
+        for waiver in waived[:5]:
+            lines.append(f"          {waiver.query!r} — {waiver.reason}")
 
     if duplicates:
         # Its own line, and only when it happened. A duplicate skipped is a
@@ -558,6 +589,8 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 ],
                 "filters_rejected": report.filters_rejected,
                 "duplicates_skipped": report.duplicates_skipped,
+                "recency_waived": report.recency_waived,
+                "unmarked_currency": report.unmarked_currency,
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next
                 # round, the map revisions it proposed and the ones the code

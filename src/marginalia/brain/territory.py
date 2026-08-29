@@ -38,6 +38,7 @@ from datetime import date, datetime, timezone
 from typing import Iterable, Sequence
 
 from ..contracts import (
+    FILTER_FIELD_RECENCY_WAIVER,
     FILTER_FIELDS,
     FILTER_ORDER,
     FILTER_PUBLISHED_AFTER,
@@ -46,6 +47,7 @@ from ..contracts import (
     HARD_FILTERS,
     ORDER_VALUES,
     ORIGIN_TERRITORY,
+    RECENCY_DERIVED_WHY,
     VIDEO_DURATION_VALUES,
     Brief,
     FilterRejection,
@@ -440,6 +442,109 @@ def tidy(raw: str, *, limit: int) -> str:
 # -- validation ---------------------------------------------------------------
 
 
+# The values a query uses to say "not this one" to the derived date window.
+# Deliberately a small closed set of the ways a model writes *no limit*, and
+# deliberately not a free-text field: a waiver is the one thing here that makes
+# a search wider than the code decided, so it has to be unmistakable rather than
+# inferred.
+_WAIVER_VALUES = frozenset(
+    {"any", "any time", "anytime", "all", "all time", "none", "no", "off", "unset"}
+)
+
+
+def _waiver_value(query: PlannedQuery) -> str:
+    """The waiver this query asked for, or `""`. Read before anything is judged.
+
+    It has to come first because otherwise the ordinary rules see it: `any` is
+    not a date, so a waiver would be refused as a malformed `publishedAfter`,
+    counted as a filter rejection, and then have the window derived onto it
+    anyway — the exact opposite of what the query asked for, arrived at through
+    two correct-looking steps.
+    """
+    value = (query.filters.published_after or "").strip().lower()
+    return value if value in _WAIVER_VALUES else ""
+
+
+def _derive_published_after(
+    query: PlannedQuery,
+    *,
+    recency: Recency,
+    constraints: UserConstraints,
+    waiver: str,
+    waiver_reason: str,
+    today: date,
+) -> tuple[PlannedQuery, FilterRejection | None]:
+    """Turn the reasoned recency window into a date, and put it on the query.
+
+    **The split this exists to fix.** The map answers two separate questions —
+    *does age matter here, and why* (`RECENCY`) and *what filters does each
+    query carry* (`FILTERS`) — and nothing joined them. Measured twice on
+    `langchain`: a map reasoned *"last 18 months, LangChain's API has churned
+    (LLMChain→LCEL→LangGraph)"* and then emitted twelve queries carrying
+    `order=date` and no cutoff at all. Zero of 29 queries filtered by date, and
+    `rejected_filters` was empty — nothing refused it, it was never proposed.
+    The run before that managed 3 of 33.
+
+    So the judgement stays with the model and the arithmetic moves to the code.
+    Whether a subject's age matters is a real judgement about an ecosystem;
+    *today minus eighteen months* is a calculation, and a calculation asked of a
+    model is a calculation that is sometimes not done at all.
+
+    Four things stop it, and each is one of this file's existing rules:
+
+    - recency reasoned as *any time* — nothing justifies excluding anything,
+      and `ANY` is the default and the wider answer
+    - the user's own words — "the history of transformers" outranks any
+      reasoning about ecosystems
+    - a per-query waiver — below, and the reason it exists
+    - a `variant_of` query — a variant exists to *add* a slice that a main query
+      buries, so narrowing it by date takes back the width it was written for
+
+    A `publishedAfter` the model proposed and the validator allowed is left
+    exactly as it is. Derivation fills an absence; it never overrules a
+    judgement that survived the rules.
+    """
+    if waiver:
+        # Recorded, not silent, and only when it actually changed the outcome:
+        # a waiver under `ANY` recency, or under a user who already forbade the
+        # filter, prevented nothing and would be a rejection of nothing.
+        if not recency.limited or constraints.no_date_filter:
+            return query, None
+        return query, FilterRejection(
+            query.text,
+            FILTER_FIELD_RECENCY_WAIVER,
+            recency.label,
+            # Taken from the query as it was *written*, not as it now stands:
+            # stripping the waiver takes its reason with it, and the reason is
+            # the only part of a waiver worth reading back.
+            waiver_reason or "the query asked for material of any age and gave no reason",
+        )
+    if not recency.limited or constraints.no_date_filter:
+        return query, None
+    if query.variant_of or query.filters.published_after:
+        return query, None
+
+    cutoff = _months_before(today, recency.months or 0)
+    return (
+        PlannedQuery(
+            text=query.text,
+            origin=query.origin,
+            origin_detail=query.origin_detail,
+            filters=query.filters.with_(FILTER_PUBLISHED_AFTER, cutoff.isoformat()),
+            variant_of=query.variant_of,
+            reasons={
+                **query.reasons,
+                # The full window, with no slack. The month of slack in
+                # `_filter_problem` is there to accept a date a *model*
+                # computed a few days off; arithmetic done here is exact, and
+                # the widest date the reasoning allows is the right one.
+                FILTER_PUBLISHED_AFTER: f"{RECENCY_DERIVED_WHY} ({recency.label})",
+            },
+        ),
+        None,
+    )
+
+
 def validate(
     queries: Sequence[PlannedQuery],
     *,
@@ -493,6 +598,16 @@ def validate(
         Identity is text *and* filters, so the same query by `relevance` and by
         `date` are two queries, not one — that difference is the free width
         `order` exists to buy.
+
+    And one thing is *added* rather than refused. When the recency call reasoned
+    a window, `publishedAfter` is derived from it and applied to every main
+    query that does not already carry one — see `_derive_published_after`. The
+    model decides whether age matters; the code does the date arithmetic, having
+    twice watched the model reason a window and then attach it to nothing.
+
+    That makes this function the only place a hard date filter can be added as
+    well as the only place one can be refused, which is what keeps both
+    directions inspectable from one read.
     """
     today = today or datetime.now(timezone.utc).date()
     constraints = user_constraints(topic)
@@ -503,7 +618,9 @@ def validate(
     rejections: list[FilterRejection] = []
 
     for query in queries:
-        filters = query.filters
+        # First, before any rule looks at it: a waiver is not a malformed date.
+        waiver = _waiver_value(query)
+        filters = query.filters.without(FILTER_PUBLISHED_AFTER) if waiver else query.filters
         for name, value in list(filters.as_dict().items()):
             problem = _filter_problem(
                 name,
@@ -542,6 +659,34 @@ def validate(
                 name: why for name, why in query.reasons.items() if name in filters.as_dict()
             },
         )
+
+        # After the refusals and before identity is computed. A derived cutoff
+        # is part of what makes a query the query it is, so a round that
+        # derives one and a round that does not are asking different questions
+        # and must not collapse into a duplicate.
+        candidate, waived = _derive_published_after(
+            candidate,
+            recency=recency,
+            constraints=constraints,
+            waiver=waiver,
+            waiver_reason=query.reasons.get(FILTER_PUBLISHED_AFTER, ""),
+            today=today,
+        )
+        if waived is not None:
+            rejections.append(waived)
+            log.warning(
+                "territory: %r waived the %s date window — %s",
+                waived.query,
+                waived.value,
+                waived.reason,
+            )
+        elif candidate.filters.published_after and not query.filters.published_after:
+            log.info(
+                "territory: derived publishedAfter=%s on %r from %s",
+                candidate.filters.published_after,
+                candidate.text,
+                recency.label,
+            )
 
         if candidate.key in seen:
             rejections.append(

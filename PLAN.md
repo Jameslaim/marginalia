@@ -525,6 +525,32 @@ enforced by `publishedAfter`, which is deterministic and auditable. The judge
 was only doing this job because 25 of 33 queries fell through to a provider that
 applies no filters, so the map's correctly reasoned 12-month window never ran.
 
+That diagnosis was half right, and the half it got wrong is recorded under
+"Deriving the window" below: fixing the quota day put all 29 queries on the
+official API and the number of date filters went to **zero**, because the map
+had never proposed one.
+
+**And the marker is now checked, because asking was not enough.** On the second
+`langchain` run, 4 of 50 stage-2 reasons rested on currency and 1 carried the
+marker — `CPgp8MhmGVY` (*"uses deprecated APIs (`langchain.llms`,
+`langchain.chains`, `RetrievalQA`)"*) and `Eug2clsLtFs` (*"the deprecated
+`initialize_agent` and `text-davinci-003`"*) made the same claim unmarked. So
+`parse_full` detects an unmarked currency claim and sets `unmarked_currency`,
+which is logged and counted on its own.
+
+**Counted, never repaired, and never a parse failure.** Appending the marker in
+code would put words in the judge's mouth and leave the counter measuring the
+detector; folding it into `unparsed` would report a convention nobody followed
+as a format nobody could read. The verdict is untouched, because dating an API
+is usually the right call and what is missing is the attribution.
+
+The false positive it must avoid is a reason reporting what the *video* says
+about currency — `Zbf5Hyv2DSY` was rejected as a lecture *"comparing legacy
+chains to LCEL"*, which is the transcript described, not the judge asserting.
+So attribution suppresses the check, `legacy` is not a trigger word, and the
+proxy is tuned to miss rather than over-fire: a counter that fires on every
+honest rejection measures nothing.
+
 ### Decision logging — required from day one
 
 Every judgment is logged with its reason:
@@ -1110,6 +1136,52 @@ can detect.
 for it. It is allowed only on a query that repeats one it names, so the band adds a slice
 instead of removing one — and a real map used it exactly that way, running
 `cache_control anthropic` unfiltered *and* as a short-form variant.
+
+### Deriving the window, and what two runs measured
+
+The table above says `publishedAfter` is used "only when recency was reasoned to
+matter". For two consecutive runs it was reasoned and then not used at all.
+
+| run | queries | on the official API | carrying `publishedAfter` | filters rejected |
+|---|---|---|---|---|
+| `7da933b180fd` | 33 | 8 | 3 | 0 |
+| `efe96b862b43` | 29 | **29** | **0** | 0 |
+
+The first was read as the quota bug: 25 of 33 queries fell through to a provider
+that applies no parameters, so a correctly reasoned window could not run. Fixing
+the quota day put every query on the API — and the count went **down, to zero**,
+with `rejected_filters` empty. Nothing refused the filter. It was never proposed.
+
+The map's own reasoning that run was *"last 18 months — LangChain's API has
+churned significantly (LLMChain→LCEL→LangGraph); videos from before mid-2023
+likely use deprecated interfaces that the brief excludes"*, and the eight queries
+it wrote carried two `order=date` and one `videoDuration=short` between them.
+`RECENCY` and per-query `FILTERS` were separate fields, and nothing joined them.
+
+**So the arithmetic moved into the code.** Whether age disqualifies a video is a
+judgement about an ecosystem and stays with the model; *today minus eighteen
+months* is subtraction, and subtraction asked of a model is sometimes simply not
+done — with an absence that looks exactly like a decision not to filter. When
+`RECENCY` names a number of months, `_derive_published_after` puts the date on
+every main query that does not already carry one.
+
+Replaying that same stored map through the validator: **7 of 8 queries carry
+`publishedAfter=2025-02-28`**, the eighth being the short-form variant, which is
+left wide on purpose — a variant exists to add a slice a main query buries, and
+dating it takes back the width it was written for.
+
+Three properties keep it inside the existing rules rather than beside them.
+Derivation fills an absence and never overrules a model date that passed the
+rules. It obeys `user_constraints`, so "the history of transformers" still wins
+— otherwise moving the arithmetic into code would have moved it out from under
+the one thing that outranks the reasoning. And a query may waive it with
+`publishedAfter=any (reason)`, which is counted in `recency_waived` and never
+summed into `filters_rejected`: a refused filter means a search ran wider than
+the *model* asked, a waiver means one ran wider than the *code* decided.
+
+The measurement that says whether this worked is not "how many filters ran" but
+the one below it: of the videos kept, how many predate the window. It was 14 of
+24, then 6 of 19, both with no filter running at all.
 
 ### Recency is reasoned, never ruled
 

@@ -271,6 +271,87 @@ def _blames_damaged_evidence(reason: str) -> bool:
     return any(word in lowered for word in _DAMAGE_WORDS)
 
 
+# -- the outside-knowledge marker, checked rather than requested ---------------
+#
+# Era is the one axis a transcript cannot speak on: no video states that its own
+# import path has since been superseded, and none can. PLAN.md §7 allows that
+# one exception to "use only the evidence supplied" and requires it to be
+# marked, so that `grep '[outside knowledge'` says how often era judgement is
+# carrying a verdict and whether it is being used to exclude only.
+#
+# It was asked for in the prompt and mostly not done: on the second `langchain`
+# run, 4 of 50 stage-2 reasons rested on currency and 1 carried the marker.
+# Same lesson as rule 13 — a rule living only in a prompt is a rule enforced by
+# a model — so the code checks it here.
+_CURRENCY_WORDS = (
+    "deprecat",
+    "supersed",
+    "obsolete",
+    "outdated",
+    "out of date",
+    "out-of-date",
+    "no longer supported",
+    "no longer maintained",
+    "no longer the",
+    "no longer current",
+    "since been replaced",
+    "has been replaced by",
+    "pre-0.",
+    "predates the current",
+)
+
+# The false positive this has to avoid, and it is a real reply rather than an
+# imagined one. `Zbf5Hyv2DSY` was rejected as *"a conceptual lecture comparing
+# legacy chains to LCEL"* — the video's own subject matter, described. A reason
+# that reports what the video says about currency is not the judge asserting it,
+# and marking it would be marking the transcript.
+#
+# So attribution suppresses. `legacy` is absent from the list above for the same
+# reason: it describes an era far more often than it dates an API, and the trap
+# this file already fell into once was `"transcript"` firing on every honest
+# rejection that named its evidence.
+_ATTRIBUTION_PHRASES = (
+    "the speaker",
+    "the presenter",
+    "the instructor",
+    "the narrator",
+    "the video says",
+    "the video notes",
+    "the video calls",
+    "the video acknowledges",
+    "the transcript says",
+    "the transcript notes",
+    "the author says",
+    "acknowledges",
+    "admits",
+    "warns that",
+    "says it is",
+    "calls it",
+    "describes it as",
+)
+
+_MARKER = "[outside knowledge"
+
+
+def _asserts_currency_unmarked(reason: str) -> bool:
+    """Does this reason date an API without saying that is outside knowledge?
+
+    A **proxy**, like `_blames_damaged_evidence`, and tuned the same way — but
+    toward the opposite side, because the costs are different. This one changes
+    no verdict and keeps no video: it moves a counter and writes a log line. So
+    a false positive costs a slightly overstated rate, a false negative costs an
+    unmarked claim going unmeasured, and neither costs a video. What it must not
+    do is fire on the honest shape, because a counter that fires on everything
+    measures nothing.
+    """
+    lowered = reason.lower()
+    if _MARKER in lowered:
+        return False
+    if not any(word in lowered for word in _CURRENCY_WORDS):
+        return False
+    return not any(phrase in lowered for phrase in _ATTRIBUTION_PHRASES)
+
+
 def parse_full(text: str, video_id: str) -> FullVerdict:
     """Read a stage-2 reply into a :class:`FullVerdict`, enforcing the contract.
 
@@ -356,6 +437,18 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
     # -- the consistency rules ---------------------------------------------
 
     blames_damage = _blames_damaged_evidence(reason)
+    # Checked here and deliberately kept out of `problems`. The reply is well
+    # formed; what it broke is a convention about *attributing* a claim, and
+    # counting that as a parse failure would report a marker nobody wrote as a
+    # format nobody could read. Rule 14: three meanings never share a bucket.
+    unmarked_currency = _asserts_currency_unmarked(reason)
+    if unmarked_currency:
+        log.warning(
+            "judge: stage-2 reason for %s dates an API without the "
+            "[outside knowledge: ...] marker — %s",
+            video_id,
+            reason,
+        )
 
     if verdict == VERDICT_NO and (evidence == EVIDENCE_DEGRADED or blames_damage):
         problems.append(
@@ -392,6 +485,7 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
             relevant=relevant,
             concepts=concepts,
             parsed=True,
+            unmarked_currency=unmarked_currency,
         )
 
     problem = "; ".join(problems)
@@ -406,6 +500,7 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         concepts=concepts,
         parsed=False,
         problem=problem,
+        unmarked_currency=unmarked_currency,
     )
 
 

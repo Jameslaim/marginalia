@@ -114,10 +114,15 @@ def test_the_report_has_one_line_per_round_then_a_summary(stubbed, capsys) -> No
     main(["discover", "prompt caching"])
     lines = capsys.readouterr().out.strip().splitlines()
 
-    assert len(lines) == 5
+    assert len(lines) == 6
     assert lines[1].startswith("round 1:  5 queries, 63 candidates, 8 known, 41 no, 14 maybe")
     assert lines[1].endswith("9 stored")
     assert lines[4] == "judge-full: 10 judged, 10 parsed, 0 unparsed"
+    # Printed at zero for the same reason "0 unparsed" is: the rate of unmarked
+    # era judgement is only readable if the number is always there.
+    assert lines[5] == (
+        "            0 dated an API without the outside-knowledge marker"
+    )
     assert lines[3] == (
         "run:      2 stored, 66 judged, 2 rounds, 24 requests, stopped: no_new_videos"
     )

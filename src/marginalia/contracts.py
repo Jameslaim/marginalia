@@ -56,6 +56,8 @@ __all__ = [
     "Recency",
     "PlannedQuery",
     "FILTER_FIELD_QUERY",
+    "FILTER_FIELD_RECENCY_WAIVER",
+    "RECENCY_DERIVED_WHY",
     "FilterRejection",
     "MapSnapshot",
     "TerritoryRevision",
@@ -282,6 +284,24 @@ class SearchFilters:
             }
         )
 
+    def with_(self, name: str, value: str) -> SearchFilters:
+        """The same filters with one field set. How a derived filter is applied.
+
+        The mirror of :meth:`without`, and used in exactly one place: the recency
+        window the map reasoned about, turned into a date by the code rather than
+        by the model. This one *narrows*, which is why it exists only for the one
+        filter the validator has already decided is justified.
+        """
+        attribute = _FILTER_ATTRIBUTES.get(name)
+        if attribute is None:
+            return self
+        return SearchFilters(
+            **{
+                current.name: (value if current.name == attribute else getattr(self, current.name))
+                for current in fields(self)
+            }
+        )
+
 
 _FILTER_ATTRIBUTES = {
     FILTER_PUBLISHED_AFTER: "published_after",
@@ -321,6 +341,21 @@ class Recency:
 # rather than each spelling it out — rule 10 applied to a two-outcome type.
 FILTER_FIELD_QUERY = "query"
 
+# The `field` a recency *waiver* carries. A third outcome in `FilterRejection`,
+# and it stays tellable apart from the other two for rule 14's reason: a refused
+# filter means a search ran wider than the model asked, a skipped duplicate
+# means a search did not run at all, and a waiver means a search ran wider than
+# the *code* would have made it — the model asking, for one query, that the
+# reasoned date window not be applied. Summed into the refusals it would read as
+# the validator refusing something, which is the opposite of what happened.
+FILTER_FIELD_RECENCY_WAIVER = "recency-waiver"
+
+# The `why` a derived `publishedAfter` carries into `filters_json`. A constant
+# rather than a phrase spelled out at both ends, because reading the ledger back
+# turns on it: whether a cutoff was the model's proposal or the window's
+# arithmetic is the difference between a judgement and a calculation.
+RECENCY_DERIVED_WHY = "derived from the reasoned recency window"
+
 
 @dataclass(frozen=True)
 class FilterRejection:
@@ -330,12 +365,15 @@ class FilterRejection:
     dropped, and a drop nobody counts is indistinguishable from a proposal that
     was never made.
 
-    Two different outcomes travel in this one type, and they must stay tellable
-    apart. A refused *filter* means the search ran wider than the model asked.
-    A skipped *duplicate query* means a search did not run at all because an
-    identical one already had. Reporting them as one number is rule 14's failure
-    for the third time — and it happened: a round announced "8 filters rejected"
-    when all eight were duplicate-query skips and no filter had been refused.
+    Three different outcomes travel in this one type, and they must stay
+    tellable apart. A refused *filter* means the search ran wider than the model
+    asked. A skipped *duplicate query* means a search did not run at all because
+    an identical one already had. A *recency waiver* means the model asked, on
+    one query, that the reasoned date window not be applied — a search wider
+    than the code would otherwise have made it. Reporting any two of them as one
+    number is rule 14's failure, and it has already happened once: a round
+    announced "8 filters rejected" when all eight were duplicate-query skips and
+    no filter had been refused.
     """
 
     query: str
@@ -346,6 +384,10 @@ class FilterRejection:
     @property
     def is_duplicate_query(self) -> bool:
         return self.field == FILTER_FIELD_QUERY
+
+    @property
+    def is_recency_waiver(self) -> bool:
+        return self.field == FILTER_FIELD_RECENCY_WAIVER
 
 
 @dataclass(frozen=True)
@@ -989,6 +1031,14 @@ class FullVerdict:
     # the contract asked for, and silently accepting it is how a broken output
     # format survives for months.
     problem: str = ""
+    # The reason made a claim about an API being out of date without carrying
+    # the `[outside knowledge: ...]` marker the prompt asks for. **Not** a parse
+    # failure and not a reason to change the verdict: the five lines were well
+    # formed and the judgement may be perfectly right. What it fails is
+    # auditability — era is the one axis a transcript cannot speak on, so an
+    # unmarked currency claim is outside knowledge that cannot be counted as
+    # such, and counting it is the entire reason the marker exists.
+    unmarked_currency: bool = False
 
     @property
     def timestamps_unavailable(self) -> bool:
@@ -1095,6 +1145,13 @@ class RoundReport:
     # Stage-2 replies that broke the five-line contract. Counted rather than
     # swallowed, the way citation parsing counts what it drops.
     unparsed: int = 0
+    # Stage-2 reasons that judged an API out of date without marking the claim
+    # as outside knowledge. Its own counter, not part of `unparsed`: those
+    # replies were well formed, and folding the two together would report a
+    # convention nobody followed as a format nobody could parse. Measured at 3
+    # of 4 currency claims unmarked on the second `langchain` run, which is what
+    # a rule living only in a prompt is worth.
+    unmarked_currency: int = 0
     # B4. Filters the validator refused before any search ran. Its own counter,
     # like everything else here: a rejected filter is neither a failure nor a
     # rejection nor a parse problem, and a round that reported it as any of
@@ -1111,6 +1168,13 @@ class RoundReport:
     # one — not a filter refusal, and the opposite direction: a refused filter
     # widens what a search sees, a skipped duplicate removes a search entirely.
     duplicates_skipped: int = 0
+    # Queries that asked, in the reply, for the reasoned date window not to be
+    # applied to them. Neither of the two above: no filter was refused and no
+    # search was skipped — one search ran wider than the code would have made
+    # it. Its own counter because it is the only way a model can now widen past
+    # a derived hard filter, and a widening nobody counts is how a window that
+    # silently stopped applying looks exactly like a window that is applying.
+    recency_waived: int = 0
     concepts: list[str] = field(default_factory=list)
     from_threads: bool = False
     # B4. The queries as planned, with their origins and filters. `queries`

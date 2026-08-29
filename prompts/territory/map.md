@@ -1,6 +1,6 @@
 ---
 name: map_territory
-version: "1"
+version: "2"
 stage: territory
 ---
 
@@ -55,6 +55,11 @@ Answer `ANY` unless age genuinely disqualifies a video. `ANY` is the wider
 answer and the safer one: a date cutoff removes old material permanently and
 invisibly, and nothing later can tell that it did.
 
+**This answer is applied for you.** When you give a number of months, the code
+works out the date and puts `publishedAfter` on every main query below. You do
+not compute the date and you do not repeat it on each query — say how far back
+matters and why, once, here. That is the judgement; the subtraction is not.
+
 **QUERIES** — {{ count }} searches, written from the concepts and vocabulary
 above rather than from the topic words.
 
@@ -80,9 +85,15 @@ which is free width. Use it freely.
 `relevanceLanguage` — an ISO 639-1 code such as `en`. Ranks, never excludes:
 a highly relevant result in another language still comes back. Safe.
 
-`publishedAfter` — a `YYYY-MM-DD` date. **Excludes everything older.** Only
-legitimate when your RECENCY answer was a number of months, and the date must
-sit at or before that window. If RECENCY is `ANY`, no query may carry this.
+`publishedAfter` — **do not write a date.** Your RECENCY answer above is turned
+into one and applied to every main query, so a date written here is at best a
+repetition and at worst a worse version of the same window.
+
+The one thing to write is the opposite: `publishedAfter=any (reason)` on a
+single query that should escape the window — the query that is deliberately
+about how something used to be done, the original talk, the version history.
+The reason matters, because this is the one way to make a search wider than the
+window and it is recorded as such.
 
 `videoDuration` — `short` (under 4 minutes), `medium`, `long`. **Excludes
 everything outside the band.** Never put this on a main query. A short video can

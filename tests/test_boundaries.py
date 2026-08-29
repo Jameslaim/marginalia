@@ -367,6 +367,8 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "Recency",
         "PlannedQuery",
         "FILTER_FIELD_QUERY",
+        "FILTER_FIELD_RECENCY_WAIVER",
+        "RECENCY_DERIVED_WHY",
         "FilterRejection",
         "MapSnapshot",
         "TerritoryRevision",

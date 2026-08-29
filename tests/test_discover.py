@@ -1552,7 +1552,13 @@ def test_a_bad_filter_is_rejected_before_the_search_and_counted(
     assert outcome.rejected_filters[0].field == "publishedAfter"
     assert outcome.rounds[0].queries == ["kv cache reuse llm"], "the query still ran"
     row = ledger.queries_for_run(outcome.run_id)[0]
-    assert row.filters_json is None
+    # The model's unreadable date is gone from the row, and the window the map
+    # reasoned is on it instead. The ledger says which of the two it was: a
+    # derived filter names itself in its `why`, so "was this cutoff a judgement
+    # or arithmetic?" is answerable without a rerun.
+    assert row.filters_json is not None
+    assert "not-a-date" not in row.filters_json
+    assert "derived from the reasoned recency window" in row.filters_json
 
 
 def test_a_filter_that_ran_is_recorded_with_its_reason(

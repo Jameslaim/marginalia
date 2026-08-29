@@ -33,6 +33,7 @@ from marginalia.brain.planner import (
     render_round,
     validate_revisions,
 )
+from marginalia.brain.territory import validate
 from marginalia.contracts import (
     CoverageItem,
     EVIDENCE_CLEAR,
@@ -593,9 +594,15 @@ def test_the_planning_call_names_its_own_task() -> None:
 
 
 def test_a_query_already_run_is_dropped() -> None:
+    # The key is taken from a *validated* query rather than a bare one, because
+    # that is the only kind that exists in a run: `seen_queries` is filled from
+    # what came back from `validate`, so every key in it already carries the
+    # derived date window. A key built by hand without one describes a query
+    # this system never runs.
     query = PlannedQuery(text="prompt cache ttl expiry", origin=ORIGIN_PLANNER)
+    already, _ = validate([query], recency=MAP.recency, topic=BRIEF.topic)
     plan = Planner(FakeClient(FakeReply(GOOD_PLAN))).plan(
-        BRIEF, MAP, _round(), already_run={query.key}
+        BRIEF, MAP, _round(), already_run={already[0].key}
     )
 
     assert [item.text for item in plan.queries] == ["anthropic caching compared"]

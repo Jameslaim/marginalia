@@ -292,15 +292,21 @@ def _loop(
             number=number,
             queries=[query.text for query in planned],
             planned=planned,
-            # Two outcomes, two counters. A refused filter widened a search that
-            # ran; a skipped duplicate means a search did not run at all. One
-            # number for both told a round it had "8 filters rejected" when
-            # every one was a duplicate skip.
+            # Three outcomes, three counters. A refused filter widened a search
+            # that ran; a skipped duplicate means a search did not run at all;
+            # a waiver means the reasoned date window was kept off one query.
+            # One number for the first two told a round it had "8 filters
+            # rejected" when every one was a duplicate skip.
             filters_rejected=sum(
-                1 for item in rejections if not item.is_duplicate_query
+                1
+                for item in rejections
+                if not item.is_duplicate_query and not item.is_recency_waiver
             ),
             duplicates_skipped=sum(
                 1 for item in rejections if item.is_duplicate_query
+            ),
+            recency_waived=sum(
+                1 for item in rejections if item.is_recency_waiver
             ),
             from_threads=bool(threads),
         )
@@ -850,6 +856,12 @@ def _judge_round(
         concepts.extend(judgement.concepts)
         if not judgement.parsed:
             report.unparsed += 1
+        if judgement.unmarked_currency:
+            # Its own counter, and nothing else happens. The verdict stands —
+            # dating an API is usually a correct judgement and the marker is
+            # about attribution, not about relevance — so what this measures is
+            # how much era knowledge is carrying verdicts without saying so.
+            report.unmarked_currency += 1
         if judgement.evidence == EVIDENCE_DEGRADED:
             # Kept, stored, and deliberately not noted. The transcript is
             # worth keeping — it is the thing ASR would replace — but a

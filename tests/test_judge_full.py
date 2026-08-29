@@ -423,3 +423,122 @@ def test_the_prompt_still_forbids_unmarked_invention() -> None:
     text = _full_prompt_text().lower()
 
     assert "reason must come from the transcript above" in text
+
+
+# -- the outside-knowledge marker -------------------------------------------
+#
+# PLAN.md §7 allows exactly one exception to "use only the evidence supplied":
+# currency. No transcript states that its own import path has been superseded,
+# and none can, so era judgement is outside knowledge by construction — allowed,
+# and required to be marked so that it can be *counted*.
+#
+# It was asked for in the prompt and mostly not done. On the second `langchain`
+# run, four of fifty stage-2 reasons rested on currency and one carried the
+# marker; the three that did not are the strings tested below, verbatim. Same
+# lesson as the five-line contract: a rule living only in a prompt is a rule
+# enforced by a model.
+
+
+def test_an_unmarked_currency_claim_is_counted_not_refused() -> None:
+    """Counted, and nothing else. The verdict stands and the reply still parses.
+
+    Dating an API is usually the right call; what is missing is the attribution,
+    and turning that into a parse failure would report a convention nobody
+    followed as a format nobody could read."""
+    verdict = parse_full(
+        reply(
+            VERDICT="NO",
+            REASON=(
+                "The transcript shows a complete RAG pipeline with LangChain, but uses "
+                "deprecated APIs (langchain.llms, langchain.chains, RetrievalQA)."
+            ),
+            RELEVANT="NONE",
+        ),
+        VIDEO,
+    )
+
+    assert verdict.unmarked_currency is True
+    assert verdict.parsed is True, "the five lines were fine"
+    assert verdict.problem == ""
+    assert verdict.verdict == VERDICT_NO, "the judgement is not overruled by a proxy"
+
+
+def test_the_marker_satisfies_the_check() -> None:
+    verdict = parse_full(
+        reply(
+            VERDICT="NO",
+            REASON=(
+                "Teaches a pre-0.1 API surface [outside knowledge: these import paths "
+                "were superseded]."
+            ),
+            RELEVANT="NONE",
+        ),
+        VIDEO,
+    )
+
+    assert verdict.unmarked_currency is False
+
+
+def test_reporting_what_the_video_says_about_currency_is_not_a_claim() -> None:
+    """The false positive this has to avoid, and it is a real reply.
+
+    `Zbf5Hyv2DSY` was rejected as a lecture "comparing legacy chains to LCEL" —
+    the video's subject matter, described. A reason that reports what the
+    transcript says about currency is not the judge asserting it, and marking it
+    would be marking the transcript. Same trap as "transcript" firing on every
+    honest rejection that named its evidence."""
+    verdict = parse_full(
+        reply(
+            VERDICT="NO",
+            REASON=(
+                "A conceptual lecture in which the speaker compares legacy chains to "
+                "LCEL and defines runnables, but never shows code."
+            ),
+            RELEVANT="NONE",
+        ),
+        VIDEO,
+    )
+
+    assert verdict.unmarked_currency is False
+
+
+def test_an_ordinary_rejection_does_not_trip_it() -> None:
+    verdict = parse_full(
+        reply(VERDICT="NO", REASON="A product review with no implementation detail.",
+              RELEVANT="NONE"),
+        VIDEO,
+    )
+
+    assert verdict.unmarked_currency is False
+
+
+def test_a_keep_can_carry_an_unmarked_claim_too() -> None:
+    """The rate on keeps is half the measurement.
+
+    A marker that appears only on rejections says era judgement is being used to
+    exclude and nothing else — which is the bias worth catching — and that is
+    unreadable if the check only ever runs on a NO."""
+    verdict = parse_full(
+        reply(
+            REASON=(
+                "Builds a working agent, though the tool-calling decorator it uses is "
+                "no longer the current one."
+            )
+        ),
+        VIDEO,
+    )
+
+    assert verdict.unmarked_currency is True
+    assert verdict.verdict == VERDICT_YES
+
+
+def test_an_unmarked_claim_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Counted, logged, surfaced — the same discipline as everything else here."""
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        parse_full(
+            reply(VERDICT="NO", RELEVANT="NONE",
+                  REASON="Uses the deprecated initialize_agent entry point."),
+            VIDEO,
+        )
+
+    assert "[outside knowledge" in caplog.text

@@ -196,6 +196,28 @@ not drift.
     It overrides even `noted_at` — regenerating a note from a transcript now known to be
     garbled spends a model call to make the same bad note again.
 
+    **The `[outside knowledge: ...]` marker is checked here too, and it is the one rule
+    in this file that changes no verdict.** Era is the single axis a transcript cannot
+    speak on — no video states that its own import path has been superseded — so PLAN.md
+    §7 allows that exception and requires it to be marked, in order to be *counted*.
+    Asked for in the prompt, it was measured at 1 of 4 currency claims marked on a real
+    run, so the parser detects it: a reason calling something deprecated, superseded,
+    obsolete or out of date without the marker sets `unmarked_currency`, which is logged
+    and lands on its own counter.
+
+    **Counted, not repaired, and not a parse failure.** Repairing it by appending the
+    marker would put words in the judge's mouth and leave the count measuring the
+    detector rather than the judge. Folding it into `unparsed` would report a convention
+    nobody followed as a format nobody could read — rule 14 again. And the verdict is
+    left alone because the judgement is usually right; what is missing is the
+    attribution, which is a claim about where a reason came from, not about the video.
+
+    **Attribution suppresses it.** "The speaker calls the old chain API legacy" reports
+    the transcript and needs no marker; "this uses a legacy API" is the judge's own
+    dating and does. The proxy is tuned to miss rather than to over-fire, because a
+    counter that fires on every honest rejection measures nothing — the same trap as
+    `"transcript"` matching every rejection that named its evidence.
+
 14. **Every outcome gets its own counter.** A caption skip is not a fetch failure, a
     disk hit is not a Gate 1 hit, and degraded evidence is neither. Three meanings in
     two buckets is how a round where nothing went wrong reports failures — and the
@@ -218,6 +240,34 @@ not drift.
     which is the one failure nothing downstream can detect. `order` sorts and
     `relevanceLanguage` ranks; neither can remove anything, so both are safe.
 
+    **`publishedAfter` is the exception: the code derives it, and the model does not
+    propose it at all.** The judgement and the arithmetic sat in one field and only the
+    judgement got made. Measured twice on `langchain`: a map reasoned *"last 18 months —
+    the API has churned (LLMChain→LCEL→LangGraph)"* and then emitted queries carrying
+    `order=date` and no cutoff — **0 of 29 queries filtered by date, with
+    `rejected_filters` empty**. Nothing refused it; nothing proposed it. The run before
+    managed 3 of 33, and that was read as the quota bug hiding the filter, which was
+    substantially wrong: the quota bug stopped three from running and the map never
+    wrote the other thirty.
+
+    So `RECENCY` stays the model's — *does age matter here, and why* is a real judgement
+    about an ecosystem — and *today minus eighteen months* is a calculation, done in
+    `_derive_published_after`. A calculation asked of a model is one that is sometimes
+    simply not done, and its absence looks exactly like a decision not to filter.
+
+    **A query may waive it, and a waiver is its own outcome.** `publishedAfter=any
+    (reason)` keeps the window off one query — the gap that is specifically about earlier
+    practice, where the window is what has been hiding the answer. It is counted in
+    `recency_waived` and never summed into `filters_rejected`: a refused filter means a
+    search ran wider than the *model* asked, a waiver means one ran wider than the *code*
+    decided, and a skipped duplicate means no search ran at all. Rule 14, three ways.
+
+    Derivation fills an absence and never overrules a judgement that passed the rules; it
+    does not touch a variant (a `videoDuration` slice exists to *add* width, and dating
+    it takes that back); and it obeys `user_constraints` exactly as a proposed filter
+    does — otherwise moving the arithmetic into code would have moved it out from under
+    the one constraint that outranks the reasoning.
+
     **`videoDuration` never goes on a main query.** Only on a variant that repeats a
     query it names, so the band *adds* a slice instead of removing one. A rule that
     drops Shorts is the duration bias `judge_metadata` spends four paragraphs
@@ -230,11 +280,17 @@ not drift.
     words outrank that reasoning: "history of transformers" with a twelve-month cutoff
     excludes precisely what was asked for.
 
-17. **Recency is reasoned per subject, never ruled.** "Prompt caching pricing" wants six
-    months and "SQLite WAL mode" wants any time, and no rule produces both. The reason
-    is stored on the map and printed in the report, because a call that silently
-    excludes and cannot be inspected is one nobody can correct. `ANY` is the default and
-    the wider answer.
+17. **Recency is reasoned per subject, never ruled — and then it is applied.** "Prompt
+    caching pricing" wants six months and "SQLite WAL mode" wants any time, and no rule
+    produces both. The reason is stored on the map and printed in the report, because a
+    call that silently excludes and cannot be inspected is one nobody can correct. `ANY`
+    is the default and the wider answer, and nothing is derived from it.
+
+    A reasoned window that reaches no query is the same as no reasoning at all, and for
+    two runs that is exactly what it was. Rule 16's derivation is what makes this rule
+    true rather than merely stated, and a derived cutoff carries `RECENCY_DERIVED_WHY`
+    in `filters_json` so the ledger still says whether a date was a judgement or
+    arithmetic.
 
 18. **A rejection reason is evidence about the judge, never a fact about the world.**
     The planner reads what the round decided, and the thing it must not do is redesign

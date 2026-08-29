@@ -26,11 +26,13 @@ from marginalia.brain.territory import (
     validate,
 )
 from marginalia.contracts import (
+    FILTER_FIELD_RECENCY_WAIVER,
     FILTER_ORDER,
     FILTER_PUBLISHED_AFTER,
     FILTER_RELEVANCE_LANGUAGE,
     FILTER_VIDEO_DURATION,
     ORIGIN_TERRITORY,
+    RECENCY_DERIVED_WHY,
     Brief,
     PlannedQuery,
     Recency,
@@ -265,9 +267,12 @@ def test_a_malformed_published_after_is_caught_not_executed() -> None:
     )
 
     assert len(kept) == 1, "the query still runs; only the filter is dropped"
-    assert kept[0].filters.published_after is None
     assert rejections[0].field == FILTER_PUBLISHED_AFTER
     assert "readable" in rejections[0].reason
+    # And then the window is derived onto it, which is not the rejection being
+    # undone: what the model wrote is gone, and what replaces it is the date the
+    # recency reasoning actually implies rather than the one it fumbled.
+    assert kept[0].filters.published_after == "2025-08-21"
 
 
 def test_a_future_cutoff_is_rejected() -> None:
@@ -275,8 +280,9 @@ def test_a_future_cutoff_is_rejected() -> None:
 
     kept, rejections = validate(queries, recency=Recency(months=12, reason="f"), today=TODAY)
 
-    assert kept[0].filters.published_after is None
     assert "future" in rejections[0].reason
+    # 2030 excluded everything; the derived window excludes twelve months.
+    assert kept[0].filters.published_after == "2025-08-21"
 
 
 def test_a_rejection_is_logged(caplog: pytest.LogCaptureFixture) -> None:
@@ -485,8 +491,12 @@ def test_a_cutoff_far_narrower_than_the_window_is_rejected() -> None:
         today=TODAY,
     )
 
-    assert kept[0].filters.published_after is None
     assert "excludes more than the reasoned window" in rejections[0].reason
+    # Falling back to the *reasoned* window rather than to no filter at all.
+    # Still a widening — 2026-07-01 excluded eleven months more than the
+    # judgement licensed — and now it is the judgement that decides, which is
+    # the whole point of deriving the date in code.
+    assert kept[0].filters.published_after == "2025-08-21"
 
 
 @pytest.mark.parametrize(
@@ -764,3 +774,153 @@ def test_a_parenthesised_list_of_names_survives_the_comma_split() -> None:
         "FAISS",
         "embeddings",
     ]
+
+
+# -- deriving the date window from the recency reasoning ----------------------
+#
+# The gap these close was measured twice on `langchain`. A map reasoned "last 18
+# months — LangChain's API has churned (LLMChain -> LCEL -> LangGraph)" and then
+# emitted queries carrying `order=date` and no cutoff: 0 of 29 queries filtered
+# by date, with `rejected_filters` empty. Nothing refused it; nothing proposed
+# it. `RECENCY` and `FILTERS` were separate fields and nothing joined them.
+
+
+def test_a_reasoned_window_becomes_a_date_on_every_main_query() -> None:
+    kept, rejections = validate(
+        [_query("one"), _query("two")],
+        recency=Recency(months=18, reason="the API churned"),
+        today=TODAY,
+    )
+
+    assert [query.filters.published_after for query in kept] == [
+        "2025-02-21",
+        "2025-02-21",
+    ]
+    assert not rejections, "deriving is not a rejection; nothing was refused"
+
+
+def test_the_derived_filter_says_it_was_derived() -> None:
+    """Which half made the judgement has to survive into the ledger.
+
+    A cutoff the model proposed and a cutoff the code computed are different
+    claims — one is a judgement to correct, the other is arithmetic — and
+    `filters_json` is where anyone asks."""
+    kept, _ = validate(
+        [_query()], recency=Recency(months=6, reason="pricing moved"), today=TODAY
+    )
+
+    assert kept[0].reasons[FILTER_PUBLISHED_AFTER] == (
+        "derived from the reasoned recency window (last 6 months)"
+    )
+    assert RECENCY_DERIVED_WHY in kept[0].filters_json()
+
+
+def test_any_time_derives_nothing() -> None:
+    """`ANY` is the default and the wider answer. Nothing changes for it."""
+    kept, rejections = validate([_query()], recency=Recency(), today=TODAY)
+
+    assert kept[0].filters.published_after is None
+    assert not rejections
+
+
+def test_the_user_outranks_a_derived_window_too() -> None:
+    """The rule that already governed a proposed filter governs a derived one.
+
+    Otherwise moving the arithmetic into the code would have quietly moved it
+    out from under the one constraint that outranks the reasoning."""
+    kept, _ = validate(
+        [_query()],
+        recency=Recency(months=12, reason="fast"),
+        topic="history of transformers",
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+
+
+def test_a_variant_keeps_its_width() -> None:
+    """A `videoDuration` variant exists to *add* a slice a main query buries.
+
+    Narrowing it by date takes back the width it was written for."""
+    kept, _ = validate(
+        [
+            _query("a query"),
+            _query("a query", filters=SearchFilters(video_duration="short"),
+                   variant_of="a query"),
+        ],
+        recency=Recency(months=12, reason="fast"),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after == "2025-08-21"
+    assert kept[1].filters.published_after is None
+
+
+def test_a_model_date_inside_the_window_survives_untouched() -> None:
+    """Derivation fills an absence. It never overrules a judgement that passed."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="2025-09-01"))],
+        recency=Recency(months=12, reason="fast"),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after == "2025-09-01"
+    assert not rejections
+
+
+def test_a_query_may_waive_the_window_and_it_is_recorded() -> None:
+    """The escape hatch, and the reason it is not silent.
+
+    A query deliberately about earlier practice is exactly what the window
+    hides, so there has to be a way to say so — and it is the only remaining
+    way to make a search wider than the code decided, which is why it lands on
+    its own counter rather than among the refusals."""
+    kept, rejections = validate(
+        [
+            _query("how it used to be done",
+                   filters=SearchFilters(published_after="any"),
+                   reasons={FILTER_PUBLISHED_AFTER: "the gap is about earlier practice"}),
+            _query("current practice"),
+        ],
+        recency=Recency(months=12, reason="fast"),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None, "waived, not derived"
+    assert kept[1].filters.published_after == "2025-08-21", "and only this one query"
+
+    waiver = rejections[0]
+    assert waiver.is_recency_waiver
+    assert not waiver.is_duplicate_query, "three outcomes, never two"
+    assert waiver.reason == "the gap is about earlier practice"
+
+
+def test_a_waiver_is_not_read_as_a_malformed_date() -> None:
+    """Order matters here, and getting it wrong is a silent inversion.
+
+    `any` is not a date, so a waiver read by the ordinary rules is refused as
+    malformed, counted as a filter rejection, and then has the window derived
+    onto it — the exact opposite of what the query asked for, reached through
+    two steps that each look right."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="any"))],
+        recency=Recency(months=12, reason="fast"),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+    assert [item.field for item in rejections] == [FILTER_FIELD_RECENCY_WAIVER]
+
+
+def test_a_waiver_under_any_time_recency_is_not_recorded() -> None:
+    """It prevented nothing, so there is nothing to report.
+
+    A counter that also counts the no-ops is a counter nobody can read."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="any"))],
+        recency=Recency(),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+    assert not rejections
