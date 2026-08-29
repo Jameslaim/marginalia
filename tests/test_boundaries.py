@@ -417,6 +417,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "STOP_MAX_COST",
         "STOP_LIMIT",
         "STOP_REPEATED_FAILURES",
+        "STOP_REFUSED",
         "NoteResult",
         "NoteRun",
         # answers

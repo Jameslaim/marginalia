@@ -378,6 +378,34 @@ not drift.
     in `report.md`. Written *before* its revisions are applied, so a crash between the
     two leaves the reasoning on disk rather than only its consequences.
 
+24. **A provider's refusal is authoritative; only a failure is retried.** A 4xx means
+    the request was refused, and an identical request is refused identically — so
+    `_classify` retries exactly three of them (408, 409, 429: a timeout, a conflict, a
+    rate limit, each of which clears on its own) and stops on every other. The default
+    used to be the reverse, and 402 fell through it: an account with no balance was
+    asked four times per video for three videos before the streak counter noticed.
+    Twelve calls that could only fail, on a condition that does not clear in seconds.
+
+    This is the claim the quota work already settled one layer down. Google's 429 is
+    authoritative about quota whatever the local counter reads; a provider's 402 is
+    authoritative about billing whatever the run would like to do next.
+
+    **Stopping the run and condemning the video are different claims, and only the
+    first is warranted.** A billing error is not evidence about a transcript: nobody
+    read it, it is unchanged on disk, and it must still be in the queue tomorrow. So
+    the drain records *no* `NoteResult` for the video it was on, stops with
+    `STOP_REFUSED` — its own reason, not `repeated_failures`, which is what it looked
+    like the first time — and still reports the notes already written, because there
+    were 74 of them behind the first 402.
+
+    **And a refusal may not resolve toward keeping.** `judge_metadata`, `judge_full`
+    and `judge_opening` each catch a failed call and keep the video, which is rule 8
+    applied correctly to a blip. A refusal breaks that arithmetic: every later call
+    fails identically, so keeping would walk the whole candidate set through as MAYBE,
+    fetch it, and store it on judgements that never happened. All three re-raise
+    `LlmConfigError` ahead of the catch-all. Keeping on a blip is caution; keeping on a
+    refusal is storing an unjudged library.
+
 ## Structure
 
 ```

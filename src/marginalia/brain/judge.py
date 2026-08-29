@@ -37,7 +37,7 @@ from ..contracts import (
     SearchResult,
     TerritoryMap,
 )
-from ..llm import LlmClient, Prompt, Reply, batched, load_prompt
+from ..llm import LlmClient, LlmConfigError, Prompt, Reply, batched, load_prompt
 
 log = logging.getLogger(__name__)
 
@@ -700,6 +700,16 @@ class Judge:
                 ),
                 task="judge_metadata",
             )
+        except LlmConfigError:
+            # **A refusal is not a blip, and must not resolve toward keeping.**
+            # Rule 8 sends an unanswered call toward MAYBE because the usual
+            # cause is transient and the alternative deletes videos invisibly.
+            # A 402 or a rejected key is the opposite case: every later call
+            # fails identically, so "keep on failure" would walk the whole
+            # candidate set through as MAYBE, fetch it, and store it on
+            # judgements that never happened. Keeping on a blip is caution;
+            # keeping on a refusal is storing an unjudged library.
+            raise
         except Exception as exc:  # noqa: BLE001 - a failed batch must not reject
             # The asymmetry again: a batch that errored has judged nothing, and
             # treating "no answer" as NO would delete videos on a network blip.
@@ -753,6 +763,8 @@ class Judge:
                 ),
                 task="judge_full",
             )
+        except LlmConfigError:
+            raise  # a refusal, not a blip — see judge_metadata
         except Exception as exc:  # noqa: BLE001 - a failed call must not reject
             log.warning("judge: stage-2 call failed for %s (%s) — keeping", candidate.video_id, exc)
             return FullVerdict(
@@ -809,6 +821,8 @@ class Judge:
                 ),
                 task="judge_opening",
             )
+        except LlmConfigError:
+            raise  # a refusal, not a blip — see judge_metadata
         except Exception as exc:  # noqa: BLE001 - see above
             log.warning("judge: stage-2 call failed for %s (%s) — keeping", candidate.video_id, exc)
             return OpeningVerdict(

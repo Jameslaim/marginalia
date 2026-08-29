@@ -542,3 +542,63 @@ def test_an_unmarked_claim_is_logged(caplog: pytest.LogCaptureFixture) -> None:
         )
 
     assert "[outside knowledge" in caplog.text
+
+
+# -- a refusal is not a blip ------------------------------------------------
+#
+# Rule 8 sends an unanswered call toward keeping, because the usual cause is
+# transient and the alternative deletes videos invisibly. A refusal inverts the
+# arithmetic: every later call fails identically, so "keep on failure" walks the
+# entire candidate set through as MAYBE, fetches it, and stores it on judgements
+# that never happened. Keeping on a blip is caution; keeping on a refusal is
+# storing an unjudged library.
+
+
+class Http402(Exception):
+    def __init__(self) -> None:
+        super().__init__("Insufficient Balance")
+        self.status_code = 402
+
+
+def _judge_with(exc: Exception, tmp_path):
+    from marginalia.brain.judge import Judge
+    from marginalia.llm import LlmClient
+    from tests.conftest import make_config
+
+    def transport(**kwargs):
+        raise exc
+
+    config = make_config(tmp_path)
+    return Judge(LlmClient(config.llm, transport=transport, sleep=lambda _: None))
+
+
+def test_a_refusal_propagates_instead_of_keeping(tmp_path) -> None:
+    from marginalia.contracts import Brief, SearchResult
+    from marginalia.llm import LlmConfigError
+
+    judge = _judge_with(Http402(), tmp_path)
+    candidate = SearchResult(
+        video_id=VIDEO, title="t", channel="c", description="", duration_s=60,
+        published_at="20260101", view_count=None,
+    )
+    brief = Brief(topic="prompt caching", text="INTENT\nCaching.", version="1/1")
+
+    with pytest.raises(LlmConfigError):
+        judge.judge_full(brief, candidate, transcript="hello world")
+
+
+def test_an_ordinary_call_failure_still_keeps(tmp_path) -> None:
+    """The rule it must not have broken. A network blip is still a blip."""
+    from marginalia.contracts import Brief, SearchResult
+
+    judge = _judge_with(ConnectionError("connection refused"), tmp_path)
+    candidate = SearchResult(
+        video_id=VIDEO, title="t", channel="c", description="", duration_s=60,
+        published_at="20260101", view_count=None,
+    )
+    brief = Brief(topic="prompt caching", text="INTENT\nCaching.", version="1/1")
+
+    verdict = judge.judge_full(brief, candidate, transcript="hello world")
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.parsed is False

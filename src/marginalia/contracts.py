@@ -108,6 +108,7 @@ __all__ = [
     "STOP_MAX_COST",
     "STOP_LIMIT",
     "STOP_REPEATED_FAILURES",
+    "STOP_REFUSED",
     "NoteResult",
     "NoteRun",
     # answers
@@ -1340,6 +1341,13 @@ STOP_DONE = "done"
 STOP_MAX_COST = "max_cost"
 STOP_LIMIT = "limit"
 STOP_REPEATED_FAILURES = "repeated_failures"
+# The provider refused in a way no retry addresses — no balance, a rejected key.
+# Its own reason rather than `repeated_failures`, which is what it looked like
+# the first time: three videos failed in a row and the run reported a streak,
+# when what had happened was one refusal repeated. A streak says the work is
+# going wrong; this says the work cannot start. Nothing is written about the
+# video, because a billing error is not evidence about a transcript.
+STOP_REFUSED = "provider_refused"
 
 
 @dataclass(frozen=True)

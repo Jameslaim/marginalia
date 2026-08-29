@@ -39,6 +39,7 @@ from ..contracts import (
     STATUS_HAS_TRANSCRIPT,
     STOP_LIMIT,
     STOP_MAX_COST,
+    STOP_REFUSED,
     STOP_REPEATED_FAILURES,
     NoteResult,
     NoteRun,
@@ -281,7 +282,23 @@ def write_notes(
                 run.stopped_because = STOP_MAX_COST
                 break
 
-            result = _one(config, ledger, library, client, prompt, row)
+            try:
+                result = _one(config, ledger, library, client, prompt, row)
+            except LlmConfigError as exc:
+                # Stop on the first one, and write nothing about this video.
+                # **Aborting the run and condemning the video are different
+                # claims**, and only the first is warranted by a billing error
+                # or a bad key: the transcript is fine, nobody read it, and it
+                # must still be in the queue tomorrow. So no `NoteResult` is
+                # appended — a FAILED row here would be the run's own problem
+                # recorded as the video's.
+                #
+                # Caught rather than raised past the report, because the notes
+                # already written are worth reporting: the drain that found
+                # this had 74 of them behind the failure.
+                log.error("note: stopping — %s", exc)
+                run.stopped_because = STOP_REFUSED
+                break
             run.results.append(result)
 
             streak = streak + 1 if result.outcome == FAILED else 0

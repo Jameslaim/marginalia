@@ -19,6 +19,7 @@ from conftest import make_llm_config
 
 from marginalia.contracts import Usage
 from marginalia.llm import (
+    LlmBillingError,
     LlmClient,
     LlmConfigError,
     LlmError,
@@ -223,6 +224,56 @@ def test_config_errors_fail_fast(status: int) -> None:
 
     assert len(calls) == 1, "must not retry"
     assert "llm.model" in str(caught.value)
+
+
+def test_a_402_stops_on_the_first_call() -> None:
+    """Measured, on the note drain that found this. An account with no balance
+    was asked four times per video for three videos: twelve calls, every one of
+    which could only fail, and unlike a rate limit the condition does not clear
+    in seconds. A 402 is the provider being authoritative, the same way Google's
+    429 is authoritative about quota whatever the local counter reads."""
+    instance, calls = client(HttpError(402))
+
+    with pytest.raises(LlmBillingError) as caught:
+        instance.complete("s", "u")
+
+    assert len(calls) == 1, "must not retry"
+    assert "cannot pay" in str(caught.value)
+    assert "llm.api_key" not in str(caught.value), (
+        "the key is fine and the balance is not; sending the reader to the key "
+        "is the generic message being actively wrong"
+    )
+
+
+def test_a_billing_error_is_a_config_error() -> None:
+    """Every caller that already stops on "you must fix this" stops on this too,
+    without learning a new type."""
+    assert issubclass(LlmBillingError, LlmConfigError)
+
+
+@pytest.mark.parametrize("status", [402, 405, 413, 418, 451])
+def test_an_unrecognised_4xx_is_not_retried(status: int) -> None:
+    """The default used to be to retry, and 402 fell through it.
+
+    A 4xx means the request was refused, and an identical request is refused
+    identically. The exceptions are named in `_RETRY_STATUSES` and are exactly
+    the ones that clear on their own."""
+    instance, calls = client(HttpError(status))
+
+    with pytest.raises(LlmConfigError):
+        instance.complete("s", "u")
+
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("status", [408, 409, 429])
+def test_the_retryable_4xx_still_retry(status: int) -> None:
+    """The other half of the rule above: a timeout, a conflict and a rate limit
+    are 4xx that a second attempt genuinely fixes."""
+    instance, calls = client(HttpError(status), FakeResponse("recovered"))
+
+    assert instance.complete("s", "u").text == "recovered"
+    assert len(calls) == 2
 
 
 def test_backoff_is_exponential() -> None:

@@ -42,6 +42,7 @@ __all__ = [
     "LlmClient",
     "LlmError",
     "LlmConfigError",
+    "LlmBillingError",
     "LlmUnavailable",
     "Prompt",
     "Reply",
@@ -61,6 +62,20 @@ class LlmConfigError(LlmError):
     A bad key, an unknown model, a disabled account. Retrying cannot help, and
     quietly degrading would hide the one thing that needs attention. This is
     the same missing-versus-rejected line drawn for the YouTube key.
+    """
+
+
+class LlmBillingError(LlmConfigError):
+    """The account cannot pay for the request. HTTP 402.
+
+    A subclass of `LlmConfigError` because it is the same kind of claim — the
+    provider has refused, and no retry addresses the reason — but it is worth
+    telling apart from a bad key, because the two send the reader to completely
+    different places and the generic message sends them to the wrong one.
+
+    Measured, on the note drain that found this: three videos each retried four
+    times against an account with no balance. Twelve calls that could only fail,
+    on a condition that, unlike a rate limit, does not clear in seconds.
     """
 
 
@@ -215,6 +230,9 @@ class Reply:
 # hiding it behind three silent attempts wastes both time and credits.
 _RETRY_STATUSES = frozenset({408, 409, 429, 500, 502, 503, 504})
 _CONFIG_STATUSES = frozenset({400, 401, 403, 404, 422})
+# Billing. Its own set for its own message: "check llm.api_key and llm.model"
+# is actively misleading when the key is fine and the balance is not.
+_BILLING_STATUSES = frozenset({402})
 
 
 class LlmClient:
@@ -386,16 +404,36 @@ class LlmClient:
         )
 
     def _classify(self, exc: Exception) -> LlmError:
-        """Split "retry this" from "you must fix this"."""
+        """Split "retry this" from "you must fix this".
+
+        **A 4xx this list does not recognise is not retried.** The default used
+        to be the other way round, and 402 fell through it: an account with no
+        balance was asked four times per video, which is the one shape of call
+        that is guaranteed to fail. The general rule is the one the retry set
+        was already written for — a 4xx means the request was refused, and an
+        identical request is refused identically. The two exceptions are named
+        in `_RETRY_STATUSES` and are exactly the ones that clear on their own:
+        a timeout, a conflict, a rate limit.
+        """
         status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
         if isinstance(status, int):
+            if status in _RETRY_STATUSES:
+                return LlmError(f"transient HTTP {status}")
+            if status in _BILLING_STATUSES:
+                return LlmBillingError(
+                    f"{self.config.provider} refused the request (HTTP {status}): "
+                    f"the account cannot pay for it — {_brief(exc)}"
+                )
             if status in _CONFIG_STATUSES:
                 return LlmConfigError(
                     f"{self.config.provider} rejected the request (HTTP {status}): "
                     f"check llm.api_key and llm.model={self.config.model!r} — {_brief(exc)}"
                 )
-            if status in _RETRY_STATUSES:
-                return LlmError(f"transient HTTP {status}")
+            if 400 <= status < 500:
+                return LlmConfigError(
+                    f"{self.config.provider} refused the request (HTTP {status}): "
+                    f"retrying it unchanged cannot help — {_brief(exc)}"
+                )
 
         name = type(exc).__name__
         if "Authentication" in name or "PermissionDenied" in name or "NotFound" in name:

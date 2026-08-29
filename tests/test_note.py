@@ -27,6 +27,7 @@ from marginalia.contracts import (
     STATUS_HAS_TRANSCRIPT,
     STATUS_NEEDS_ASR,
     STOP_MAX_COST,
+    STOP_REFUSED,
     STOP_REPEATED_FAILURES,
     VERDICT_NO,
 )
@@ -401,6 +402,56 @@ def test_a_run_of_failures_gives_up(tmp_path: Path) -> None:
     # Giving up early is only safe because nothing was consumed: all six are
     # still waiting for the next run.
     assert len(ledger.videos_needing_note(version="1")) == 6
+
+
+class Http402(Exception):
+    def __init__(self) -> None:
+        super().__init__("Insufficient Balance")
+        self.status_code = 402
+
+
+def test_a_billing_refusal_stops_on_the_first_video(tmp_path: Path) -> None:
+    """The drain that found this made twelve calls against an empty account:
+    three videos, four attempts each, on a condition no retry addresses.
+
+    One call now, and the run stops — but the six videos are untouched, which is
+    the half that matters. **Aborting the run and condemning the video are
+    different claims** and only the first is warranted by a billing error: the
+    transcript is fine, nobody read it, and the streak counter never sees it."""
+    ids = [f"aaaaaaaaaa{n}" for n in range(1, 7)]
+    config, library, ledger = library_with(tmp_path, *ids)
+    made = client(Http402())
+
+    run = write_notes(config, ledger, library, made, prompts_directory=prompts(tmp_path))
+
+    assert run.stopped_because == STOP_REFUSED
+    assert len(made.sent) == 1, "one call, not four attempts on each of three videos"
+    assert run.results == [], "the run failed, and no video did"
+    assert run.count(FAILED) == 0
+    # Retryable, and every one of them: the next run finds the same six waiting.
+    assert len(ledger.videos_needing_note(version="1")) == 6
+    for video_id in ids:
+        row = ledger.get(video_id)
+        assert row.noted_at is None and row.status == STATUS_HAS_TRANSCRIPT
+        assert not library.has_note(video_id)
+
+
+def test_a_refusal_keeps_the_notes_already_written(tmp_path: Path) -> None:
+    """Stopping is not the same as unwinding. The real drain had 74 notes behind
+    its first 402, and a report that raised past them would have said nothing
+    about the two hours that worked."""
+    ids = [f"aaaaaaaaaa{n}" for n in range(1, 4)]
+    config, library, ledger = library_with(tmp_path, *ids)
+    script = [GOOD_NOTE, GOOD_NOTE, Http402()]
+
+    run = write_notes(
+        config, ledger, library, client(lambda n: script[n]),
+        prompts_directory=prompts(tmp_path),
+    )
+
+    assert run.stopped_because == STOP_REFUSED
+    assert run.count(NOTED) == 2
+    assert len(ledger.videos_needing_note(version="1")) == 1
 
 
 def test_a_success_resets_the_failure_streak(tmp_path: Path) -> None:

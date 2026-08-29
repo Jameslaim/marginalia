@@ -544,6 +544,16 @@ detector; folding it into `unparsed` would report a convention nobody followed
 as a format nobody could read. The verdict is untouched, because dating an API
 is usually the right call and what is missing is the attribution.
 
+**Known, and left alone: `_tidy_reason`'s cap can truncate the marker.** The
+reason is capped before it is stored, and a marker written at the end of a long
+sentence loses its content to the ellipsis — observed as
+`[outside knowledge: initialize_agent and AgentType we…`. Detection is
+unaffected, because the check matches the opening bracket, so the *count* stays
+honest. What is lost is the audit: the marker's whole job is to say which
+outside knowledge was used, and a truncated one cannot be read back. Whoever is
+next in that parser should decide whether the marker is exempt from the cap or
+the cap is raised.
+
 The false positive it must avoid is a reason reporting what the *video* says
 about currency — `Zbf5Hyv2DSY` was rejected as a lecture *"comparing legacy
 chains to LCEL"*, which is the transcript described, not the judge asserting.

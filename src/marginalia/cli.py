@@ -57,7 +57,7 @@ from .contracts import (
 from .core.ids import extract_video_id, is_video_id
 from .flow.discover import discover
 from .flow.export import export_run
-from .llm import LlmClient, LlmError
+from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
 from .enrich.note import note_version, write_notes
@@ -97,6 +97,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A bad query, a rejected key, an unknown provider name. Deliberately
         # not softened into a fallback: all three are the user's to fix.
         return _error(str(exc), EXIT_USAGE)
+    except LlmConfigError as exc:
+        # No balance, a rejected key, an unknown model. Named here rather than
+        # left to the catch-all below, which would prefix the class name onto a
+        # message already written to be read.
+        return _error(str(exc), EXIT_FAILED)
     except KeyboardInterrupt:  # pragma: no cover
         return _error("interrupted", EXIT_FAILED)
     except Exception as exc:  # noqa: BLE001 - the CLI is the last line of defence
