@@ -1897,6 +1897,69 @@ limiter is set to 20 requests a minute, so treat B3's figure as the floor rather
 estimate. Against a run that costs 8.7¢ and takes twelve minutes, the price of reading
 everything before keeping it is 46% of the bill and 20% of the clock.
 
+### M7 — note selection, two stages, whole notes
+
+Built when the ceiling arrived, not when a count crossed a line. 309 notes are
+874,987 estimated input tokens against a 1M window — 87%, about 44 notes of
+room, and the last topic run added 41. Cost was fine ($0.12) and the answers
+were good; what ran out was space, which is the one trigger that is a cliff
+rather than a slope.
+
+**The shape.** Stage 1 sees one line per note — id, published date, title, and
+the note's own first claim, truncated — and names the notes to *skip*. Stage 2
+loads everything it did not name, whole and unchanged. 309 summary lines are
+about 20k tokens against the 875k the notes cost.
+
+**Both stages read whole notes. Never fragments.** No embedding, no vector, no
+similarity score, no chunk. That is the milestone rather than a detail of it:
+chunk-embed-retrieve destroys the whole-video understanding the note format
+exists to produce, which is §10's argument about transcripts one layer up.
+
+**Silence includes, and that is in the format.** The reply names what to drop,
+so a note the model does not mention is a note that gets read. A reply naming
+half of what it meant drops half as much; one that cannot be read at all drops
+nothing. Rule 8 lives in the output shape and not only in the prompt.
+
+**Two things a real run taught, both of them the same lesson.**
+
+The first prompt asked for the *keep* list. With a budget of 265 of 309 the
+model looped: 3,351 ids on one line, 32,768 output tokens, `finish_reason =
+length`, and the guard discarded it. Naming the excluded few is the shorter list
+near the ceiling — which is the regime the milestone exists for — and it is also
+the safer direction.
+
+The second is worse and is why the four-question gate exists. The prompt states
+a cap on how many notes may go, and nothing enforced it: the model dropped 297
+of 309 and the answers narrowed hard.
+
+| question | over the whole library | selection, uncapped |
+|---|---|---|
+| control loop | 455w, 9 videos, 309 notes | 527w, 11 videos, 265 notes *(fallback)* |
+| planner vs ReAct | 702w, 7 videos | **305w, 2 videos, 12 notes** |
+| tool failures | 1273w, 15 videos | 1013w, 8 videos, 77 notes |
+| what they get wrong | 1872w, **34 videos** | 1294w, **10 videos, 18 notes** |
+
+Nothing downstream could see any of that — the answers read as confident and
+complete. So the cap is enforced in `parse_selection`, excess drops are
+re-included from the tail of the named list, and the refusal is counted. Same
+discipline as the search-filter validator: the model proposes, the code decides
+how much of it runs.
+
+**Where it lives.** `brain/selector.py` reasons and returns identifiers, and
+performs no filesystem, database or provider access. `ask.py` builds the summary
+lines, applies the budget and loads the notes. `NoteSummary` and `Selection`
+cross the boundary and live in `contracts.py`.
+
+**What every answer now reports**: notes considered, notes loaded, the mode
+(`all`, `selected`, `fallback`), and the selector's own sentence about what
+class of note it left out — stored in the answer file, because "did it not know,
+or did it not look?" is the first question asked of a thin answer and rule 23
+says the reasoning is the half you cannot correct from.
+
+**Hard rule 1 at a new surface.** The summary lines are built from notes, so
+they are note text: they go to the model and nowhere else — not stdout, not
+`logs/`, not an answer file. What gets reported is the counts they produce.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

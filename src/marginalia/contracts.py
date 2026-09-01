@@ -57,6 +57,11 @@ __all__ = [
     "PlannedQuery",
     "FILTER_FIELD_QUERY",
     "FILTER_FIELD_RECENCY_WAIVER",
+    "NoteSummary",
+    "Selection",
+    "SELECTION_ALL",
+    "SELECTION_SELECTED",
+    "SELECTION_FALLBACK",
     "RECENCY_DERIVED_WHY",
     "FilterRejection",
     "MapSnapshot",
@@ -1455,6 +1460,70 @@ class LoadedNote:
 
 
 @dataclass(frozen=True)
+class NoteSummary:
+    """One line about one note, for the selector to choose from.
+
+    **Built from a note and never shown to a human.** Hard rule 1 does not stop
+    at whole notes: `gist` is note text, so these lines go to the model and to
+    nowhere else — not stdout, not `logs/`, not an answer file. The counts
+    derived from them are what gets reported.
+
+    Deliberately thin. The selector's job is to say *which notes to read*, and
+    it does that from a title, a date and a sentence — 309 of these are about
+    23k tokens against the 875k the notes themselves cost.
+    """
+
+    video_id: str
+    title: str
+    published: str
+    gist: str
+
+    @property
+    def line(self) -> str:
+        published = self.published or "undated"
+        return f"{self.video_id} | {published} | {self.title} | {self.gist}"
+
+
+# What the selector decided, and why. `reason` exists for rule 23: the queries
+# are the conclusion and the reasoning is the half you cannot correct from, and
+# "did it not know, or did it not look?" is the first question asked of a thin
+# answer.
+SELECTION_ALL = "all"
+SELECTION_SELECTED = "selected"
+SELECTION_FALLBACK = "fallback"
+
+
+@dataclass(frozen=True)
+class Selection:
+    """Which notes to load, how that was decided, and what it left out.
+
+    **`mode` is the field that must never be silently wrong.** `all` means the
+    library fit and every note was loaded; `selected` means the model chose;
+    `fallback` means the selector failed and the budget was filled anyway. The
+    third is not an error state to hide — rule 8 says an unusable signal
+    resolves toward including, and a fallback that looked like a selection
+    would be a narrow answer wearing a confident one's clothes.
+    """
+
+    video_ids: list[str] = field(default_factory=list)
+    mode: str = SELECTION_ALL
+    reason: str = ""
+    considered: int = 0
+    # Notes the model asked for that were dropped because the budget ran out.
+    # Counted, never silent: this is the one place selection can lose something
+    # the model actually wanted.
+    overflowed: int = 0
+    parsed: bool = True
+    problem: str = ""
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    @property
+    def selected(self) -> bool:
+        return self.mode == SELECTION_SELECTED
+
+
+@dataclass(frozen=True)
 class Opened:
     """A transcript read for one question, and why it was read."""
 
@@ -1470,6 +1539,14 @@ class Answer:
     version: str = ""
     model: str = ""
     notes_loaded: int = 0
+    # M7. Notes the library held, against `notes_loaded`, which is how many the
+    # answering call actually read. Equal until selection runs; the gap is the
+    # number that says an answer was written from part of the library.
+    notes_considered: int = 0
+    # How that gap came about, including the selector's own account of it.
+    # Rule 23: without it, "did it not know, or did it not look?" — the first
+    # question asked of a thin answer — is unanswerable from disk.
+    selection: Selection = field(default_factory=Selection)
     # What was about to be sent, estimated before sending it. Reported on every
     # answer, because the whole-library approach is only safe while it fits, and
     # an approach that is visible every time is one nobody has to remember to

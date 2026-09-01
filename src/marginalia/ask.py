@@ -29,15 +29,21 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import replace
 from typing import Any, Sequence
 
 from .config import Config
+from .brain.selector import Selector
 from .contracts import (
+    SELECTION_ALL,
+    SELECTION_FALLBACK,
     Answer,
     AnswerCitation,
     CitationScan,
     LoadedNote,
+    NoteSummary,
     Opened,
+    Selection,
 )
 from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
@@ -93,7 +99,10 @@ def estimate_tokens(notes: Sequence[LoadedNote]) -> int:
 __all__ = [
     "answer_question",
     "AskTooLarge",
+    "choose_notes",
     "estimate_tokens",
+    "fill_to_budget",
+    "summarise",
     "deep_link",
     "load_notes",
     "render_notes",
@@ -378,7 +387,20 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         f"# {answer.question}",
         "",
         f"- asked: {asked_at}",
-        f"- notes loaded: {answer.notes_loaded}",
+        f"- notes loaded: {answer.notes_loaded}"
+        + (
+            f" of {answer.notes_considered} considered"
+            if answer.notes_considered > answer.notes_loaded
+            else ""
+        ),
+        # Rule 23, and hard rule 1 in the same line: the *reason* is the
+        # selector's own sentence about what class of note it left out, which
+        # is about notes and never from one. No summary line reaches this file.
+        *(
+            [f"- selection: {answer.selection.mode} — {answer.selection.reason}"]
+            if answer.selection.mode != SELECTION_ALL
+            else []
+        ),
         # The approach, stated on every answer. A whole-library read is correct
         # while it fits, and the file that records the answer should record
         # what it took to produce — counts only, never content.
@@ -460,6 +482,238 @@ def load_notes(library: Library, ledger: Ledger | None = None) -> list[LoadedNot
             )
         )
     return notes
+
+
+# The first claim is where a note says what the video actually asserts, and it
+
+# is the closest thing a note has to a description of itself. Truncated, because
+
+# the selector needs a hint rather than the note — that is the next stage's job.
+
+_GIST_CHARS = 200
+
+_CLAIMS_RE = re.compile(r"^##\s*Claims\s*$(.*?)(?=^##\s|\Z)", re.MULTILINE | re.DOTALL)
+
+_BULLET_RE = re.compile(r"^\s*[-*]\s+(.+?)$", re.MULTILINE)
+
+_DATE_RE = re.compile(r"\b(\d{8})\b")
+
+
+
+
+
+def summarise(note: LoadedNote) -> NoteSummary:
+
+    """One line about one note, for the selector.
+
+
+
+    **Built from the note, and it never leaves this process except to the
+
+    model.** Hard rule 1 does not stop at whole notes: `gist` is note text, so
+
+    nothing here may be printed, logged or written into an answer file. What is
+
+    reported is the *counts* these produce.
+
+
+
+    The date comes from the note's own second line rather than from `meta.json`,
+
+    so a summary needs no second read of the disk.
+
+    """
+
+    published = ""
+
+    head = note.text.split("\n", 2)[:2]
+
+    if len(head) > 1:
+
+        found = _DATE_RE.search(head[1])
+
+        published = found.group(1) if found else ""
+
+
+
+    gist = ""
+
+    claims = _CLAIMS_RE.search(note.text)
+
+    if claims:
+
+        bullet = _BULLET_RE.search(claims.group(1))
+
+        if bullet:
+
+            gist = " ".join(bullet.group(1).split())[:_GIST_CHARS]
+
+    return NoteSummary(
+
+        video_id=note.video_id,
+
+        title=" ".join(note.title.split())[:120],
+
+        published=published,
+
+        gist=gist or "(the note names no claim)",
+
+    )
+
+
+
+
+
+def fill_to_budget(
+
+    notes: Sequence[LoadedNote], budget_tokens: int
+
+) -> tuple[list[LoadedNote], int]:
+
+    """As many notes as fit, in the order given, plus how many did not.
+
+
+
+    Used twice, and the second use is the important one. It packs a selection
+
+    that came back larger than the budget, and it is also what a *failed*
+
+    selection falls through to — rule 8, because filling the budget with an
+
+    arbitrary but as-complete-as-possible set beats answering from a handful
+
+    the selector never actually chose.
+
+    """
+
+    kept: list[LoadedNote] = []
+
+    spent = _PROMPT_OVERHEAD_TOKENS
+
+    for note in notes:
+
+        cost = int((len(note.text) + len(note.title)) / _CHARS_PER_TOKEN)
+
+        if kept and spent + cost > budget_tokens:
+
+            break
+
+        spent += cost
+
+        kept.append(note)
+
+    return kept, len(notes) - len(kept)
+
+
+
+
+
+def choose_notes(
+    config: Config,
+    selector: Selector | None,
+    question: str,
+    notes: Sequence[LoadedNote],
+) -> tuple[list[LoadedNote], Selection]:
+    """Decide which notes the answering call reads. M7's whole decision.
+
+    **Below the budget, everything loads.** That is not a fallback, it is the
+    measured-better path — 182 notes produced better answers than 87, and the
+    selector exists because of a ceiling rather than because selection improves
+    an answer. Giving that up on small libraries as a side effect of building
+    this would be the milestone making things worse.
+
+    Above the budget, the selector chooses whole notes, and every way that can
+    go wrong resolves toward loading more: no ceiling configured, no selector,
+    a refused or truncated or unparseable reply, an empty list — all fall
+    through to `fill_to_budget` over the whole library rather than to a narrow
+    selection or to none. A note wrongly excluded is invisible, which is this
+    project's defining error arriving in a new place.
+    """
+    ceiling = config.ask.max_input_tokens
+    if not ceiling:
+        return list(notes), Selection(mode=SELECTION_ALL, considered=len(notes))
+
+    budget = int(ceiling * config.ask.select_budget_share)
+    if estimate_tokens(notes) <= budget:
+        return list(notes), Selection(mode=SELECTION_ALL, considered=len(notes))
+
+    room, _ = fill_to_budget(notes, budget)
+    if estimate_tokens(room) > ceiling:
+        # Selection cannot rescue this: `fill_to_budget` always keeps at least
+        # one note, so a single note larger than the window leaves nothing for
+        # the selector to choose differently. Skip the call rather than spend it
+        # on a question the guard is about to refuse anyway.
+        log.warning(
+            "select: the smallest loadable set is still over the ceiling — "
+            "not calling the selector"
+        )
+        return room, Selection(
+            video_ids=[note.video_id for note in room],
+            mode=SELECTION_FALLBACK,
+            reason="a single note exceeds the input ceiling; selection cannot help",
+            considered=len(notes),
+            overflowed=len(notes) - len(room),
+        )
+
+    if selector is None:
+        log.warning(
+            "select: %d notes exceed the budget and no selector is configured — "
+            "loading the %d that fit",
+            len(notes),
+            len(room),
+        )
+        return room, Selection(
+            video_ids=[note.video_id for note in room],
+            mode=SELECTION_FALLBACK,
+            reason="no selector configured; filled the budget",
+            considered=len(notes),
+            overflowed=len(notes) - len(room),
+        )
+
+    summaries = [summarise(note) for note in notes]
+    decision = selector.select(question, summaries, keep=len(room))
+
+    if not decision.parsed or not decision.video_ids:
+        log.warning(
+            "select: the selector returned nothing usable (%s) — filling the budget "
+            "with %d of %d notes",
+            decision.problem or "no ids",
+            len(room),
+            len(notes),
+        )
+        return room, replace(
+            decision,
+            video_ids=[note.video_id for note in room],
+            mode=SELECTION_FALLBACK,
+            considered=len(notes),
+            overflowed=len(notes) - len(room),
+        )
+
+    # The reply named what to drop; `video_ids` is what survived it. Order is
+    # the library's own, so a keep-list longer than the budget is trimmed from
+    # the tail rather than reshuffled.
+    wanted = {note.video_id: note for note in notes}
+    chosen = [wanted[video_id] for video_id in decision.video_ids if video_id in wanted]
+    packed, dropped = fill_to_budget(chosen, budget)
+    if dropped:
+        log.warning(
+            "select: the selector asked for %d notes and %d fit the budget — %d dropped",
+            len(chosen),
+            len(packed),
+            dropped,
+        )
+    log.info(
+        "select: %d of %d notes selected (%d loaded after the budget)",
+        len(chosen),
+        len(notes),
+        len(packed),
+    )
+    return packed, replace(
+        decision,
+        video_ids=[note.video_id for note in packed],
+        considered=len(notes),
+        overflowed=dropped,
+    )
 
 
 def _guard_input_size(result: Answer, ceiling: int | None) -> None:
@@ -570,15 +824,29 @@ def answer_question(
     """Answer once from notes; open transcripts and answer again if asked to."""
     prompt = load_prompt("answer", directory=prompts_directory)
     started = time.monotonic()
-    notes = load_notes(library, ledger)
+    everything = load_notes(library, ledger)
     result = Answer(question=question, version=prompt.version, model=client.model)
-    result.notes_loaded = len(notes)
-    result.titles = {note.video_id: note.title for note in notes}
 
-    if not notes:
+    if not everything:
         result.text = "The library is empty — there are no notes to answer from."
         result.elapsed_s = time.monotonic() - started
         return result
+
+    # M7 stage 1. Below the budget this returns every note unchanged, which is
+    # the measured-better path and the one that must not be lost to building
+    # this. Above it, the selector picks whole notes.
+    notes, result.selection = choose_notes(
+        config,
+        Selector(client, prompts_directory=prompts_directory),
+        question,
+        everything,
+    )
+    result.notes_considered = len(everything)
+    result.notes_loaded = len(notes)
+    # Every note's title, not only the loaded ones: a citation the model invents
+    # for a note it was not given must still resolve to a real title if one
+    # exists, or the reader cannot tell a hallucination from a selection miss.
+    result.titles = {note.video_id: note.title for note in everything}
 
     # Before anything is sent. The whole-library approach is correct while it
     # fits, and the failure when it stops fitting is a cliff rather than a

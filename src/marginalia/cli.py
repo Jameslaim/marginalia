@@ -822,6 +822,14 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                     "prompt_version": answer.version,
                     "model": answer.model,
                     "notes_loaded": answer.notes_loaded,
+                    "notes_considered": answer.notes_considered,
+                    "selection": {
+                        "mode": answer.selection.mode,
+                        "reason": answer.selection.reason,
+                        "overflowed": answer.selection.overflowed,
+                        "parsed": answer.selection.parsed,
+                        "problem": answer.selection.problem,
+                    },
                     "estimated_input_tokens": answer.estimated_input_tokens,
                     "headroom": answer.headroom,
                     "opened": [
@@ -907,7 +915,22 @@ def _ask_summary(answer: Answer) -> str:
         if answer.headroom is not None
         else ""
     )
-    line += "\n          " + f"~{answer.estimated_input_tokens:,} input tokens{headroom}"
+    line += "\n          " + f"~{answer.estimated_input_tokens:,} input tokens{headroom}"
+    if answer.notes_considered > answer.notes_loaded:
+        # The number that says an answer was written from part of the library.
+        # Printed whenever it is true, because a selection nobody sees is one
+        # nobody can correct.
+        dropped = answer.notes_considered - answer.notes_loaded
+        over = (
+            f", {answer.selection.overflowed} over budget"
+            if answer.selection.overflowed
+            else ""
+        )
+        line += (
+            "\n          "
+            + f"selection: {answer.selection.mode}, {answer.notes_loaded} of "
+            + f"{answer.notes_considered} notes ({dropped} not loaded{over})"
+        )
     return line
 
 

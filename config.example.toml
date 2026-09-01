@@ -268,6 +268,14 @@ extra = { reasoning_effort = "low" }
 [llm.tasks.plan_round]
 extra = { reasoning_effort = "low" }
 
+# M7 stage 1: choosing which whole notes the answering call reads. Thinking
+# OFF, and the same shape argument as judge_full: the model is reading a list
+# and marking it, not inferring beyond what it was given, so there is nothing
+# to reason toward. It also makes the runaway-reasoning failure impossible on
+# the one call whose truncation would silently narrow an answer.
+[llm.tasks.select_notes]
+extra = { reasoning_effort = "none", temperature = 0, seed = 42 }
+
 [llm.tasks.write_note]
 extra = { reasoning_effort = "low" }
 
@@ -384,3 +392,11 @@ max_transcript_chars = 120000
 # 1,000,000-token window that is 87% and about 44 notes of room; against
 # 1,310,720 it is 67% and about 153. One discovery run added 41.
 # max_input_tokens = 1000000
+
+# M7. The share of that ceiling note selection may fill. A policy rather than
+# a provider fact, which is why this one has a default where the ceiling
+# deliberately does not. Below it the whole library loads, which is the
+# measured-better path; above it the selector runs and fills back up to here.
+# The remaining quarter is the question, the prompt, and a transcript the model
+# may open mid-answer - none of which the note estimate covers.
+# select_budget_share = 0.75

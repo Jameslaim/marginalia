@@ -559,8 +559,13 @@ including the two confounds.
 This completes the discovery-layer upgrade. What comes next should be decided by running
 it on real topics, not planned in advance.
 
-Do not add ASR or Whisper, embeddings, or retrieval or ranking over notes — each belongs
-to another milestone in `PLAN.md`. **Content fingerprinting (Gate 3) is not on that list:
+Do not add ASR or Whisper, or embeddings — each belongs to another milestone in
+`PLAN.md`. **Note selection shipped as M7** and is the exception that proves the rest:
+it was built when the ceiling arrived (874,987 tokens against a 1M window, 44 notes of
+room), not when a count crossed a line. Two stages, and **both read whole notes** — the
+selector sees one line per note and returns identifiers, `ask` loads the chosen notes
+unchanged. No embedding, no vector, no chunk, no fragment; that constraint is the
+milestone, not an implementation detail of it. **Content fingerprinting (Gate 3) is not on that list:
 it is deliberately rejected**, and PLAN.md §10 has the argument. Adding it back needs that
 argument answered, not a milestone. Do not build a gold evaluation set or tune the judge;
 both wait until real failures are observed, which is what the `decisions` log exists to
@@ -574,11 +579,13 @@ is needed, and a future session reading a stale threshold against a library that
 it would build the one thing this project has twice decided not to build, triggered by a
 number already known to be false.
 
-**The trigger is a symptom, not a count.** Cost per answer climbing, or an answer missing a
-video known to be in the library. Neither has appeared.
+**The trigger was a symptom, not a count** — and the symptom that arrived was neither of
+the two predicted. Cost stayed at $0.12 and the answers stayed good; what ran out was
+room. Below the budget every note still loads, because that is the measured-better path
+and M7 must not cost it.
 
-**And when it is eventually built, both stages read whole notes, never fragments.** This is
-a constraint, not a preference. The standard approach — chunk each note, embed the chunks,
+**Both stages read whole notes, never fragments.** This is a constraint, not a
+preference, and M7 is built to it. The standard approach — chunk each note, embed the chunks,
 retrieve the chunks — destroys the whole-video understanding the note format exists to
 produce, which is the same argument that rejected chunking transcripts at the start of the
 project (PLAN.md §10). A cheap first pass over note *titles*, selecting which full notes to

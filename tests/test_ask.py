@@ -23,10 +23,17 @@ from marginalia.ask import (
     normalise_dashes,
     parse_citations,
     parse_escalations,
+    render_answer,
     render_links,
     scan_citations,
 )
-from marginalia.contracts import AnswerCitation, LoadedNote
+from marginalia.contracts import (
+    SELECTION_ALL,
+    SELECTION_FALLBACK,
+    SELECTION_SELECTED,
+    AnswerCitation,
+    LoadedNote,
+)
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient
 
@@ -655,3 +662,108 @@ def test_the_estimate_tracks_what_the_api_reported():
     estimate = estimate_tokens(notes)
 
     assert abs(estimate - 868_399) / 868_399 < 0.01, "within 1% of the measurement"
+
+
+# -- M7: two stages, whole notes --------------------------------------------
+
+
+def test_a_library_under_budget_loads_every_note(tmp_path):
+    """The path that must not change. Selection is a response to the ceiling,
+    not an improvement on small libraries — 182 notes beat 87, and giving that
+    up as a side effect of building this would make the milestone a regression.
+    """
+    config, library = build(tmp_path, {A: "note a", B: "note b"})
+    config = replace(config, ask=make_ask_config(max_input_tokens=1_000_000))
+    spoken = client(["An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert answer.notes_loaded == 2
+    assert answer.notes_considered == 2
+    assert answer.selection.mode == SELECTION_ALL
+    assert len(spoken.sent) == 1, "one call: no selector ran"
+    sent = spoken.sent[0]["messages"][1]["content"]
+    assert "note a" in sent and "note b" in sent
+
+
+def test_a_library_over_budget_selects_and_reports_both_counts(tmp_path):
+    config, library = build(
+        tmp_path, {A: "aaa " * 4_000, B: "bbb " * 4_000, C: "ccc " * 4_000}
+    )
+    config = replace(config, ask=make_ask_config(max_input_tokens=8_000))
+    spoken = client([f"DROPPED: {B}, {C}\nWHY: only the first is on topic", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert answer.selection.mode == SELECTION_SELECTED
+    assert answer.notes_considered == 3
+    assert answer.notes_loaded == 1
+    assert answer.selection.reason == "only the first is on topic"
+    assert answer.estimated_input_tokens <= config.ask.max_input_tokens
+    answering = spoken.sent[1]["messages"][1]["content"]
+    assert "aaa" in answering and "bbb" not in answering
+
+
+def test_selected_notes_arrive_whole(tmp_path):
+    """The constraint, asserted rather than assumed. What reaches stage 2 is the
+    note as written — no chunk, no extract, no fragment."""
+    whole = "## Claims\n\n- first claim\n\n## Leaves out\n\n- the hard part\n"
+    config, library = build(tmp_path, {A: whole, B: "bbb " * 8_000})
+    config = replace(config, ask=make_ask_config(max_input_tokens=8_000))
+    spoken = client([f"DROPPED: {B}\nWHY: x", "An answer."])
+
+    answer_question(config, library, spoken, "q")
+
+    answering = spoken.sent[1]["messages"][1]["content"]
+    assert whole.strip() in answering, "the note, unchanged and entire"
+
+
+def test_a_failed_selector_fills_the_budget_rather_than_selecting_narrowly(tmp_path):
+    """Rule 8's whole point here. The alternative — answering from whatever the
+    broken reply happened to name — is a narrow answer wearing a confident
+    one's clothes."""
+    config, library = build(
+        tmp_path, {A: "aaa " * 1_000, B: "bbb " * 1_000, C: "ccc " * 1_000}
+    )
+    config = replace(config, ask=make_ask_config(max_input_tokens=5_334))
+    spoken = client(["I think the first one looks good.", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert answer.selection.mode == SELECTION_FALLBACK
+    assert answer.notes_loaded > 1, "the budget was filled, not a guess honoured"
+    assert answer.notes_considered == 3
+
+
+def test_the_summary_lines_never_reach_the_answer_file_or_the_log(tmp_path, caplog):
+    """Hard rule 1 at M7's new surface. The summaries are built *from* notes, so
+    they are note text: they go to the model and nowhere else."""
+    marker = "the speaker contradicts himself about cache expiry"
+    config, library = build(
+        tmp_path,
+        {A: f"## Claims\n\n- {marker} (00:01:00)\n", B: "bbb " * 2_000},
+    )
+    config = replace(config, ask=make_ask_config(max_input_tokens=4_000))
+    spoken = client([f"DROPPED: {A}\nWHY: the other one is off topic", "An answer."])
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia.ask"):
+        answer = answer_question(config, library, spoken, "q")
+
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+    assert marker not in rendered, "not in the answer file"
+    assert marker not in caplog.text, "not in the log"
+    assert "selection: selected" in rendered, "but the decision is recorded"
+
+
+def test_the_selection_reason_is_stored(tmp_path):
+    """Rule 23. "Did it not know, or did it not look?" is the first question
+    asked of a thin answer, and it has to be answerable from disk."""
+    config, library = build(tmp_path, {A: "aaa " * 4_000, B: "bbb " * 4_000})
+    config = replace(config, ask=make_ask_config(max_input_tokens=6_000))
+    spoken = client([f"DROPPED: {B}\nWHY: dropped the framework tutorials", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert "dropped the framework tutorials" in rendered
+    assert "1 of 2 considered" in rendered

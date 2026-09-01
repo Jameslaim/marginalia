@@ -418,12 +418,20 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "STOP_LIMIT",
         "STOP_REPEATED_FAILURES",
         "STOP_REFUSED",
+        # M7. The selector's vocabulary: `all` fit, `selected` was chosen,
+        # `fallback` means the selector failed and the budget was filled anyway.
+        "SELECTION_ALL",
+        "SELECTION_SELECTED",
+        "SELECTION_FALLBACK",
         "NoteResult",
         "NoteRun",
         # answers
         "AnswerCitation",
         "CitationScan",
         "LoadedNote",
+        # M7. One line per note, built in `ask.py` and read by `brain/selector.py`.
+        "NoteSummary",
+        "Selection",
         "Opened",
         "Answer",
         # timestamp snapping

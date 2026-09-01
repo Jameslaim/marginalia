@@ -182,6 +182,10 @@ DEFAULT_NOTE_MAX_TOKENS = 32_768
 DEFAULT_ASK_MAX_TOKENS = 32_768
 DEFAULT_ASK_MAX_TRANSCRIPTS = 3
 DEFAULT_ASK_MAX_TRANSCRIPT_CHARS = 120_000
+# M7. What fraction of the input ceiling selected notes may fill. A policy
+# rather than a provider fact, which is why this one has a default where
+# `max_input_tokens` deliberately does not.
+DEFAULT_SELECT_BUDGET_SHARE = 0.75
 
 # Placeholders only. Real rates belong in config.toml — these exist so a run
 # without pricing configured still produces an estimate rather than zero,
@@ -330,6 +334,15 @@ class AskConfig:
     # reports the size it is about to send and nothing else. Present, it warns
     # above 80% and refuses above 100%.
     max_input_tokens: int | None = None
+    # M7. The share of `max_input_tokens` note selection may fill. Not
+    # provider-specific — a policy, not a limit — so unlike the ceiling it has a
+    # default. Below this the whole library loads; above it the selector runs
+    # and fills back up to here.
+    #
+    # 0.75 leaves room for the question, the prompt, the escalation block and a
+    # transcript the model may open mid-answer, none of which the note estimate
+    # covers. Raising it buys context and narrows that margin.
+    select_budget_share: float = DEFAULT_SELECT_BUDGET_SHARE
 
 
 @dataclass(frozen=True)
@@ -612,6 +625,11 @@ def _ask(data: dict, config_path: Path) -> AskConfig:
             DEFAULT_ASK_MAX_TRANSCRIPT_CHARS,
             config_path,
             "ask",
+        ),
+        select_budget_share=float(
+            _number(
+                section, "select_budget_share", DEFAULT_SELECT_BUDGET_SHARE, config_path, "ask"
+            )
         ),
         # No default: absent means "do not guess", not "use this number".
         max_input_tokens=(
