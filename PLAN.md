@@ -110,11 +110,39 @@ Three tiers, cheapest first.
 | 260+   | 400k+ tokens      | Now add note selection |
 
 **This table was a guess and both halves of it are wrong. Superseded — see below.**
-Measured at 309 notes: the input is **868k tokens**, not the ~475k the table's rate
-implies, so the arithmetic underestimated a note by about half. And the conclusion it
-draws from its own numbers is wrong in the other direction — at nearly double the
-"add note selection" threshold, loading everything still answers in 70 seconds for
-$0.12, and **182 notes produced better answers than 87 did**. More context helped.
+Measured at 309 notes, four answers on one day:
+
+| | measured |
+|---|---|
+| notes loaded | 309 |
+| note characters | 3,466,968 |
+| input tokens reported | **868,392–868,399** (the variation is the question, not the library) |
+| per note | ~2,810 tokens, ~11,220 characters |
+| characters per token | **3.992** |
+| cost per answer | $0.12 |
+| duration | 70s – 4m18s |
+| headroom at a 1,000,000-token window | **87% used, ~44 notes of room** |
+| headroom at 1,310,720 | 67% used, ~153 notes |
+
+The table's rate implies ~475k tokens for 309 notes, so its arithmetic underestimated a
+note by about half. And the conclusion it draws from its own numbers is wrong in the other
+direction — at nearly double the "add note selection" threshold, loading everything still
+answers in 70 seconds for $0.12, and **182 notes produced better answers than 87 did**.
+More context helped. Both errors are recorded rather than the table deleted: a model wrong
+in two directions at once is worth more as a warning than as a gap.
+
+**The 3.992 is what `ask` estimates from**, since a tokenizer would be a fourth dependency
+and the dependency list is a rule. It lands within 0.2% of the usual chars/4 folklore, and
+that is written down so nobody "corrects" a measured constant to the number it already
+equals. Re-measure against the `input_tokens` every answer returns if the provider changes,
+or if the library stops being mostly English.
+
+**Headroom is now reported on every answer**, and `[ask] max_input_tokens` — no default,
+for rule 7's reason — warns at 80% and refuses at 100% before anything is sent. The other
+triggers this section names are slopes you can watch; running out of context is a cliff,
+and "wait for the symptom" is bad advice when the symptom *is* the failure. The guard turns
+the cliff into a slope. It is not the selection layer and brings it no closer; it makes the
+decision to build one happen when someone chooses rather than when a run dies.
 
 So: **the trigger is a symptom, not a count** — cost per answer climbing, or an answer
 missing a video known to be in the library. Neither has appeared at 309. And when a

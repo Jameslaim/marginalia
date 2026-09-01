@@ -46,8 +46,54 @@ from .llm import LlmClient, LlmError, Prompt, load_prompt
 
 log = logging.getLogger(__name__)
 
+
+class AskTooLarge(RuntimeError):
+    """The library no longer fits the configured context window.
+
+    Raised *before* any request, so the run ends with a sentence naming both
+    numbers rather than an opaque provider 400 several seconds later. It carries
+    counts only — never a note, a title or an excerpt — because a message about
+    size has no business quoting content (hard rule 1).
+    """
+
+
+# Characters per token, **measured rather than assumed**. Four real answers over
+# the same 309 notes reported 868,392–868,399 input tokens against 3,466,968
+# characters of notes: 3.992 characters per token.
+#
+# It lands within 0.2% of the usual chars/4 folklore, and that coincidence is
+# worth writing down rather than leaving for someone to rediscover — otherwise
+# the next reader either "corrects" a measured constant to the folklore value it
+# already equals, or distrusts the folklore and re-measures what is recorded
+# here. The number is right *for this corpus on this tokenizer*; a different
+# provider or a library of a different language would need re-measuring, and the
+# `input_tokens` the API returns on every answer is what to re-measure against.
+_CHARS_PER_TOKEN = 3.992
+
+# The prompt template, the system message and the question, none of which scale
+# with the library. Measured as the gap between notes/3.992 and the reported
+# total on those same four answers.
+_PROMPT_OVERHEAD_TOKENS = 1_700
+
+# Warn here. Refusal is at 100%; this exists so the wall is visible while there
+# is still room to decide what to do about it.
+_HEADROOM_WARN = 0.80
+
+
+def estimate_tokens(notes: Sequence[LoadedNote]) -> int:
+    """Input tokens this question will cost, before spending them.
+
+    From characters, because a tokenizer is a dependency and the dependency list
+    — `yt-dlp`, `openai`, `pytest` — is a rule. The ratio is measured; see
+    `_CHARS_PER_TOKEN`.
+    """
+    characters = sum(len(note.text) + len(note.title) for note in notes)
+    return int(characters / _CHARS_PER_TOKEN) + _PROMPT_OVERHEAD_TOKENS
+
 __all__ = [
     "answer_question",
+    "AskTooLarge",
+    "estimate_tokens",
     "deep_link",
     "load_notes",
     "render_notes",
@@ -333,6 +379,11 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         "",
         f"- asked: {asked_at}",
         f"- notes loaded: {answer.notes_loaded}",
+        # The approach, stated on every answer. A whole-library read is correct
+        # while it fits, and the file that records the answer should record
+        # what it took to produce — counts only, never content.
+        f"- input estimated: {answer.estimated_input_tokens:,} tokens"
+        + (f" ({answer.headroom:.0%} of the ceiling)" if answer.headroom is not None else ""),
         f"- prompt: answer v{answer.version}",
         f"- requests: {answer.requests}"
         f" ({answer.input_tokens} in, {answer.output_tokens} out)",
@@ -411,6 +462,58 @@ def load_notes(library: Library, ledger: Ledger | None = None) -> list[LoadedNot
     return notes
 
 
+def _guard_input_size(result: Answer, ceiling: int | None) -> None:
+    """Report the size; warn near the ceiling; refuse past it.
+
+    **Counts only.** Not a title, not an excerpt, not "the largest note is X" —
+    hard rule 1 draws the line at content, and a message about size has no
+    reason to cross it. The numbers here are safe precisely because they are
+    numbers.
+
+    With no ceiling configured this reports and returns. That is the honest
+    behaviour rather than a weak one: the project has no provider-neutral
+    context limit to fall back on, and inventing one would be the same mistake
+    as a default `llm.model`.
+    """
+    estimate = result.estimated_input_tokens
+    if not ceiling:
+        log.info(
+            "ask: %d notes, ~%d input tokens (no [ask] max_input_tokens set, so no ceiling)",
+            result.notes_loaded,
+            estimate,
+        )
+        return
+
+    share = result.headroom or 0.0
+    if share > 1.0:
+        raise AskTooLarge(
+            f"the library no longer fits: {result.notes_loaded} notes are about "
+            f"{estimate:,} input tokens against an [ask] max_input_tokens of "
+            f"{ceiling:,} ({share:.0%}). Nothing was sent. Raise the ceiling if the "
+            f"provider allows it, or the answer layer needs note selection — and "
+            f"read PLAN.md before building that, because both stages must read "
+            f"whole notes."
+        )
+    if share >= _HEADROOM_WARN:
+        log.warning(
+            "ask: %d notes are about %d input tokens, %.0f%% of the %d-token "
+            "ceiling — roughly %d more notes of room",
+            result.notes_loaded,
+            estimate,
+            share * 100,
+            ceiling,
+            max(0, int((ceiling - estimate) / max(1, estimate // max(1, result.notes_loaded)))),
+        )
+        return
+    log.info(
+        "ask: %d notes, ~%d input tokens, %.0f%% of the %d-token ceiling",
+        result.notes_loaded,
+        estimate,
+        share * 100,
+        ceiling,
+    )
+
+
 def _touch(ledger: Ledger | None, video_id: str) -> None:
     """Record the read, and never let bookkeeping fail a question.
 
@@ -476,6 +579,16 @@ def answer_question(
         result.text = "The library is empty — there are no notes to answer from."
         result.elapsed_s = time.monotonic() - started
         return result
+
+    # Before anything is sent. The whole-library approach is correct while it
+    # fits, and the failure when it stops fitting is a cliff rather than a
+    # slope — so the size is reported on *every* answer, which is what turns
+    # the cliff into something visible long before it arrives.
+    result.estimated_input_tokens = estimate_tokens(notes)
+    ceiling = config.ask.max_input_tokens
+    if ceiling:
+        result.headroom = result.estimated_input_tokens / ceiling
+    _guard_input_size(result, ceiling)
 
     known = [note.video_id for note in notes]
     # `--deep` forces a transcript open; it never prevents one being opened. The

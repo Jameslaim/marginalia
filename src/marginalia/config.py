@@ -323,6 +323,13 @@ class AskConfig:
     # Per transcript, when escalating. A 101k-character transcript is a fifth of
     # this budget on its own.
     max_transcript_chars: int
+    # The provider's context window, for the headroom guard. **No default, and
+    # that is rule 7's argument applied one field over**: a context limit is
+    # provider-specific, so any number here would be a vendor's figure chosen on
+    # the user's behalf and silently wrong on the next provider. Absent, `ask`
+    # reports the size it is about to send and nothing else. Present, it warns
+    # above 80% and refuses above 100%.
+    max_input_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -605,6 +612,12 @@ def _ask(data: dict, config_path: Path) -> AskConfig:
             DEFAULT_ASK_MAX_TRANSCRIPT_CHARS,
             config_path,
             "ask",
+        ),
+        # No default: absent means "do not guess", not "use this number".
+        max_input_tokens=(
+            _positive(section, "max_input_tokens", 0, config_path, "ask")
+            if section.get("max_input_tokens") is not None
+            else None
         ),
     )
 

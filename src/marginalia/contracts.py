@@ -1470,6 +1470,14 @@ class Answer:
     version: str = ""
     model: str = ""
     notes_loaded: int = 0
+    # What was about to be sent, estimated before sending it. Reported on every
+    # answer, because the whole-library approach is only safe while it fits, and
+    # an approach that is visible every time is one nobody has to remember to
+    # check. `headroom` is None when no ceiling is configured — the honest
+    # answer, since a context limit is a provider's number and this project
+    # does not guess one.
+    estimated_input_tokens: int = 0
+    headroom: float | None = None
     opened: list[tuple[str, str]] = field(default_factory=list)  # video_id, why
     citations: list[AnswerCitation] = field(default_factory=list)
     # Citation-shaped strings the parser could not read. Reported rather than

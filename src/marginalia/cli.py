@@ -61,7 +61,7 @@ from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
 from .enrich.note import note_version, write_notes
-from .ask import answer_question, deep_link, render_answer, render_links
+from .ask import AskTooLarge, answer_question, deep_link, render_answer, render_links
 from .enrich.timestamps import snap_library
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider
@@ -97,6 +97,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A bad query, a rejected key, an unknown provider name. Deliberately
         # not softened into a fallback: all three are the user's to fix.
         return _error(str(exc), EXIT_USAGE)
+    except AskTooLarge as exc:
+        # A sentence someone can act on, not a class name and a traceback. The
+        # whole point of the guard is that the run ends with the two numbers and
+        # what to do about them.
+        return _error(str(exc), EXIT_FAILED)
     except LlmConfigError as exc:
         # No balance, a rejected key, an unknown model. Named here rather than
         # left to the catch-all below, which would prefix the class name onto a
@@ -817,6 +822,8 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                     "prompt_version": answer.version,
                     "model": answer.model,
                     "notes_loaded": answer.notes_loaded,
+                    "estimated_input_tokens": answer.estimated_input_tokens,
+                    "headroom": answer.headroom,
                     "opened": [
                         {"video_id": video_id, "why": why} for video_id, why in answer.opened
                     ],
@@ -892,6 +899,15 @@ def _ask_summary(answer: Answer) -> str:
         f"{answer.requests} requests, ${answer.cost_usd:.4f}, "
         f"{_elapsed(answer.elapsed_s)}, v{answer.version}"
     )
+    # Printed every time, not only when it is close. The point of the number is
+    # that the whole-library approach stays visible while it is still working —
+    # a guard nobody sees until it fires is a cliff with a sign at the bottom.
+    headroom = (
+        f", {answer.headroom:.0%} of the input ceiling"
+        if answer.headroom is not None
+        else ""
+    )
+    line += "\n          " + f"~{answer.estimated_input_tokens:,} input tokens{headroom}"
     return line
 
 

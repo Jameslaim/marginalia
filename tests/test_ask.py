@@ -8,13 +8,17 @@ of which should depend on a real model having a good day.
 from __future__ import annotations
 
 import json
+import logging
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from marginalia.ask import (
+    AskTooLarge,
     answer_question,
     deep_link,
+    estimate_tokens,
     load_notes,
     normalise_dashes,
     parse_citations,
@@ -22,11 +26,11 @@ from marginalia.ask import (
     render_links,
     scan_citations,
 )
-from marginalia.contracts import AnswerCitation
+from marginalia.contracts import AnswerCitation, LoadedNote
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient
 
-from conftest import make_config
+from conftest import make_ask_config, make_config
 
 A = "dQw4w9WgXcQ"
 B = "rGf9Db4tjUQ"
@@ -550,3 +554,104 @@ def test_the_three_real_failures_end_with_one_repaired_and_two_refused() -> None
     assert [c.video_id for c in scan.citations] == ["VIg_7sqS2dE"]
     assert len(scan.repaired) == 1
     assert len(scan.unparsed) == 2
+
+
+# -- the context headroom guard ---------------------------------------------
+#
+# `ask` sends the whole library, which is correct while it fits. The other two
+# triggers PLAN.md names — cost per answer climbing, an answer missing a video
+# known to be in the library — are slopes you can watch. Running out of context
+# is a cliff, and "wait for the symptom" is bad advice when the symptom is the
+# failure. So the size is reported every time, and a configured ceiling turns
+# the cliff into a refusal that names both numbers.
+
+
+def _big(chars: int) -> str:
+    return "x" * chars
+
+
+def test_the_input_size_is_reported_without_any_ceiling(tmp_path, caplog):
+    """No ceiling configured is the default state, and it must never block.
+
+    There is no provider-neutral context limit for this project to fall back on,
+    and inventing one would be a vendor's number chosen on the user's behalf —
+    the same mistake rule 7 forbids for `llm.model`.
+    """
+    config, library = build(tmp_path, {"aaaaaaaaaaa": _big(4_000)})
+    with caplog.at_level(logging.INFO, logger="marginalia.ask"):
+        answer = answer_question(config, library, client(["An answer."]), "q")
+
+    assert answer.text == "An answer."
+    assert answer.estimated_input_tokens > 0
+    assert answer.headroom is None
+    assert "no ceiling" in caplog.text
+
+
+def test_a_library_under_the_ceiling_answers(tmp_path):
+    config, library = build(tmp_path, {"aaaaaaaaaaa": _big(4_000)})
+    config = replace(config, ask=make_ask_config(max_input_tokens=1_000_000))
+
+    answer = answer_question(config, library, client(["An answer."]), "q")
+
+    assert answer.text == "An answer."
+    assert answer.headroom is not None and answer.headroom < 0.8
+
+
+def test_a_library_near_the_ceiling_warns_and_still_answers(tmp_path, caplog):
+    """80% is where the wall becomes visible while there is still room to decide
+    what to do about it."""
+    config, library = build(tmp_path, {"aaaaaaaaaaa": _big(360_000)})
+    config = replace(config, ask=make_ask_config(max_input_tokens=100_000))
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.ask"):
+        answer = answer_question(config, library, client(["An answer."]), "q")
+
+    assert answer.text == "An answer.", "a warning, not a refusal"
+    assert 0.8 <= answer.headroom < 1.0
+    assert "ceiling" in caplog.text
+
+
+def test_over_the_ceiling_refuses_before_sending_anything(tmp_path):
+    """A clean error naming both numbers, not an opaque provider 400 several
+    seconds later. Nothing is sent, so nothing is spent."""
+    config, library = build(tmp_path, {"aaaaaaaaaaa": _big(600_000)})
+    config = replace(config, ask=make_ask_config(max_input_tokens=100_000))
+    spoken = client(["An answer."])
+
+    with pytest.raises(AskTooLarge) as caught:
+        answer_question(config, library, spoken, "q")
+
+    message = str(caught.value)
+    assert "100,000" in message, "the ceiling"
+    assert "1 notes" in message or "notes" in message
+    assert spoken.sent == [], "no request was made"
+
+
+def test_the_guard_never_quotes_a_note(tmp_path, caplog):
+    """Hard rule 1 at one more surface. A message about *size* has no reason to
+    carry content, and counts are safe precisely because they are counts — no
+    titles, no excerpts, no "the largest note is X"."""
+    secret = "the speaker contradicts himself about cache expiry four minutes apart"
+    config, library = build(tmp_path, {"aaaaaaaaaaa": secret + _big(600_000)})
+    config = replace(config, ask=make_ask_config(max_input_tokens=100_000))
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia.ask"):
+        with pytest.raises(AskTooLarge) as caught:
+            answer_question(config, library, client(["An answer."]), "q")
+
+    assert secret not in str(caught.value)
+    assert secret not in caplog.text
+    assert "title for" not in str(caught.value), "not even a title"
+
+
+def test_the_estimate_tracks_what_the_api_reported():
+    """The ratio is measured, not folklore — four real answers over 3,466,968
+    characters of notes reported 868,392–868,399 input tokens, which is 3.992
+    characters per token. It happens to land within 0.2% of the usual chars/4,
+    and that is recorded so nobody "corrects" a measured constant to the value
+    it already equals."""
+    notes = [LoadedNote(video_id="a" * 11, title="", text=_big(3_466_968))]
+
+    estimate = estimate_tokens(notes)
+
+    assert abs(estimate - 868_399) / 868_399 < 0.01, "within 1% of the measurement"

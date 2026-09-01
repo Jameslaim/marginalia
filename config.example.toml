@@ -355,3 +355,32 @@ max_transcript_chars = 1000000
 # run, so an under-set ceiling here is a run-killer rather than a quality
 # issue. A ceiling, not a target; unused headroom costs nothing per-token.
 max_tokens = 32768
+
+[ask]
+# Answering a question from every note at once: a large fixed input and one
+# answer out. Generous because reasoning bills against this ceiling and an
+# answer that runs out of room mid-sentence is worse than one costing a cent
+# more.
+max_tokens = 32768
+
+# Transcripts one question may open. Escalation is the model's decision, and
+# this is the ceiling on that decision.
+max_transcripts = 3
+
+# Per transcript, when escalating.
+max_transcript_chars = 120000
+
+# The provider's context window, for the headroom guard. **Commented out on
+# purpose, and there is no default.** A context limit is provider-specific, so
+# a number shipped here would be one vendor's figure applied to whoever comes
+# next - the same argument that leaves `llm.model` without a default.
+#
+# Unset, `ask` reports the size it is about to send and nothing else. Set, it
+# warns above 80% and refuses above 100%, naming both numbers, before any
+# request is made - running out of context is a cliff rather than a slope, and
+# the other triggers for a selection layer are slopes you can watch.
+#
+# Measured on this library: 309 notes are ~875,000 input tokens. Against a
+# 1,000,000-token window that is 87% and about 44 notes of room; against
+# 1,310,720 it is 67% and about 153. One discovery run added 41.
+# max_input_tokens = 1000000
