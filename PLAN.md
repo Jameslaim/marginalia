@@ -65,8 +65,7 @@ a lot. Discard candidates in that order.
 5. **Cheap model sorts** the survivors, one call per video, fresh context each time.
    "Relevant to this brief — yes, no, or unsure."
 6. **Fetch transcripts** for the keepers.
-7. **Gate 3 — same content?** Fingerprint the normalised text. Catches reuploads
-   that carry a different video ID.
+7. ~~**Gate 3 — same content?**~~ Rejected; see §10. Nothing runs here.
 8. **Normalise** — strip scraper UI artifacts, preserve timing gaps, capture
    YouTube chapter markers if present.
 9. **Store** transcript + metadata. Mark `needs_note`.
@@ -170,10 +169,12 @@ worked examples, and concrete numbers — the things most worth quoting.
 |------|---------|------|
 | 1. Video ID | Same video requested twice | Before spending |
 | 2. Rejection ledger | Videos already judged irrelevant | Before spending |
-| 3. Content fingerprint | Reuploads and mirrors with different IDs | After fetching |
+| ~~3. Content fingerprint~~ | ~~Reuploads and mirrors with different IDs~~ | **rejected — §10** |
 
-Gates 1 and 2 run before any money is spent. Gate 3 runs after fetching, because two
-different uploads cannot be compared until both have been read. You pay once, never again.
+Gates 1 and 2 run before any money is spent, and they are the two that exist. Gate 3 would
+have run after fetching — two different uploads cannot be compared until both have been read
+— which is also why it was never where the savings were: by the time it could fire, the
+fetch it might have avoided has already happened.
 
 ### Canonical ID extraction
 
@@ -295,11 +296,12 @@ normalise both the same way is real, but a topic is a search string and a video 
 case-sensitive identifier. `tests/test_topics.py` exists solely to state that asymmetry
 so nobody later "fixes" `ids.py` to match.
 
-### Gate 3 is still deferred
+### Gate 3 is rejected, not deferred
 
-Content fingerprinting has not been built. `content_hash` and `duplicate_of` exist in
-the schema, and Gate 1 already treats `duplicate` as known, but nothing writes them yet.
-M3 owns it.
+Content fingerprinting was parked for M3 and is now **deliberately rejected** — see §10 for
+the argument, which is rule 8's asymmetry rather than a cost objection. `content_hash` and
+`duplicate_of` remain in the schema and Gate 1 still treats `duplicate` as known, so a
+future mechanism has somewhere to write; nothing writes them, and nothing is planned to.
 
 ### Write ordering — makes crashes safe
 
@@ -332,15 +334,14 @@ If a video was transcribed by Whisper and real captions appear later, those capt
 likely better. `source` and `transcribed_at` are recorded so a re-fetch-and-replace pass
 is possible. Not built now.
 
-### Content fingerprint (Gate 3)
+### Content fingerprint (Gate 3) — rejected
 
-After fetching: take text only (drop timestamps), lowercase, strip punctuation, collapse
-whitespace, SHA-256. Exact match means identical content — store one transcript, mark the
-second row `duplicate` with `duplicate_of` set.
-
-**Near-duplicates are out of scope.** Clips cut from longer videos, or the same talk given
-at two events, will not hash-match. Exact hashing catches reuploads and mirrors, which is
-the overwhelming majority of the real problem. Revisit only if it actually bites.
+This section used to specify the mechanism: drop timestamps, lowercase, strip punctuation,
+collapse whitespace, SHA-256, and mark the second row `duplicate`. It is **not being built**
+— §10 has the reasoning. The short version is that exact hashing catches only byte-identical
+reuploads, which have never occurred here (538 transcripts, 538 distinct hashes), and
+anything looser needs a similarity threshold with nowhere safe to sit: a false positive
+deletes a good video invisibly, which is rule 8 run backwards.
 
 ### Idempotency
 
@@ -913,6 +914,48 @@ API yt-dlp already uses. Legitimate future provider if yt-dlp breaks; not worth 
 **Running the pipeline inside a Claude Code session.** Transcripts would accumulate in
 context and be resent every turn — the exact quadratic cost curve that makes long sessions
 expensive. The brain belongs in the built agent, not in the conversation driving it.
+
+**Gate 3 — content fingerprinting.** Moved here from a parked milestone, because the idea
+is reasonable enough to be proposed again and the argument against it is not visible from
+the code.
+
+*What it would solve.* Gates 1 and 2 both work on identity — *is this video ID in the
+library*, and *has this video ID been judged for this topic*. Neither catches one recording
+uploaded under three IDs, so all three would be fetched, judged, stored and noted. Three
+harms, and only one is serious: money (~2¢, trivial), context in `/ask` (irrelevant at 309
+notes, real at 1,500), and **false corroboration** — an answer citing three IDs for a claim
+with one source, which turns one talk's mistake into three apparent confirmations.
+
+*How it would work.* Shingle each transcript into overlapping n-word runs, hash them,
+compare the sets. No model, no API call, essentially free.
+
+**The cost objection is wrong, and that is recorded here on purpose.** If this file said
+"rejected because expensive", someone would later notice it is cheap and rebuild it. It is
+nearly free and it is still the wrong thing to build.
+
+*Why it is rejected.* **The threshold has nowhere safe to sit.** The same recording
+captioned by two engines, the same speaker giving the same talk twice, and two different
+people explaining the same pattern produce overlapping similarity ranges. No line separates
+them cleanly, and any line would be chosen on intuition rather than measurement.
+
+Then the asymmetry decides it. A **missed** duplicate leaves a redundant note that is
+visible in the library and cost half a cent. A **false positive** means a good video never
+enters and nothing anywhere records that it happened. That is rule 8 — ambiguity resolves
+toward keeping — and building a threshold-based deletion mechanism to fix a problem whose
+symptoms are already visible is that rule backwards.
+
+**The objection is the owner's**, and the half that makes it a rule 8 problem rather than an
+engineering one is his: a content gate risks eating legitimate topical overlap, which is two
+good talks on the same subject — exactly what a library built by searching one topic
+repeatedly is *supposed* to accumulate.
+
+*And it has never occurred.* Measured rather than assumed: 538 stored transcripts,
+normalised the way the old spec described — timestamps dropped, lowercased, punctuation
+stripped, whitespace collapsed — hash to **538 distinct values. Zero duplicate groups.**
+
+*The trigger, if this is wrong.* Two notes that say the same thing are obvious to a human
+reading them, and the check above is free and needs no machinery. Nothing is lost by waiting
+for the problem to appear.
 
 ---
 

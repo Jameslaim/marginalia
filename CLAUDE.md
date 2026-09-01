@@ -559,9 +559,10 @@ including the two confounds.
 This completes the discovery-layer upgrade. What comes next should be decided by running
 it on real topics, not planned in advance.
 
-Do not add `/ask` or `ask.py`, ASR or Whisper, embeddings, retrieval or ranking over
-notes, or content fingerprinting (Gate 3) — each belongs to another milestone in
-`PLAN.md`. Under ~100 videos the answer to "which notes are relevant?" is *all of
+Do not add `/ask` or `ask.py`, ASR or Whisper, embeddings, or retrieval or ranking over
+notes — each belongs to another milestone in `PLAN.md`. **Content fingerprinting (Gate 3)
+is not on that list: it is deliberately rejected**, and PLAN.md §10 has the argument.
+Adding it back needs that argument answered, not a milestone. Under ~100 videos the answer to "which notes are relevant?" is *all of
 them*, and there are 36. Do not build a gold evaluation set or tune the judge; both
 wait until real failures are observed, which is what the `decisions` log exists to
 make possible.
