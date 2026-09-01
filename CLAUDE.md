@@ -559,13 +559,31 @@ including the two confounds.
 This completes the discovery-layer upgrade. What comes next should be decided by running
 it on real topics, not planned in advance.
 
-Do not add `/ask` or `ask.py`, ASR or Whisper, embeddings, or retrieval or ranking over
-notes — each belongs to another milestone in `PLAN.md`. **Content fingerprinting (Gate 3)
-is not on that list: it is deliberately rejected**, and PLAN.md §10 has the argument.
-Adding it back needs that argument answered, not a milestone. Under ~100 videos the answer to "which notes are relevant?" is *all of
-them*, and there are 36. Do not build a gold evaluation set or tune the judge; both
-wait until real failures are observed, which is what the `decisions` log exists to
+Do not add ASR or Whisper, embeddings, or retrieval or ranking over notes — each belongs
+to another milestone in `PLAN.md`. **Content fingerprinting (Gate 3) is not on that list:
+it is deliberately rejected**, and PLAN.md §10 has the argument. Adding it back needs that
+argument answered, not a milestone. Do not build a gold evaluation set or tune the judge;
+both wait until real failures are observed, which is what the `decisions` log exists to
 make possible.
+
+**`/ask` loads every note, and at 309 that is still right.** The number that used to sit
+here — *"under ~100 videos the answer is all of them"* — was a guess, and it has since been
+measured and found wrong in the direction that matters: **182 notes produced better answers
+than 87 did.** More context helped. So a note count is not evidence that a selection layer
+is needed, and a future session reading a stale threshold against a library that has passed
+it would build the one thing this project has twice decided not to build, triggered by a
+number already known to be false.
+
+**The trigger is a symptom, not a count.** Cost per answer climbing, or an answer missing a
+video known to be in the library. Neither has appeared.
+
+**And when it is eventually built, both stages read whole notes, never fragments.** This is
+a constraint, not a preference. The standard approach — chunk each note, embed the chunks,
+retrieve the chunks — destroys the whole-video understanding the note format exists to
+produce, which is the same argument that rejected chunking transcripts at the start of the
+project (PLAN.md §10). A cheap first pass over note *titles*, selecting which full notes to
+load, preserves it. Vector search over fragments does not. Without this written down the
+default implementation is the wrong one.
 
 **A note is not a summary.** A summary says what a video is about; a note says what it
 claims, what it gets wrong, what it assumes, and — most valuable — what it leaves out.

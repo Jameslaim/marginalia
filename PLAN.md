@@ -92,8 +92,9 @@ be paused, batched, or run overnight.
 
 Three tiers, cheapest first.
 
-1. **Load all notes.** Under ~100 videos this is the whole library at once —
-   no search, no ranking, no embeddings needed.
+1. **Load all notes.** The whole library at once — no search, no ranking, no
+   embeddings needed. Measured working at 309; the "~100 videos" that used to
+   qualify this sentence was a guess, and the threshold it implied is wrong (below).
 2. **Answer from notes**, citing which videos.
 3. **Escalate on follow-up.** When the question needs exact wording or precise timing,
    load that video's full transcript. The agent states which transcript it is opening
@@ -108,7 +109,20 @@ Three tiers, cheapest first.
 | 200    | ~300k tokens      | Getting tight |
 | 260+   | 400k+ tokens      | Now add note selection |
 
-Retrieval machinery is only needed past ~100 videos. Build for tier one.
+**This table was a guess and both halves of it are wrong. Superseded — see below.**
+Measured at 309 notes: the input is **868k tokens**, not the ~475k the table's rate
+implies, so the arithmetic underestimated a note by about half. And the conclusion it
+draws from its own numbers is wrong in the other direction — at nearly double the
+"add note selection" threshold, loading everything still answers in 70 seconds for
+$0.12, and **182 notes produced better answers than 87 did**. More context helped.
+
+So: **the trigger is a symptom, not a count** — cost per answer climbing, or an answer
+missing a video known to be in the library. Neither has appeared at 309. And when a
+selection layer is eventually built, **both stages read whole notes, never fragments**:
+chunk-embed-retrieve destroys the whole-video understanding the note format exists to
+produce, which is the same argument that rejected chunking transcripts (§10). A cheap
+first pass over note *titles* choosing which full notes to load preserves it; vector
+search over fragments does not.
 
 ---
 
@@ -900,7 +914,10 @@ and missed all three. Chunking is lossy; whole-context reading is not.
 
 **Embeddings and a vector database.** Storing one note per video instead of ~50 chunks
 cuts the vector count by roughly 50x. At that scale plain text search over notes is
-instant. Revisit past ~100 videos, not before.
+instant. Revisit on a *symptom* — cost per answer climbing, or an answer missing a video
+known to be in the library — never on a count; the "~100 videos" that stood here was a
+guess, and 309 notes answer well (§4). And a note is the unit: embedding chunks of a note
+is the chunking §10 already rejects, one layer up.
 
 **Browser automation.** The data is available through APIs more cheaply, faster, and
 without breaking every time YouTube changes its layout.
