@@ -373,6 +373,16 @@ not drift.
     *before* a round rather than inside one: a round that dies halfway leaves the planner
     reading half a round's evidence as though it were the whole thing.
 
+    **And it has now been right once, which this file has to say too.** The rule above
+    was written entirely from the failure direction, and a rule that only ever warns
+    would have someone override a planner that was correct. On `ai agent architecture`
+    the planner stopped after round one at 10 of 10 brief items, and four questions
+    asked of the resulting library came back on **52 distinct videos — 40 cited in
+    exactly one answer, 11 in two, and one in three**. No handful was carrying the
+    answers, which is what a premature stop looks like from the outside. Round-one
+    satisfaction is a failure mode *and* sometimes a fact; the load spread across
+    several real questions is what tells them apart, and it costs four answers rather
+    than another round.
 21. **`answers/` is a record; `exports/` is a view.** An answer is written once and
     never overwritten — a collision gets a counter — because the earlier answer to the
     same question is what you compare against when a prompt change was supposed to have
@@ -450,6 +460,28 @@ not drift.
     fetch it, and store it on judgements that never happened. All three re-raise
     `LlmConfigError` ahead of the catch-all. Keeping on a blip is caution; keeping on a
     refusal is storing an unjudged library.
+
+    **A 429 is the one refusal the provider dates, and that is read rather than
+    guessed.** `Retry-After` is honoured — delay-seconds or an HTTP date, unparseable
+    treated as absent rather than as zero, so a malformed hint falls back to the
+    backoff instead of becoming a hot loop. Above `_MAX_RETRY_AFTER_S` it stops with
+    `LlmRateLimited` instead of sleeping, on this rule's own judgement: a wait longer
+    than the run is a refusal in a different costume.
+
+    **Only the request id is logged, never the error body.** A provider's body is the
+    field its support asks about *and* an echo of the request, which here is a system
+    prompt plus a whole transcript — so `_safe` puts the classification and the id in
+    the log line and nothing else, and an id that cannot be found is logged as absent.
+    Hard rule 1's worst case is reached by the most natural implementation of this
+    feature, which is why a test asserts the transcript never reaches a log record.
+
+    **Degrading instead of stopping is a real alternative, and it does not apply
+    here.** The library says it plainly — *"a memory outage degrades your agent
+    instead of taking it down"* — and that is right for an **optional subsystem**
+    whose absence still leaves the agent able to answer. This is not that: a billing
+    refusal or an hour-long rate limit means every later call fails identically, so
+    there is nothing left to degrade to. Recorded so it is not re-litigated from the
+    same video.
 
 ## Structure
 

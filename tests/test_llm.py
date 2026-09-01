@@ -12,6 +12,8 @@ bad API key helps nobody.
 
 from __future__ import annotations
 
+import logging
+
 from pathlib import Path
 
 import pytest
@@ -22,6 +24,7 @@ from marginalia.llm import (
     LlmBillingError,
     LlmClient,
     LlmConfigError,
+    LlmRateLimited,
     LlmError,
     LlmUnavailable,
     RateLimiter,
@@ -657,3 +660,142 @@ def test_the_metadata_judge_rejects_other_depth_proxies_too() -> None:
     body = load_prompt("judge_metadata").text.lower()
     assert "view count" in body
     assert "channel size" in body
+
+
+# -- Retry-After, and the request id --------------------------------------
+#
+# Both of these came out of asking marginalia's own library how production
+# agent systems handle tool failures. It named two things this codebase did not
+# do: honour the header a rate-limited server sends, and capture the one field
+# a provider needs to investigate anything.
+
+
+class HttpErrorWithHeaders(HttpError):
+    """A status error carrying response headers, as a real SDK exception does."""
+
+    def __init__(self, status_code: int, headers: dict | None = None, body: str = "") -> None:
+        super().__init__(status_code)
+        if body:
+            self.args = (f"Error code: {status_code} - {body}",)
+        self.response = type("R", (), {"headers": headers or {}})()
+
+
+def test_retry_after_seconds_is_honoured_over_the_backoff() -> None:
+    """A rate limit is the one failure where the provider states the answer, so
+    guessing at it is strictly worse than reading it."""
+    clock = FakeClock()
+    instance, calls = client(
+        HttpErrorWithHeaders(429, {"retry-after": "5"}), FakeResponse("ok"), clock=clock
+    )
+
+    assert instance.complete("s", "u").text == "ok"
+    assert len(calls) == 2
+    assert clock.slept == [5.0], "the header, not the 1s first backoff"
+
+
+def test_retry_after_as_an_http_date_is_honoured() -> None:
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    when = format_datetime(datetime.now(timezone.utc) + timedelta(seconds=8))
+    clock = FakeClock()
+    instance, _ = client(
+        HttpErrorWithHeaders(429, {"retry-after": when}), FakeResponse("ok"), clock=clock
+    )
+
+    assert instance.complete("s", "u").text == "ok"
+    assert 5.0 <= clock.slept[0] <= 9.0, "the date, read as a delay"
+
+
+def test_a_date_in_the_past_means_retry_now_not_a_negative_wait() -> None:
+    from datetime import datetime, timedelta, timezone
+    from email.utils import format_datetime
+
+    when = format_datetime(datetime.now(timezone.utc) - timedelta(hours=1))
+    clock = FakeClock()
+    instance, _ = client(
+        HttpErrorWithHeaders(429, {"retry-after": when}), FakeResponse("ok"), clock=clock
+    )
+
+    instance.complete("s", "u")
+    assert clock.slept == [0.0]
+
+
+def test_an_unreadable_retry_after_falls_back_to_the_backoff() -> None:
+    """Unparseable is *absent*, never zero. Reading a malformed hint as "wait 0s"
+    turns it into a hot loop against a server that just asked for room."""
+    clock = FakeClock()
+    instance, _ = client(
+        HttpErrorWithHeaders(429, {"retry-after": "soon-ish"}), FakeResponse("ok"), clock=clock
+    )
+
+    instance.complete("s", "u")
+    assert clock.slept == [1.0], "the ordinary first backoff"
+
+
+def test_a_wait_longer_than_the_run_stops_instead_of_hanging() -> None:
+    """Rule 24's judgement: a server answering "3600" is telling you to come back
+    after the run is over, which is a refusal in a different costume."""
+    clock = FakeClock()
+    instance, calls = client(HttpErrorWithHeaders(429, {"retry-after": "3600"}), clock=clock)
+
+    with pytest.raises(LlmRateLimited) as caught:
+        instance.complete("s", "u")
+
+    assert len(calls) == 1, "no second attempt, and no hour-long sleep"
+    assert clock.slept == []
+    assert "3600s wait" in str(caught.value)
+
+
+def test_a_rate_limit_stop_is_a_config_error() -> None:
+    """So every caller that already stops on "you must fix this" stops here too."""
+    assert issubclass(LlmRateLimited, LlmConfigError)
+
+
+def test_the_request_id_is_logged_from_the_header(caplog) -> None:
+    clock = FakeClock()
+    instance, _ = client(
+        HttpErrorWithHeaders(500, {"x-request-id": "req_abc123"}),
+        FakeResponse("ok"),
+        clock=clock,
+    )
+    with caplog.at_level(logging.INFO, logger="marginalia.llm"):
+        instance.complete("s", "u")
+
+    assert "req_abc123" in caplog.text
+
+
+def test_a_missing_request_id_is_reported_as_missing(caplog) -> None:
+    """An empty field is a complete answer. A body is not."""
+    clock = FakeClock()
+    instance, _ = client(HttpErrorWithHeaders(500), FakeResponse("ok"), clock=clock)
+    with caplog.at_level(logging.INFO, logger="marginalia.llm"):
+        instance.complete("s", "u")
+
+    assert "not reported" in caplog.text
+
+
+def test_an_error_body_never_reaches_the_log(caplog) -> None:
+    """**The test that matters.** Provider error bodies echo the request, and the
+    request here is a system prompt plus an entire transcript — hard rule 1's
+    worst case, in the file that accumulates every run and that nobody opens
+    until something is already wrong.
+
+    The obvious way to guarantee the request id is in the log is to log the whole
+    body. This asserts that road stays closed.
+    """
+    secret = "the speaker says the cache TTL is five minutes and then contradicts himself"
+    failure = HttpErrorWithHeaders(
+        500,
+        {"x-request-id": "req_xyz"},
+        body=f"{{'error': {{'message': 'bad input', 'echo': '{secret}'}}}}",
+    )
+    clock = FakeClock()
+    instance, _ = client(failure, FakeResponse("ok"), clock=clock)
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia.llm"):
+        instance.complete("s", secret)
+
+    assert "req_xyz" in caplog.text, "the id is there"
+    assert secret not in caplog.text, "and the transcript is not"
+    assert "echo" not in caplog.text

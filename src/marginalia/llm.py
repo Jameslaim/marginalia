@@ -30,8 +30,10 @@ import re
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from .config import LlmConfig
 from .contracts import Usage
@@ -43,6 +45,7 @@ __all__ = [
     "LlmError",
     "LlmConfigError",
     "LlmBillingError",
+    "LlmRateLimited",
     "LlmUnavailable",
     "Prompt",
     "Reply",
@@ -76,6 +79,21 @@ class LlmBillingError(LlmConfigError):
     Measured, on the note drain that found this: three videos each retried four
     times against an account with no balance. Twelve calls that could only fail,
     on a condition that, unlike a rate limit, does not clear in seconds.
+    """
+
+
+class LlmRateLimited(LlmConfigError):
+    """The provider asked for a wait longer than this run should take.
+
+    A subclass for the same reason `LlmBillingError` is one: every caller that
+    already stops on "you must fix this" stops here too, without learning a new
+    type — and the message can say what actually happened instead of pointing
+    at the API key.
+
+    Not every 429 lands here. A rate limit with a short `Retry-After` is waited
+    out and retried, because that is what the header is for. This is only the
+    case where honouring the header would mean sleeping past the end of the
+    run, which rule 24 calls a refusal in a different costume.
     """
 
 
@@ -294,15 +312,32 @@ class LlmClient:
                 if isinstance(error, LlmConfigError):
                     raise error from exc
                 last = error
+
+                # The provider's own answer beats our schedule. A rate limit is
+                # the one failure where it states when to come back, and
+                # guessing is strictly worse than reading — but a wait longer
+                # than the run is a refusal, so it stops instead of hanging.
+                asked = _retry_after(exc)
+                if asked is not None and asked > _MAX_RETRY_AFTER_S:
+                    raise LlmRateLimited(
+                        f"{self.config.provider} asked for a {asked:.0f}s wait "
+                        f"(Retry-After), which is longer than this run should "
+                        f"take — stopping instead {_safe(error, exc)}"
+                    ) from exc
+
                 if attempt == self._max_attempts:
                     break
-                backoff = 2.0 ** (attempt - 1)
+                backoff = 2.0 ** (attempt - 1) if asked is None else asked
                 log.info(
-                    "llm: attempt %d/%d failed (%s); retrying in %.0fs",
+                    "llm: attempt %d/%d failed (%s); retrying in %.0fs%s",
                     attempt,
                     self._max_attempts,
-                    error,
+                    # Never the exception and never `_brief`: both carry the
+                    # provider's message, which is a response body, which is
+                    # what rule 1 keeps out of `logs/`.
+                    _safe(error, exc),
                     backoff,
+                    " (as the provider asked)" if asked is not None else "",
                 )
                 self._sleep(backoff)
                 continue
@@ -332,6 +367,8 @@ class LlmClient:
             return reply
 
         raise LlmError(f"model call failed after {self._max_attempts} attempts: {last}")
+
+    # -- what a failure may say about itself -------------------------------
 
     # -- internals ---------------------------------------------------------
 
@@ -444,8 +481,99 @@ class LlmClient:
         return LlmError(f"{name}: {_brief(exc)}")
 
 
+# A rate limit is the one failure where the provider states the answer, so
+# guessing at it is strictly worse than reading it. Two wire formats are legal:
+# delay-seconds, and an HTTP date.
+_RETRY_AFTER_HEADER = "retry-after"
+
+# Above this, waiting is not retrying. A server answering "3600" is telling you
+# to come back after the run is over, and rule 24's judgement applies: a wait
+# longer than the run is a refusal wearing a different costume, so it stops
+# rather than hanging. Two minutes is longer than any backoff this file
+# schedules and far shorter than a note drain.
+_MAX_RETRY_AFTER_S = 120.0
+
+# Where a provider puts the one field its support will ask for. Headers first,
+# because a header cannot contain a transcript; the SDK attribute second.
+_REQUEST_ID_HEADERS = ("x-request-id", "request-id", "x-amzn-requestid", "cf-ray")
+
+
+def _headers(exc: Exception) -> Mapping[str, str]:
+    """The response headers, or an empty mapping. Never raises, never parses a body."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    return headers if hasattr(headers, "get") else {}
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """Seconds the provider asked us to wait, or `None` if it did not say.
+
+    **Unparseable is absent, never zero.** A header this cannot read must fall
+    back to the backoff schedule, because reading it as "wait 0s" would turn a
+    malformed hint into a hot loop against a server that just asked for room.
+
+    A date in the past is a real answer — "you may retry now" — and clamps to
+    zero rather than going negative.
+    """
+    raw = _headers(exc).get(_RETRY_AFTER_HEADER)
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    try:
+        return max(0.0, float(text))
+    except ValueError:
+        pass
+    try:
+        moment = parsedate_to_datetime(text)
+    except (TypeError, ValueError):
+        return None
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return max(0.0, (moment - datetime.now(timezone.utc)).total_seconds())
+
+
+def _request_id(exc: Exception) -> str:
+    """The provider's request id, or `""`. **Reads a header, never a body.**
+
+    The obvious implementation of "make sure the id is in the log" is to log
+    the whole error body, and that is hard rule 1's worst case: provider error
+    bodies echo the request, and the request here is a system prompt plus an
+    entire transcript. A log file is the worst place for that to land, because
+    it accumulates every run and nobody opens it until something is already
+    wrong.
+
+    So the id is extracted as its own field and only that field is logged. When
+    it cannot be found the absence is logged, which is a complete and honest
+    answer; a body is not.
+    """
+    headers = _headers(exc)
+    for name in _REQUEST_ID_HEADERS:
+        value = headers.get(name) or headers.get(name.title())
+        if value:
+            return " ".join(str(value).split())[:120]
+    # The SDK lifts it onto the exception for exactly this purpose. An
+    # attribute, not a parsed body.
+    value = getattr(exc, "request_id", None)
+    return " ".join(str(value).split())[:120] if value else ""
+
+
 def _brief(exc: Exception) -> str:
     return " ".join(str(exc).split())[:200]
+
+
+def _safe(error: Exception, exc: Exception) -> str:
+    """What a *log line* may say about a failure: the classification and the id.
+
+    Deliberately not `_brief`, and deliberately not the exception. Those carry
+    the provider's message, which is a response body, which is the thing rule 1
+    says must never reach `logs/`. The classification (`transient HTTP 429`)
+    and the request id are both bounded, both useful, and neither can contain a
+    transcript.
+    """
+    request_id = _request_id(exc)
+    return f"{error} [request id: {request_id or 'not reported'}]"
 
 
 def batched(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
