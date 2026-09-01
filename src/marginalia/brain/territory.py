@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from typing import Iterable, Sequence
 
@@ -55,6 +56,7 @@ from ..contracts import (
     Recency,
     SearchFilters,
     TerritoryMap,
+    Usage,
 )
 from ..llm import LlmClient, Prompt, load_prompt
 
@@ -442,6 +444,61 @@ def tidy(raw: str, *, limit: int) -> str:
 # -- validation ---------------------------------------------------------------
 
 
+# How many times the recency judgement is sampled before a window is derived.
+# Three, and measured rather than chosen — see `widest_recency`.
+RECENCY_SAMPLES = 3
+
+
+def widest_recency(samples: Sequence[Recency]) -> Recency:
+    """The widest of several recency judgements, with all of them recorded.
+
+    **Why the widest rather than the first, the modal, or the mean.** Rule 16
+    made this call load-bearing: it derives `publishedAfter` onto every main
+    query, so a judgement that moves between samples decides what a run is
+    allowed to see. Measured, ten samples per topic with the brief held fixed:
+
+        ai agent architecture   ANY x4, 24m x4, 18m x2     3 distinct
+        langchain               24m x4, 18m x3, 12m x3     3 distinct
+
+    and the real `ai agent architecture` run answered 36 months, wider than any
+    of the ten. Against the 31 videos that run kept, 24 months would have
+    excluded 2, 18 months 4, and 12 months 7 — and among the four is *Building
+    Effective Agents with LangGraph*, which the planner named as its evidence
+    that a MUST CONTAIN item was covered. A different sample does not merely
+    shrink the library; it invalidates a coverage claim the run reports as fact.
+
+    The reasons are individually correct, which is the point. *"The modern
+    meaning of 'AI agent' only settled from late 2023"* and *"ReAct and
+    tool-use loops are stable patterns taught the same way since 2022"* are
+    both true. This is a well-posed question with several defensible answers,
+    not a prompt to fix.
+
+    **What makes the widest safe is an asymmetry in the same measurement.** The
+    call got the *direction* right 10 of 10 on `langchain` — always a window,
+    never `ANY` — and varied only on *how far back*. So widest-of-three keeps
+    the reliable half of the judgement and neutralises the unreliable half, and
+    it does not collapse to `ANY`: on `langchain` it still returns 24 months.
+    The odds of landing on the narrowest observed window fall from 0.2 to 0.008
+    on the first topic and 0.3 to 0.027 on the second, for two extra calls.
+
+    This is rule 8 reaching the search layer. An unstable exclusion is
+    ambiguity, and ambiguity resolves toward keeping — because a narrow window
+    removes foundational material before anything downstream can see that it
+    existed.
+
+    `ANY` is the widest answer and wins outright. An empty list is `ANY`, which
+    is the same default a run with no map at all gets.
+    """
+    if not samples:
+        return Recency()
+    windows = tuple(sample.months for sample in samples)
+    if any(month is None for month in windows):
+        winner = next(sample for sample in samples if sample.months is None)
+    else:
+        winner = max(samples, key=lambda sample: sample.months or 0)
+    return Recency(months=winner.months, reason=winner.reason, samples=windows)
+
+
 # The values a query uses to say "not this one" to the derived date window.
 # Deliberately a small closed set of the ways a model writes *no limit*, and
 # deliberately not a free-text field: a waiver is the one thing here that makes
@@ -463,6 +520,16 @@ def _waiver_value(query: PlannedQuery) -> str:
     """
     value = (query.filters.published_after or "").strip().lower()
     return value if value in _WAIVER_VALUES else ""
+
+
+def _derived_why(recency: Recency) -> str:
+    """The `why` a derived cutoff carries into `filters_json`."""
+    if not recency.samples or recency.agreed:
+        return f"{RECENCY_DERIVED_WHY} ({recency.label})"
+    return (
+        f"{RECENCY_DERIVED_WHY} ({recency.label}; "
+        f"{len(recency.samples)} samples returned {recency.samples_label}, widest taken)"
+    )
 
 
 def _derive_published_after(
@@ -538,7 +605,13 @@ def _derive_published_after(
                 # `_filter_problem` is there to accept a date a *model*
                 # computed a few days off; arithmetic done here is exact, and
                 # the widest date the reasoning allows is the right one.
-                FILTER_PUBLISHED_AFTER: f"{RECENCY_DERIVED_WHY} ({recency.label})",
+                #
+                # Carrying every sample, not just the winner. The judgement is
+                # sampled three times and the widest taken, so "was this window
+                # a consensus or a coin flip?" is a question the ledger can
+                # answer on any run months later — and the answer changes how
+                # much a stored cutoff should be trusted.
+                FILTER_PUBLISHED_AFTER: _derived_why(recency),
             },
         ),
         None,
@@ -841,14 +914,87 @@ class Mapper:
         return self._cache[name]
 
     def map(
-        self, brief: Brief, *, count: int = 12, max_tokens: int | None = None
+        self,
+        brief: Brief,
+        *,
+        count: int = 12,
+        max_tokens: int | None = None,
+        recency_samples: int = RECENCY_SAMPLES,
     ) -> TerritoryMap:
-        """One call. A failure returns an empty map rather than raising.
+        """Sample the map `recency_samples` times; keep the first, widen the window.
 
+        **The first usable reply is the map.** Its concepts, vocabulary and
+        queries are one coherent account of a subject, and mixing three maps'
+        queries together would be a different change from the one measured — so
+        the later samples contribute exactly one thing: their recency judgement.
+
+        The window is then the widest of the three, for the reasons in
+        `widest_recency`. Every sample's tokens are counted, because the run's
+        cost report must not under-report a call it made.
+
+        A failure or a truncated reply returns an empty map rather than raising.
         Discovery still has the brief's own queries, so a run whose mapping call
-        failed is a narrower run, not a dead one. Raising here would make the
-        new, unproven step able to kill a loop that worked before it existed.
+        failed is a narrower run, not a dead one — and a sample that fails
+        simply casts no vote, which leaves the window narrower than it might
+        have been but never narrower than one sample alone would have made it.
         """
+        first: TerritoryMap | None = None
+        recencies: list[Recency] = []
+        spent = Usage()
+
+        for attempt in range(max(1, recency_samples)):
+            sample = self._sample(brief, count=count, max_tokens=max_tokens)
+            spent.add(
+                Usage(
+                    requests=1,
+                    input_tokens=sample.input_tokens,
+                    output_tokens=sample.output_tokens,
+                )
+            )
+            if not sample.parsed:
+                log.info(
+                    "territory: recency sample %d of %d was unusable (%s)",
+                    attempt + 1,
+                    recency_samples,
+                    sample.problem,
+                )
+                continue
+            recencies.append(sample.recency)
+            if first is None:
+                first = sample
+
+        if first is None:
+            # Every sample failed. Return the last one so its problem is
+            # reported, with the cost of all of them.
+            return replace(
+                sample, input_tokens=spent.input_tokens, output_tokens=spent.output_tokens
+            )
+
+        recency = widest_recency(recencies)
+        if not recency.agreed:
+            log.info(
+                "territory: recency sampled %s — taking the widest (%s)",
+                recency.samples_label,
+                recency.label,
+            )
+        # Re-validated against the widened window, because the first sample's
+        # queries were checked against the first sample's recency: a
+        # `publishedAfter` the model proposed may now be legal that was not, and
+        # every main query needs the derived cutoff recomputed from the winner.
+        kept, rejections = validate(first.queries, recency=recency, topic=brief.topic)
+        return replace(
+            first,
+            recency=recency,
+            queries=kept,
+            rejected=[*first.rejected, *rejections],
+            input_tokens=spent.input_tokens,
+            output_tokens=spent.output_tokens,
+        )
+
+    def _sample(
+        self, brief: Brief, *, count: int, max_tokens: int | None
+    ) -> TerritoryMap:
+        """One mapping call, parsed and validated against its own recency."""
         prompt = self.prompt(MAP_PROMPT)
         try:
             reply = self.client.complete(

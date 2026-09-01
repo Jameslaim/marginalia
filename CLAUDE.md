@@ -255,6 +255,51 @@ not drift.
     `_derive_published_after`. A calculation asked of a model is one that is sometimes
     simply not done, and its absence looks exactly like a decision not to filter.
 
+    **The window is sampled three times and the widest is taken.** Making the call
+    load-bearing made its variance load-bearing, and the variance was then measured —
+    ten samples per topic, brief and prompt held fixed:
+
+    | topic | distribution | distinct |
+    |---|---|---|
+    | `ai agent architecture` | ANY ×4, 24m ×4, 18m ×2 | 3 |
+    | `langchain` | 24m ×4, 18m ×3, 12m ×3 | 3 |
+
+    The real `ai agent architecture` run answered 36 months, wider than any of the ten.
+    Against the 31 videos it kept, 24 months would have excluded 2, 18 months 4, and
+    12 months 7 — and one of the four is *Building Effective Agents with LangGraph*,
+    the video the planner named as its evidence that a MUST CONTAIN item was covered.
+    **A different sample does not only shrink the library; it invalidates a coverage
+    claim the run reports as fact.**
+
+    The reasons are individually correct, and that is the point: *"the modern meaning
+    of 'AI agent' only settled from late 2023"* and *"ReAct and tool-use loops are
+    stable patterns taught the same way since 2022"* are both true. This is a
+    well-posed question with several defensible answers, not a prompt to fix.
+
+    **What makes the widest safe is the direction/magnitude asymmetry in the same
+    measurement.** The call got the direction right 10 of 10 on `langchain` — always a
+    window, never `ANY` — and varied only on how far back. So widening neutralises the
+    unreliable half of the judgement and keeps the reliable half, and it does *not*
+    collapse to `ANY`: on `langchain` widest-of-three still returns 24 months. Odds of
+    landing on the narrowest observed window fall from 0.2 to 0.008 and from 0.3 to
+    0.027, for two extra calls at about a third of a cent.
+
+    Stated plainly, because it is the whole argument: **an unstable exclusion is
+    ambiguity, and rule 8 says ambiguity resolves toward keeping.** This is that rule
+    reaching the search layer.
+
+    Three things it does not change. `user_constraints` still outrank it — widening is
+    a floor on the *model's* judgement, never on the user's, or it would become a route
+    around a constraint the user set. The per-query waiver is untouched and counted
+    separately in `recency_waived`; the two cover different runs, since the waiver fires
+    when the map notices the conflict itself (10 of 20 measured samples) and widening
+    covers the runs where it does not. And a `videoDuration` variant stays wide.
+
+    **Every sample is stored**, not just the winner: `RECENCY_DERIVED_WHY` carries the
+    window that ran and what the other two said, so *"was this a consensus or a coin
+    flip?"* is answerable from a stored run. Rule 23 — the conclusion is the half you
+    cannot correct from.
+
     **A query may waive it, and a waiver is its own outcome.** `publishedAfter=any
     (reason)` keeps the window off one query — the gap that is specifically about earlier
     practice, where the window is what has been hiding the answer. It is counted in

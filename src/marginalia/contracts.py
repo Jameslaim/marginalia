@@ -327,10 +327,26 @@ class Recency:
 
     months: int | None = None
     reason: str = ""
+    # Every window the call returned this run, in the order sampled, including
+    # the one that won. The judgement is sampled three times and the widest is
+    # taken — see `widest_recency` — so a stored map has to say whether its
+    # window was a consensus or a coin flip. Rule 23: the conclusion is the
+    # half you cannot correct from. Empty on a map built from one sample.
+    samples: tuple[int | None, ...] = ()
 
     @property
     def limited(self) -> bool:
         return self.months is not None
+
+    @property
+    def agreed(self) -> bool:
+        """Did every sample return the same window? False when they disagreed."""
+        return len(set(self.samples)) <= 1
+
+    @property
+    def samples_label(self) -> str:
+        """``24/18/12 months`` — the samples as a reader would say them."""
+        return "/".join("any time" if m is None else str(m) for m in self.samples)
 
     @property
     def label(self) -> str:
@@ -588,7 +604,11 @@ class TerritoryMap:
                 "version": self.version,
                 "concepts": self.concepts,
                 "vocabulary": self.vocabulary,
-                "recency": {"months": self.recency.months, "reason": self.recency.reason},
+                "recency": {
+                    "months": self.recency.months,
+                    "reason": self.recency.reason,
+                    "samples": list(self.recency.samples),
+                },
                 "queries": [
                     {
                         "text": query.text,

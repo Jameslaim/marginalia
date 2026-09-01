@@ -24,6 +24,7 @@ from marginalia.brain.territory import (
     parse_map,
     user_constraints,
     validate,
+    widest_recency,
 )
 from marginalia.contracts import (
     FILTER_FIELD_RECENCY_WAIVER,
@@ -657,7 +658,10 @@ def test_the_mapper_returns_a_validated_map() -> None:
     territory = mapper.map(BRIEF)
 
     assert territory.vocabulary == ["ReAct", "LangGraph", "scratchpad", "vector store"]
-    assert territory.input_tokens == 100
+    # Every sample's tokens, not the first one's. The recency judgement is
+    # sampled three times and a cost report that named one of the three would
+    # under-report a call the run actually made.
+    assert territory.input_tokens == 300
     assert territory.latency_s == 1.5
 
 
@@ -691,7 +695,7 @@ def test_the_mapping_call_names_its_own_task() -> None:
     client = FakeClient(FakeReply(GOOD_MAP))
     Mapper(client).map(BRIEF)
 
-    assert client.tasks == ["map_territory"]
+    assert client.tasks == ["map_territory"] * 3, "one task name, three samples"
 
 
 def test_the_mapper_validates_before_returning() -> None:
@@ -924,3 +928,128 @@ def test_a_waiver_under_any_time_recency_is_not_recorded() -> None:
 
     assert kept[0].filters.published_after is None
     assert not rejections
+
+
+# -- widest of three --------------------------------------------------------
+#
+# Rule 16 made this call load-bearing, and then it was measured: ten samples on
+# one brief returned three distinct windows per topic — `ai agent architecture`
+# ANY/24/18, `langchain` 24/18/12 — and the real run answered 36, wider than any
+# of the ten. Against the 31 videos that run kept, 24 months would have excluded
+# 2, 18 months 4, and 12 months 7, and one of the four is the video the planner
+# named as its evidence that a MUST CONTAIN item was covered.
+#
+# What makes the widest safe rather than merely wide is the other half of the
+# measurement: the call got the *direction* right 10 of 10 on `langchain`, so
+# widening neutralises the unreliable half of the judgement and keeps the
+# reliable one. This is rule 8 at the search layer — an unstable exclusion is
+# ambiguity, and ambiguity resolves toward keeping.
+
+
+def test_the_widest_of_three_windows_wins() -> None:
+    chosen = widest_recency(
+        [Recency(12, "a year of churn"), Recency(24, "two years"), Recency(18, "eighteen")]
+    )
+
+    assert chosen.months == 24
+    assert chosen.reason == "two years", "the winning sample's reasoning travels with it"
+    assert chosen.samples == (12, 24, 18), "and all three are recorded"
+    assert not chosen.agreed
+
+
+def test_any_is_widest_and_wins_outright() -> None:
+    """`ANY` is not a large number, it is the absence of a cutoff, so it cannot
+    lose to one. The `ai agent architecture` samples split ANY/24/18 — the case
+    this exists for."""
+    chosen = widest_recency(
+        [Recency(18, "eighteen"), Recency(None, "patterns are stable"), Recency(24, "two years")]
+    )
+
+    assert chosen.months is None
+    assert not chosen.limited
+    assert chosen.reason == "patterns are stable"
+    assert chosen.samples == (18, None, 24)
+
+
+def test_agreement_is_recorded_as_agreement() -> None:
+    chosen = widest_recency([Recency(12, "a"), Recency(12, "b"), Recency(12, "c")])
+
+    assert chosen.months == 12
+    assert chosen.agreed, "three samples, one answer — a consensus, and it says so"
+
+
+def test_widening_does_not_collapse_to_any() -> None:
+    """The measured `langchain` distribution: always a window, never ANY. Taking
+    the widest must still return a window, or the fix would throw away the half
+    of the judgement that was reliable."""
+    chosen = widest_recency([Recency(24, "a"), Recency(18, "b"), Recency(12, "c")])
+
+    assert chosen.months == 24
+    assert chosen.limited
+
+
+def test_no_samples_is_any() -> None:
+    assert widest_recency([]).months is None
+
+
+def test_the_derived_reason_names_every_sample() -> None:
+    """"Was this window a consensus or a coin flip?" has to be answerable from a
+    stored run, not from a rerun. Rule 23: the conclusion is the half you cannot
+    correct from."""
+    kept, _ = validate(
+        [_query()],
+        recency=Recency(24, "two years", samples=(24, 18, 12)),
+        today=TODAY,
+    )
+
+    why = kept[0].reasons[FILTER_PUBLISHED_AFTER]
+    assert RECENCY_DERIVED_WHY in why
+    assert "24/18/12" in why and "widest taken" in why
+    assert "24/18/12" in kept[0].filters_json()
+
+
+def test_a_widened_window_still_loses_to_the_user() -> None:
+    """Widest-of-three is a floor on the *model's* judgement, never on the
+    user's. Rule 16 is explicit that the user's own words outrank the reasoning,
+    and widening must not become a route around a constraint they set."""
+    kept, _ = validate(
+        [_query()],
+        recency=Recency(24, "two years", samples=(24, 18, 12)),
+        topic="history of transformers",
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+
+
+def test_a_duration_variant_stays_wide_under_a_widened_window() -> None:
+    """Unchanged by this pass, and checked because the interaction is easy to
+    break: a variant exists to *add* a slice a main query buries."""
+    kept, _ = validate(
+        [
+            _query("a query"),
+            _query("a query", filters=SearchFilters(video_duration="short"),
+                   variant_of="a query"),
+        ],
+        recency=Recency(24, "two years", samples=(24, 18, 12)),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after == "2024-08-21"
+    assert kept[1].filters.published_after is None
+
+
+def test_a_waiver_still_wins_against_a_widened_window() -> None:
+    """The per-query waiver is untouched, and the two mitigations cover
+    different runs: the waiver fires when the map notices the conflict — it did
+    on 10 of 20 measured samples — and widening covers the runs where it does
+    not. `recency_waived` keeps its own counter; rule 14."""
+    kept, rejections = validate(
+        [_query(filters=SearchFilters(published_after="any"))],
+        recency=Recency(24, "two years", samples=(24, 18, 12)),
+        today=TODAY,
+    )
+
+    assert kept[0].filters.published_after is None
+    assert rejections[0].is_recency_waiver
+    assert not rejections[0].is_duplicate_query
