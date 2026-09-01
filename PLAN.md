@@ -1333,6 +1333,87 @@ The measurement that says whether this worked is not "how many filters ran" but
 the one below it: of the videos kept, how many predate the window. It was 14 of
 24, then 6 of 19, both with no filter running at all.
 
+**Confirmed on a real run.** `ai agent architecture` reasoned *"last 36 months —
+LLM-native agent architecture emerged with ReAct (2022) and the framework
+ecosystem is younger; anything older covers classical AI agents, a different
+subject"*, and **17 of 18 queries carried `publishedAfter=2023-08-29`**. The
+eighteenth is the short-form variant, left wide on purpose.
+
+**And `--dry-run` does not predict what the paid run will filter on.** The same
+topic string, minutes earlier, answered `ANY`. A dry run validates *the brief
+and the vocabulary* — it makes the run's interpretation of the subject visible
+before any money is spent, which is what it is genuinely good for and what it
+was used for here. It does not validate the filters, because the map is written
+fresh on every run and the recency call is a judgement resampled with it. Anyone
+reaching for `--dry-run` as a pre-flight check should know which half it covers.
+
+### How stable is the recency call? Measured: not very
+
+Rule 16 made this call load-bearing. Before it, the window was reasoned and then
+reached nothing, so its variance cost nothing; now it derives `publishedAfter`
+onto every main query — 17 of 18 on the `ai agent architecture` run — and a
+judgement that moves between samples decides what a run is allowed to see. The
+direction of that risk is the bad one: a narrow sample excludes foundational
+material before anything downstream can notice it, which is rule 8's invisible
+error arriving through a fix.
+
+Ten samples per topic, brief and territory prompt held fixed, nothing varying
+but the model:
+
+| topic | distribution | distinct | widest | narrowest |
+|---|---|---|---|---|
+| `ai agent architecture` | ANY ×4, 24m ×4, 18m ×2 | **3** | any time | 18 months |
+| `langchain` | 24m ×4, 18m ×3, 12m ×3 | **3** | 24 months | 12 months |
+
+**Spread on both, and bimodal on one.** For `ai agent architecture` the call is
+not choosing *how much* age matters but *whether it matters at all* — and the
+two modes are not neighbouring answers. Its real run answered 36 months, wider
+than any of the ten, so the observed range across eleven samples is
+`ANY / 36 / 24 / 18`.
+
+**What the spread costs, against what that run actually kept:**
+
+| window | cutoff | keepers it would have excluded |
+|---|---|---|
+| any time | — | 0 of 31 |
+| 36 months *(what ran)* | 2023-08-28 | 0 of 31 |
+| 24 months | 2024-08-28 | 2 |
+| 18 months | 2025-02-28 | 4 |
+| 12 months | 2025-08-28 | 7 |
+
+Among the four lost at 18 months is *Building Effective Agents with LangGraph*,
+which the planner named in its own coverage assessment. Same topic, same brief,
+a different sample of one call, and a fifth of the library does not exist.
+
+**The reasons are individually good, which is the point.** Every one of the
+twenty is defensible prose about a real ecosystem — *"the modern meaning of 'AI
+agent' only settled from late 2023"* against *"ReAct, tool-use loops and memory
+placement are stable patterns taught the same way since 2022–2023"*. Both are
+true. The call is being asked to collapse a genuine ambiguity into one number,
+and it resolves it differently each time. This is not a bad prompt producing bad
+answers; it is a well-posed question with more than one right answer, and rule
+16 wired the coin flip to a hard filter.
+
+**`langchain` gets the direction right ten times out of ten** — always a window,
+never `ANY`, always because LCEL replaced the legacy chains. So the call is
+reliable about *whether a subject churned* on a subject that plainly did, and
+unreliable about *how far back to look*, with the spread widest where the honest
+answer is "it depends what you want".
+
+**One thing already mitigates this, and it was not designed for it.** The
+per-query waiver fired unprompted on 10 of the 20 samples, always for the same
+reason: *"ReAct is the foundational 2022 pattern; original talks remain
+canonical"*, *"migration tutorials from the 2023 API transition are still the
+reference for legacy codebases"*. The escape hatch added for the gap that is
+deliberately about earlier practice is being used, by the model, for exactly
+that — so even a narrow window lets the foundational query through when the map
+notices the conflict. It noticed in half the samples.
+
+Recorded, not acted on. The mitigation the asymmetry points at is to sample the
+call more than once and take the widest answer, for two or three extra calls per
+run against a run that silently never sees the canonical material — but that is
+a decision, not a conclusion.
+
 ### Recency is reasoned, never ruled
 
 Measured on three real topics, each with its stored reason:
