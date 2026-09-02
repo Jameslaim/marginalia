@@ -790,3 +790,91 @@ def test_the_selection_reason_is_stored(tmp_path):
 
     assert "dropped the framework tutorials" in rendered
     assert "1 of 2 considered" in rendered
+
+
+# -- what the answer file records about selection ---------------------------
+#
+# Rule 23 arriving one layer late. The selector stored its reasoning and its
+# counts and not its output, so "was that note dropped, or loaded and never
+# cited?" needed a second selector call — which is how it was established that
+# 67 of 95 prompt-caching notes were being dropped by subject. Recording the
+# surviving ids turns that question into a grep.
+
+
+def test_a_selected_run_records_which_notes_it_read(tmp_path):
+    config, library = build(tmp_path, {A: "aaa " * 4_000, B: "bbb " * 4_000})
+    config = replace(config, ask=make_ask_config(max_input_tokens=6_000))
+    spoken = client([f"DROPPED: {B}\nWHY: it ranked lowest", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert f"- notes read: {A}" in rendered
+    assert B not in rendered.split("## Answer")[0], "the dropped note is not in the header"
+
+
+def test_the_requested_and_allowed_drops_are_recorded(tmp_path):
+    """409 requested against 159 allowed is the number that says a model is
+    thresholding rather than ranking, and it reads exactly like 160 requested
+    unless the request sits beside the allowance."""
+    config, library = build(
+        tmp_path, {A: "aaa " * 4_000, B: "bbb " * 4_000, C: "ccc " * 4_000}
+    )
+    config = replace(config, ask=make_ask_config(max_input_tokens=8_000))
+    # One drop is the quota; the reply names three.
+    spoken = client([f"DROPPED: {A}, {B}, {C}\nWHY: everything looks off topic", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert answer.selection.requested_drops == 3
+    assert answer.selection.refused_drops > 0
+    assert "selector asked to drop: 3 of 3" in rendered
+    assert "re-included" in rendered
+
+
+def test_a_whole_library_run_records_all_without_a_list(tmp_path):
+    """422 ids in a file that loaded everything reads as noise. A marker says
+    the same thing."""
+    config, library = build(tmp_path, {A: "note a", B: "note b"})
+    config = replace(config, ask=make_ask_config(max_input_tokens=1_000_000))
+
+    answer = answer_question(config, library, client(["An answer."]), "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert "- notes read: all" in rendered
+    assert A not in rendered.split("## Answer")[0]
+
+
+def test_a_refused_run_writes_no_partial_list(tmp_path):
+    """There is no answer to write, so there is nothing claiming to have been
+    read. The refusal is the record."""
+    config, library = build(
+        tmp_path, {A: "aaa " * 1_000, B: "bbb " * 1_000, C: "ccc " * 1_000}
+    )
+    config = replace(config, ask=make_ask_config(max_input_tokens=5_334))
+    spoken = client(["not a list", "still not a list", "An answer."])
+
+    with pytest.raises(SelectionFailed):
+        answer_question(config, library, spoken, "q")
+
+
+def test_no_note_text_reaches_a_stored_answer(tmp_path):
+    """**The test this change specifically warrants.** It is the first time
+    note-derived data is written into an answer file, and the thing standing
+    between ids and a rule 1 breach is that nobody reached for the summary line
+    while they were right there."""
+    marker = "the speaker contradicts himself about cache expiry four minutes apart"
+    config, library = build(
+        tmp_path,
+        {A: f"## Claims\n\n- {marker} (00:01:00)\n", B: "bbb " * 2_000},
+    )
+    config = replace(config, ask=make_ask_config(max_input_tokens=4_000))
+    spoken = client([f"DROPPED: {A}\nWHY: it ranked lowest", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert marker not in rendered, "no note text"
+    assert "title for" not in rendered.split("## Answer")[0], "and no titles either"
+    assert f"- notes read: {B}" in rendered, "ids, which are safe"

@@ -907,6 +907,10 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                     "selection": {
                         "mode": answer.selection.mode,
                         "reason": answer.selection.reason,
+                        "video_ids": answer.selection.video_ids,
+                        "requested_drops": answer.selection.requested_drops,
+                        "allowed_drops": answer.selection.allowed_drops,
+                        "refused_drops": answer.selection.refused_drops,
                         "overflowed": answer.selection.overflowed,
                         "parsed": answer.selection.parsed,
                         "problem": answer.selection.problem,

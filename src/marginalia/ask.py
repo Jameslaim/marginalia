@@ -407,17 +407,39 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
             if answer.notes_considered > answer.notes_loaded
             else ""
         ),
-        # Rule 23, and hard rule 1 in the same line: the *reason* is the
-        # selector's own sentence about what class of note it left out, which
-        # is about notes and never from one. No summary line reaches this file.
         *(
-            [f"- selection: {answer.selection.mode} — {answer.selection.reason}"]
+            [
+                f"- selection: {answer.selection.mode} — {answer.selection.reason}",
+                # The decision itself, not only the account of it. Rule 23
+                # arriving one layer late: the selector stored its reasoning and
+                # its counts and not its output, so "was that note dropped, or
+                # loaded and never cited?" needed a second selector call to
+                # answer. 263 ids is a few kilobytes and turns that question
+                # into a grep.
+                #
+                # **Ids only.** No titles, no summary lines, no note text — the
+                # lines handed to the selector are built from notes, and hard
+                # rule 1 does not stop at the answer file.
+                "- notes read: " + " ".join(answer.selection.video_ids),
+            ]
             if answer.selection.mode != SELECTION_ALL
+            else ["- notes read: all"]
+        ),
+        *(
+            [
+                # The pair that made the last finding legible, and which existed
+                # nowhere on disk when it was needed: a reply naming 409 drops
+                # against a quota of 159 is a model thresholding rather than
+                # ranking, and it reads exactly like a reply naming 160 unless
+                # the request is recorded beside the allowance.
+                f"- selector asked to drop: {answer.selection.requested_drops}"
+                f" of {answer.notes_considered}"
+                f", quota allowed {answer.selection.allowed_drops}"
+                f", {answer.selection.refused_drops} re-included"
+            ]
+            if answer.selection.requested_drops
             else []
         ),
-        # The approach, stated on every answer. A whole-library read is correct
-        # while it fits, and the file that records the answer should record
-        # what it took to produce — counts only, never content.
         f"- input estimated: {answer.estimated_input_tokens:,} tokens"
         + (f" ({answer.headroom:.0%} of the ceiling)" if answer.headroom is not None else ""),
         f"- prompt: answer v{answer.version}",

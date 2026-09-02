@@ -182,7 +182,10 @@ def test_the_quota_is_exact_and_excess_drops_are_refused() -> None:
     selection = parse_selection(f"DROPPED: {A}, {B}, {C}\nWHY: x", known=KNOWN, most=1)
 
     assert selection.video_ids == [B, C], "only the first drop ran"
-    assert selection.overflowed == 2
+    assert selection.requested_drops == 3
+    assert selection.allowed_drops == 1
+    assert selection.refused_drops == 2
+    assert selection.overflowed == 0, "the budget trimmed nothing; the quota refused"
     assert "over the cap" in selection.problem
     assert selection.parsed, "a capped selection is still a usable one"
 
@@ -191,7 +194,8 @@ def test_a_selection_inside_the_cap_is_untouched() -> None:
     selection = parse_selection(f"DROPPED: {A}\nWHY: x", known=KNOWN, most=2)
 
     assert selection.video_ids == [B, C]
-    assert selection.overflowed == 0
+    assert selection.requested_drops == 1
+    assert selection.refused_drops == 0
     assert selection.problem == ""
 
 

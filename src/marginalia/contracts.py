@@ -1564,6 +1564,15 @@ class Selection:
     # Counted, never silent: this is the one place selection can lose something
     # the model actually wanted.
     overflowed: int = 0
+    # How many drops the reply named, against how many the quota allowed, and
+    # how many the code therefore refused. **Three fields rather than one**,
+    # because they were briefly sharing `overflowed` and that hid the number
+    # that matters: a reply naming 409 drops against a quota of 159 is a model
+    # thresholding rather than ranking, and it reads identically to a reply
+    # naming 160 unless the request is recorded next to the allowance.
+    requested_drops: int = 0
+    allowed_drops: int = 0
+    refused_drops: int = 0
     parsed: bool = True
     problem: str = ""
     input_tokens: int = 0

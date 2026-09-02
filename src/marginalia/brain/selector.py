@@ -99,6 +99,7 @@ def parse_selection(text: str, *, known: Sequence[str], most: int | None = None)
         problems.append(f"{unknown} id(s) not in the library")
         log.warning("select: %d dropped id(s) were not offered — ignored", unknown)
 
+    requested = len(named)
     refused = 0
     if most is not None and len(named) > most:
         refused = len(named) - most
@@ -130,7 +131,13 @@ def parse_selection(text: str, *, known: Sequence[str], most: int | None = None)
         mode=SELECTION_SELECTED,
         reason=reason or "no reason given",
         considered=len(known),
-        overflowed=refused,
+        # Not `overflowed`: that one means "the budget trimmed a note the model
+        # wanted", and these mean "the quota refused a drop the model asked
+        # for". Two different losses, and the pair below is what says whether
+        # the model ranked or thresholded.
+        requested_drops=requested,
+        allowed_drops=most if most is not None else 0,
+        refused_drops=refused,
         parsed=True,
         problem="; ".join(problems),
     )
@@ -223,7 +230,9 @@ class Selector:
             mode=parsed.mode,
             reason=parsed.reason,
             considered=parsed.considered,
-            overflowed=parsed.overflowed,
+            requested_drops=parsed.requested_drops,
+            allowed_drops=parsed.allowed_drops,
+            refused_drops=parsed.refused_drops,
             parsed=parsed.parsed,
             problem=parsed.problem,
             input_tokens=reply.usage.input_tokens,
