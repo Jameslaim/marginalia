@@ -879,7 +879,12 @@ class Ledger:
         return self._require(video_id)
 
     def videos_needing_note(
-        self, *, version: str, stale_only: bool = True, limit: int | None = None
+        self,
+        *,
+        version: str,
+        stale_only: bool = True,
+        missing_only: bool = False,
+        limit: int | None = None,
     ) -> list[VideoRow]:
         """Videos holding a transcript, wanted, with no note from this prompt.
 
@@ -892,17 +897,32 @@ class Ledger:
         transcript stopped implying that anyone chose the video. A stage-2
         rejection keeps its bytes and must not then be handed a note.
 
-        ``stale_only=False`` returns every such video instead — what
-        ``--regenerate --all`` means. Ordered by ``first_seen`` so a ``--limit``
-        run is a stable prefix rather than a random sample: reading three notes,
-        revising the prompt and running again should show you the same three.
+        Three widths, and the third exists because a prompt version is a blunt
+        instrument. ``stale_only`` is the default — anything not written by this
+        prompt. ``stale_only=False`` is every wanted video, which is what
+        ``--regenerate --all`` means. **``missing_only`` is videos with no note
+        at all**, ignoring version entirely.
+
+        That last one is what makes a prompt bump affordable. `note_is_current`
+        is exact string equality, so v6 marks all 422 existing notes stale and a
+        plain run would queue every one — thirteen hours and $2.30. When the
+        change clarifies a rare failure path rather than adding content, a v5
+        and a v6 note of the same video are nearly identical, `ask.py` never
+        looks at versions, and a mixed library reads fine. Regenerating is then
+        a choice rather than a consequence.
+
+        Ordered by ``first_seen`` so a ``--limit`` run is a stable prefix rather
+        than a random sample: reading three notes, revising the prompt and
+        running again should show you the same three.
         """
         rows = [
             row
             for row in self.list_by_status(STATUS_HAS_TRANSCRIPT)
             if wanted_for_a_note(row, self.decisions_for(row.video_id))
         ]
-        if stale_only:
+        if missing_only:
+            rows = [row for row in rows if row.noted_at is None]
+        elif stale_only:
             rows = [row for row in rows if not row.note_is_current(version)]
         return rows[:limit] if limit is not None else rows
 

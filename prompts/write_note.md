@@ -1,6 +1,6 @@
 ---
 name: write_note
-version: "5"
+version: "6"
 stage: note
 note: "v5 adds the `How current is it` section. Measured need: of 24 LangChain
   videos kept in run 7da933b180fd, only 11 notes carried any era marker, and
@@ -144,6 +144,17 @@ it.
 
 If nothing in the video is version-sensitive, write one line saying so. A
 tutorial on a stable idea does not need a caveat invented for it.
+
+**This section is never omitted.** "Nothing here is version-sensitive" and "this
+video gives nothing to date it by" are both *findings*, and both belong under the
+heading rather than in its absence — a reader who sees no section cannot tell
+which of the two it was, or whether the section was simply forgotten.
+
+Measured, which is why it is stated this plainly: three of four note failures
+across two drains were this section missing, every one of them on a video with
+essentially no era signal. The model read the section as inapplicable and left it
+out. It is inapplicable *content* and a mandatory *heading* — write the sentence
+that says so.
 
 **Leaves out** — the most valuable section. Objections never addressed.
 Questions raised and dropped. The obvious follow-up never taken. Where the

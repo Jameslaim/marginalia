@@ -754,6 +754,7 @@ def _cmd_note(args: argparse.Namespace) -> int:
             video_ids=video_ids,
             limit=args.limit,
             regenerate=args.regenerate,
+            missing_only=args.missing_only,
             every=args.all,
         )
 
@@ -1487,6 +1488,12 @@ def _build_parser() -> argparse.ArgumentParser:
         "--all",
         action="store_true",
         help="with --regenerate: every stored video, not only the stale ones",
+    )
+    note.add_argument(
+        "--missing-only",
+        action="store_true",
+        help="only videos with no note at all, ignoring the prompt version — "
+        "what to use after a prompt bump that does not warrant regenerating",
     )
     note.add_argument("--status", action="store_true", help="how many notes are current or stale")
     note.set_defaults(handler=_cmd_note)

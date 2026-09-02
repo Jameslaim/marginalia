@@ -607,3 +607,47 @@ def test_the_note_prompt_asks_the_currency_question() -> None:
     assert "PUBLISHED" in text
     assert "How current is it" in text
     assert "outside knowledge" in text.lower(), "era claims must be markable"
+
+
+def test_missing_only_ignores_the_prompt_version(tmp_path: Path) -> None:
+    """**What makes a prompt bump affordable.** `note_is_current` is exact
+    string equality, so bumping to v6 marks every existing note stale and a
+    plain run would queue all of them — 422 notes, thirteen hours, $2.30 on the
+    real library. When the change clarifies a rare failure path rather than
+    adding content, that regeneration is a choice, not a consequence."""
+    ids = [f"aaaaaaaaaa{n}" for n in range(1, 4)]
+    config, library, ledger = library_with(tmp_path, *ids)
+    ledger.mark_noted(ids[0], version="5", model="m")
+    ledger.mark_noted(ids[1], version="5", model="m")
+
+    stale = ledger.videos_needing_note(version="6")
+    missing = ledger.videos_needing_note(version="6", missing_only=True)
+
+    assert len(stale) == 3, "a version bump makes every note stale"
+    assert [row.video_id for row in missing] == [ids[2]], "only the one with no note"
+
+
+def test_missing_only_and_a_matching_version_agree(tmp_path: Path) -> None:
+    """When nothing is stale the two widths are the same set, which is what says
+    the flag narrows rather than reorders."""
+    ids = [f"aaaaaaaaaa{n}" for n in range(1, 4)]
+    config, library, ledger = library_with(tmp_path, *ids)
+    ledger.mark_noted(ids[0], version="5", model="m")
+
+    assert ledger.videos_needing_note(version="5") == ledger.videos_needing_note(
+        version="5", missing_only=True
+    )
+
+
+def test_the_drain_honours_missing_only(tmp_path: Path) -> None:
+    ids = [f"aaaaaaaaaa{n}" for n in range(1, 4)]
+    config, library, ledger = library_with(tmp_path, *ids)
+    ledger.mark_noted(ids[0], version="4", model="m")
+    made = client(GOOD_NOTE)
+
+    run = write_notes(
+        config, ledger, library, made,
+        missing_only=True, prompts_directory=prompts(tmp_path),
+    )
+
+    assert run.count(NOTED) == 2, "the stale v4 note was left alone"

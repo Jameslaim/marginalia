@@ -688,6 +688,30 @@ a missing one — a missing link is visible in the count while a wrong one reads
 as working. `unparsed` is therefore a real safety net and not a best-effort
 tally.
 
+### What can be measured here, and what cannot
+
+Two tests in a row were invalidated by the same thing, so it is worth stating as
+a property of this system rather than as two accidents.
+
+**Neither a citation count nor a named finding is a baseline.** The counts move:
+Q1 returned 9 videos and 2 videos on two identical whole-library runs, Q4 returned
+34 and 18. And so do the *findings* — Q4's five named catches, the sharpest
+things the note format has produced, went from 5 of 5 to **1 of 5 between two
+runs of the identical whole-library configuration**, before any selection existed
+to blame. A fixed-target test on a stochastic answer layer measures the sampling,
+not the change under test.
+
+So: **the machinery has stable numbers and the answers do not.** Drops requested
+against the quota, refusals, topics loaded, tokens, cost, parse rates — these
+repeat, and every M7 conclusion that held was one of them. Whether an answer is
+*good* is read, by someone with a reason to care, and not counted.
+
+The corollary for anything added later: a before/after on answer quality needs
+the before measured more than once, or it is one sample against one sample with
+the difference called an effect. Running more samples of a bad instrument buys
+noise; the verdict-noise measurement is the shape to copy, where 60 pairs made a
+6% upper bound out of a question that one pair could not have answered.
+
 ### The verdict noise floor — measured, and it is not the problem
 
 `CPgp8MhmGVY` is stored as a stage-2 NO and then judged YES on three consecutive

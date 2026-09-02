@@ -203,6 +203,7 @@ def select(
     limit: int | None = None,
     regenerate: bool = False,
     every: bool = False,
+    missing_only: bool = False,
 ) -> tuple[list[VideoRow], list[NoteResult]]:
     """Decide what this run will read, and say why anything named was skipped.
 
@@ -229,7 +230,12 @@ def select(
                 chosen.append(row)
         return chosen, skipped
 
-    rows = ledger.videos_needing_note(version=version, stale_only=not every, limit=limit)
+    rows = ledger.videos_needing_note(
+        version=version,
+        stale_only=not every,
+        missing_only=missing_only,
+        limit=limit,
+    )
     return rows, skipped
 
 
@@ -255,6 +261,7 @@ def write_notes(
     limit: int | None = None,
     regenerate: bool = False,
     every: bool = False,
+    missing_only: bool = False,
     prompts_directory: Any = None,
 ) -> NoteRun:
     """Drain videos that need a note. One transcript, one call, whole thing."""
@@ -269,6 +276,7 @@ def write_notes(
         limit=limit,
         regenerate=regenerate,
         every=every,
+        missing_only=missing_only,
     )
     run.results.extend(skipped)
 

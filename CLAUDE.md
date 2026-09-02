@@ -475,6 +475,26 @@ not drift.
     Hard rule 1's worst case is reached by the most natural implementation of this
     feature, which is why a test asserts the transcript never reaches a log record.
 
+    **The failure neither this rule nor rule 13 can see: a *semantic* failure.**
+    A reply that terminates cleanly, parses, fills every required field and is
+    simply wrong. `_classify` reads HTTP statuses and sees success; rule 13's
+    five-line contract reads shape and sees a well-formed verdict. Both are
+    structural checks, and this failure is structurally indistinguishable from a
+    good answer.
+
+    Not hypothetical: B3 measured three videos kept on judge reasons describing
+    numbers their transcripts do not contain — clean replies, correct format,
+    confabulated content. The library names the class too, in a video Q3 cited,
+    which is where the word comes from.
+
+    Recorded as a known class rather than a task. There is no current instance,
+    detecting it in general is the hard open problem behind every eval suite,
+    and the partial defences already in place are the ones worth having: stage 2
+    reads the whole transcript rather than the opening, `[outside knowledge]`
+    marks era claims, and citations resolve against the notes that were loaded.
+    What none of them do is catch a fluent wrong answer, and no counter in this
+    system will.
+
     **Degrading instead of stopping is a real alternative, and it does not apply
     here.** The library says it plainly — *"a memory outage degrades your agent
     instead of taking it down"* — and that is right for an **optional subsystem**
@@ -621,7 +641,8 @@ rate-limit handling is how you get silent failures.
 marg ingest <url>                  ingest one video
 marg search "<q>" [--limit N]      find candidates; --topic T, --json
 marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requests
-marg note [<video_id>...]          write notes; --limit N, --regenerate [--all], --status
+marg note [<video_id>...]          write notes; --limit N, --regenerate [--all],
+                                   --missing-only, --status
 marg refetch                       retry transient fetch failures; --limit N, --dry-run
 marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --dry-run
 marg ask "<question>"              answer from every note; --deep <id>, --json,
