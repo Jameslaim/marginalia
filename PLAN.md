@@ -1945,6 +1945,27 @@ re-included from the tail of the named list, and the refusal is counted. Same
 discipline as the search-filter validator: the model proposes, the code decides
 how much of it runs.
 
+**The gate, after the cap.** All four questions re-asked over the same library:
+
+| question | whole library | selection, capped |
+|---|---|---|
+| control loop | 309 notes, 9 videos, 455w | 261 notes, **11 videos**, 721w |
+| planner vs ReAct | 309 notes, 7 videos, 702w | 261 notes, **8 videos**, 1027w |
+| tool failures | 309 notes, 15 videos, 1273w | 250 notes, 11 videos, 1080w |
+| what they get wrong | 309 notes, 34 videos, 1872w | 261 notes, 27 videos, 1384w |
+
+Two questions got broader and two narrower, 65 distinct-video citations against
+57, at $0.108 an answer against $0.12.
+
+**And Q4's 34 was a high sample rather than a baseline, which a control run
+settled.** Asking it again over the *whole* library — selection off, nothing else
+changed — returned **18 videos**, fewer than the capped selection's 27, sharing
+only 5 of yesterday's 34. Citation breadth on a question that broad varies more
+between two runs than selection moves it, so the 34 → 27 gap is not evidence of
+damage and would have been read as evidence without the control. The same trap
+this project has hit before: one sample against one sample, with the difference
+read as an effect.
+
 **Where it lives.** `brain/selector.py` reasons and returns identifiers, and
 performs no filesystem, database or provider access. `ask.py` builds the summary
 lines, applies the budget and loads the notes. `NoteSummary` and `Selection`
