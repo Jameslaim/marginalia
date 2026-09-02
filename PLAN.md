@@ -2077,6 +2077,57 @@ failure now happens: one unreadable reply costs its batch's share of the drops,
 about twenty-three notes' worth of budget, rather than the whole question. Only
 if every batch fails does the run refuse.
 
+**Do the known catches survive? The test could not run, and finding that out was
+the result.** The 2026-09-01 Q4 answer caught five concrete errors — a
+quadratic growth curve called exponential, a false positive/negative swap, one
+provider's 1536 dimensions presented as a standard, "4o doesn't support tool
+use", and a retrieval demo failing live while the speaker waved it away. Under
+batching, none of the five appears. Three of the five notes were loaded and
+unused; two were dropped.
+
+That looks like dilution until the control is read:
+
+| Q4 run | library | notes read | catches present |
+|---|---|---|---|
+| 2026-09-01 | 309 | 309 (all) | **5 of 5** |
+| 2026-09-02 | 309 | 309 (all) | **1 of 5** |
+| 2026-09-02 | 422 | 104 (capped) | 1 of 5 |
+| 2026-09-02 | 422 | 253 (quota) | 2 of 5 |
+| 2026-09-02 | 422 | 259 (batched) | 0 of 5 |
+
+**Rows one and two are the same library, the same configuration and no selection
+at all, and they differ by four catches.** The five were never a baseline; they
+were one sample. Their absence under batching therefore measures nothing about
+batching, and the test as designed cannot separate compression from dilution
+because the instrument moves more than the thing it was meant to detect. This is
+the citation-count variance — 9 and 2 videos for Q1, 34 and 18 for Q4 — one
+level deeper: *specific findings* are as unstable as counts.
+
+**A second confound, self-inflicted.** `marg refetch` recovered 113 videos
+between the two answers and **102 of them were agent-memory**, taking the library
+from 44% memory (135 of 309) to 56% (237 of 422). The loaded set is 64% memory,
+which is the library's own composition surviving proportional selection rather
+than selection distorting it. Q4 now talks about memory because the library is
+now mostly about memory.
+
+**And the answers are not generic, which is what the test was really asking.**
+Today's Q4 catches different errors of the same kind: a "96.2% saving" that
+reuses its own 5× compression figure and ignores the same video's disclosed 25%
+cache-write premium, making the true steady-state cost over 6× the advertised
+number; a vector index that "stuffs six more chunks into a window that was
+already over budget — you made it worse"; several videos contradicting their own
+headline claims on camera. Q3 names a class this project's own retry classifier
+structurally cannot see — the *semantic failure*, a response with clean
+termination and valid state changes that is simply wrong, where no retry helps.
+
+The conclusion is methodological. **Fixed-target tests on a stochastic answer
+layer do not work here**, whether the target is a count or a specific catch, and
+running more samples buys noise. What M7 can be held to is what has stable
+answers: does it refuse (0 of 4), does it honour the quota (155–159 of 159), does
+it load every topic (yes, all six), does it cost the same ($0.108–$0.110). Those
+held. Whether the answers are *good* is a question for someone reading them with
+a purpose, which is where this stops being measurable and starts being used.
+
 **Where it lives.** `brain/selector.py` reasons and returns identifiers, and
 performs no filesystem, database or provider access. `ask.py` builds the summary
 lines, applies the budget and loads the notes. `NoteSummary` and `Selection`
