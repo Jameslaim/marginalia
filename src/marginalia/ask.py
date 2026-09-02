@@ -89,6 +89,17 @@ class AskTooLarge(RuntimeError):
 # `input_tokens` the API returns on every answer is what to re-measure against.
 _CHARS_PER_TOKEN = 3.992
 
+# **Prose only. A list of video ids tokenises at 1.44.** Measured on five
+# truncated selector replies: 4,096 output tokens against 5,828-5,910
+# characters, every time. Eleven random alphanumerics do not sit on token
+# boundaries, so an id list burns an output budget about 2.8x faster than
+# text does.
+#
+# Recorded here rather than where it is used because the trap is using the
+# constant above to size a call that emits ids — which would be wrong by
+# nearly three times, in the direction that truncates.
+_ID_CHARS_PER_TOKEN = 1.44
+
 # The prompt template, the system message and the question, none of which scale
 # with the library. Measured as the gap between notes/3.992 and the reported
 # total on those same four answers.

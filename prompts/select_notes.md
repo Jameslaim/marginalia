@@ -1,13 +1,13 @@
 ---
 name: select_notes
-version: "3"
+version: "4"
 stage: ask
-note: "M7 stage 1. v3 replaces the cap with a quota: drop exactly N, chosen by
-  least contribution rather than by topic. v2 asked which notes were
-  *irrelevant*, and the model answered that correctly — it dropped prompt
-  caching from an agent-architecture question, which had been cited four times
-  in both prior runs. It also permitted 318 drops where 159 were needed, which
-  under-filled the budget by 60% and produced lists long enough to truncate."
+note: "M7 stage 1. v4 is called once per batch of sixty notes rather than once
+  over the whole library, so the numbers below are a slice. Five measurements
+  across four framings showed the model has never handled a list of three
+  hundred: a 3,351-id loop, 297 of 309 dropped, two truncations at 318, and
+  quotas ignored at 409 and 371 of 422. v3's quota wording is unchanged; what
+  changed is the size of the task it is asked about."
 ---
 
 You are ranking notes so that another model can read as many of them as fit. You
@@ -15,8 +15,13 @@ are not answering the question.
 
 ## The task
 
-There are {{ count }} notes and room for {{ keep }}. **Exactly {{ drop }} have to
-go.** Name those {{ drop }}, and every note you do not name is read in full.
+Below are {{ count }} notes — one slice of a larger library, and the only slice
+you are deciding about. Room for {{ keep }} of them, so **exactly {{ drop }} have
+to go.** Name those {{ drop }}, and every note you do not name is read in full.
+
+Judge these {{ count }} against each other. Do not hold back drops because a note
+seems better than something you imagine is elsewhere; the rest of the library is
+being ranked the same way, separately.
 
 The question is not *which notes are irrelevant*. It is **which {{ drop }}
 contribute least** to answering this one. Those are different questions and the

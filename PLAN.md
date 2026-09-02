@@ -2012,6 +2012,71 @@ and 18. The observability gap is the more tractable half: an answer records the
 selector's sentence but not which notes survived, so "was it dropped or was it
 loaded and not cited?" needs a separate selector call to answer.
 
+**v4: batched, sixty notes per call.** The criterion problem turned out to be a
+task-size problem. Five measurements across four framings, and the model never
+once handled a list of three hundred:
+
+| framing | outcome |
+|---|---|
+| keep-list | looped, 3,351 ids on one line |
+| exclusion-list, uncapped | dropped 297 of 309 |
+| exclusion-list, capped | truncated at 318 ids, twice |
+| forced quota | asked to drop 409 of 422 |
+| forced quota | asked to drop 371 of 422, truncated twice |
+
+By the end **two of three real questions were refusing** — the tool failed to
+answer roughly half the time, and worsening as the library grew. A sixth prompt
+revision would have been a guess where the evidence pointed somewhere else.
+
+So the selector runs once per sixty notes, each batch given its proportional
+share of the quota by largest-remainder so the parts sum to the whole. Merging
+is a concatenation; there is no second model call to reconcile them.
+
+*The result, four questions, one run each:*
+
+| | before (one call) | after (eight batches) |
+|---|---|---|
+| drops requested against a quota of 159 | 371, 409 | **155, 155, 156, 159** |
+| re-included by the cap | 212, 250 | **0, 0, 0, 0** |
+| refusals | 2 of 3 | **0 of 4** |
+| cost per answer | $0.108–$0.112 | $0.108–$0.110 |
+
+The first row is the finding. Asked about sixty notes the model returns the
+quota it was given; asked about four hundred it returns the whole library minus
+a handful, five times out of five. **Ranking is a request a model can satisfy at
+sixty items and not at four hundred**, and nothing about the wording changed
+between those two columns.
+
+*And prompt caching came back.* It was the sharpest available test — 67 of 95
+notes dropped by subject under v3, named in the selector's own reason. Under v4
+every run loads all six topics, prompt caching among them at 12–21 notes, and Q4
+cites two prompt-caching videos again.
+
+**Token arithmetic, recorded because it will mislead somebody.** The truncated
+replies ran 5,828–5,910 characters against a 4,096-token ceiling: **1.44
+characters per token**, five samples, against the 3.992 measured for prose.
+Eleven random alphanumerics do not sit on token boundaries, so an id list burns
+an output budget 2.8× faster than text. Sizing a list-producing call with the
+prose constant is wrong by nearly three times, in the direction that truncates.
+
+**Raising `max_tokens` instead was the tempting fix and is the wrong one.** It
+lets the 371-id list through, the cap re-includes 212 by position, and a
+confident answer gets built from a 95%-arbitrary slice — trading a visible
+failure for an invisible one, which is the direction this project spends most of
+its rules avoiding.
+
+**What batching gives up, recorded as a property rather than a defect.** There
+is no global comparison: a note ranking tenth in its batch but fiftieth overall
+is dropped anyway, because each batch fills its own quota. The cost is bounded,
+and the assumption behind it is the best available — proportional quotas assume
+quality is spread evenly across batches, and since video ids sort essentially at
+random, the batches *are* random samples of the library.
+
+**A failed batch keeps all of its notes**, which is rule 8 at the level the
+failure now happens: one unreadable reply costs its batch's share of the drops,
+about twenty-three notes' worth of budget, rather than the whole question. Only
+if every batch fails does the run refuse.
+
 **Where it lives.** `brain/selector.py` reasons and returns identifiers, and
 performs no filesystem, database or provider access. `ask.py` builds the summary
 lines, applies the budget and loads the notes. `NoteSummary` and `Selection`

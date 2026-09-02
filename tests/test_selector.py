@@ -214,6 +214,110 @@ def test_the_reply_is_asked_for_exactly_the_number_that_must_go() -> None:
     made.complete = spy  # type: ignore[method-assign]
     Selector(made).select("q", _summaries(), keep=2)
 
-    assert "room for 2" in sent[0]
-    assert "Exactly 1 have to" in sent[0]
+    assert "Room for 2" in sent[0]
+    assert "exactly 1 have" in sent[0]
+    assert "one slice of a larger library" in sent[0]
     assert "contribute least" in sent[0], "ranking, not thresholding"
+
+
+# -- batching ---------------------------------------------------------------
+#
+# Structural rather than a sixth attempt at wording. Five measurements across
+# four framings, and the model never once handled a list of three hundred: a
+# 3,351-id loop, 297 of 309 dropped, two truncations at 318 ids, and quotas
+# ignored at 409 and 371 of 422.
+
+
+def _many(n: int):
+    return [
+        NoteSummary(video_id=f"{i:011d}", title=f"title {i}", published="20260101", gist="a claim")
+        for i in range(n)
+    ]
+
+
+def test_quotas_split_proportionally_and_sum_exactly() -> None:
+    """Largest-remainder, because rounding each batch independently loses or
+    gains notes against the budget — and the caller would then trim the
+    difference by position, which is the arbitrary exclusion this avoids."""
+    from marginalia.brain.selector import _quotas
+
+    quotas = _quotas(159, [60, 60, 60, 60, 60, 60, 62])
+
+    assert sum(quotas) == 159
+    assert max(quotas) - min(quotas) <= 1, "spread evenly, not dumped on one batch"
+
+
+def test_a_quota_never_exceeds_its_batch() -> None:
+    from marginalia.brain.selector import _quotas
+
+    assert _quotas(10, [2, 2]) == [2, 2]
+
+
+def test_the_library_is_split_into_batches_of_sixty() -> None:
+    replies = iter([FakeReply(f"DROPPED: {i:011d}\nWHY: lowest") for i in range(0, 200, 60)])
+    calls: list[int] = []
+
+    def transport(**kwargs):
+        calls.append(len(kwargs["messages"][1]["content"]))
+        return next(replies)
+
+    made = LlmClient(make_llm_config(), transport=transport, sleep=lambda _: None)
+    summaries = _many(180)
+
+    selection = Selector(made).select("q", summaries, keep=177)
+
+    assert len(calls) == 3, "180 notes is three batches of sixty"
+    assert selection.parsed
+    assert len(selection.video_ids) == 177
+
+
+def test_a_failed_batch_keeps_its_notes_rather_than_the_question(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Rule 8 at the level the failure now happens. One unreadable reply costs
+    its batch's share of the drops, not the whole answer."""
+    replies = iter([
+        FakeReply(f"{0:011d}"),                        # batch 1: no DROPPED line
+        FakeReply(f"DROPPED: {60:011d}\nWHY: lowest"), # batch 2: fine
+        FakeReply(f"DROPPED: {120:011d}\nWHY: lowest"),
+    ])
+
+    def transport(**_):
+        return next(replies)
+
+    made = LlmClient(make_llm_config(), transport=transport, sleep=lambda _: None)
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.selector"):
+        selection = Selector(made).select("q", _many(180), keep=177)
+
+    assert selection.parsed, "two good batches still make a usable selection"
+    assert f"{0:011d}" in selection.video_ids, "the failed batch kept everything"
+    assert f"{60:011d}" not in selection.video_ids, "the good batches still dropped"
+    assert "1 of 3 batches" in selection.problem
+
+
+def test_every_batch_failing_is_a_failed_selection() -> None:
+    def transport(**_):
+        return FakeReply("no list here")
+
+    made = LlmClient(make_llm_config(), transport=transport, sleep=lambda _: None)
+
+    selection = Selector(made).select("q", _many(120), keep=118)
+
+    assert not selection.parsed
+    assert "every batch failed" in selection.problem
+
+
+def test_a_batch_needing_no_drops_is_never_asked() -> None:
+    """A quota of zero has nothing to ask about, and asking would spend a call
+    to be told to drop nothing."""
+    calls = []
+
+    def transport(**kwargs):
+        calls.append(1)
+        return FakeReply(f"DROPPED: {0:011d}\nWHY: lowest")
+
+    made = LlmClient(make_llm_config(), transport=transport, sleep=lambda _: None)
+
+    Selector(made).select("q", _many(120), keep=119)
+
+    assert len(calls) == 1, "one drop falls in one batch; the other is untouched"

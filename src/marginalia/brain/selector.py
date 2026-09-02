@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from typing import Sequence
 
 from ..contracts import (
@@ -29,11 +30,11 @@ from ..contracts import (
     NoteSummary,
     Selection,
 )
-from ..llm import LlmClient, LlmConfigError, Prompt, load_prompt
+from ..llm import LlmClient, LlmConfigError, Prompt, batched, load_prompt
 
 log = logging.getLogger(__name__)
 
-__all__ = ["SELECT_PROMPT", "Selector", "parse_selection"]
+__all__ = ["BATCH_SIZE", "SELECT_PROMPT", "Selector", "parse_selection"]
 
 SELECT_PROMPT = "select_notes"
 
@@ -47,6 +48,44 @@ _MAX_WHY = 300
 # budget for an answer: v1 of this prompt looped and spent 32,768 output tokens
 # repeating ids, and the cost of that is what this number bounds.
 SELECT_MAX_TOKENS = 4096
+
+
+# Notes shown to the selector in one call. **Sixty, and structural rather than
+# another guess at wording.** Five measurements across four framings, and the
+# model has never once handled a list of three hundred:
+#
+#   keep-list                 looped, 3,351 ids on one line
+#   exclusion-list, uncapped  dropped 297 of 309
+#   exclusion-list, capped    truncated at 318 ids, twice
+#   forced quota              asked to drop 409 of 422
+#   forced quota              asked to drop 371 of 422, truncated twice
+#
+# Two things follow from sixty. Truncation stops being reachable — a batch drops
+# about twenty-three ids, a few hundred tokens against a ceiling of thousands —
+# and *ranking* becomes a request a model can actually satisfy, which four
+# hundred items is not.
+BATCH_SIZE = 60
+
+
+def _quotas(total: int, sizes: Sequence[int]) -> list[int]:
+    """Split a drop quota across batches, proportionally, summing exactly.
+
+    Largest-remainder, so the parts add up to the whole: handing each batch
+    `round(share)` independently loses or gains notes against the budget, and
+    the caller would then trim the difference by position — the arbitrary
+    exclusion this whole design is avoiding.
+    """
+    if not sizes or total <= 0:
+        return [0] * len(sizes)
+    counted = sum(sizes)
+    exact = [total * size / counted for size in sizes]
+    quotas = [int(value) for value in exact]
+    remainder = total - sum(quotas)
+    # Give the leftovers to the batches with the largest fractional part.
+    order = sorted(range(len(sizes)), key=lambda i: exact[i] - quotas[i], reverse=True)
+    for i in order[:remainder]:
+        quotas[i] += 1
+    return [min(q, size) for q, size in zip(quotas, sizes)]
 
 
 def parse_selection(text: str, *, known: Sequence[str], most: int | None = None) -> Selection:
@@ -143,6 +182,21 @@ def parse_selection(text: str, *, known: Sequence[str], most: int | None = None)
     )
 
 
+def _merge_reasons(reasons: Sequence[str]) -> str:
+    """One sentence out of several batch sentences, without inventing one.
+
+    The batches mostly say the same thing in different words, so the first is
+    kept whole and the count of the rest is appended. Summarising them with
+    another model call would put words in seven models' mouths at once, and
+    concatenating seven sentences makes a paragraph nobody reads.
+    """
+    if not reasons:
+        return "no reason given"
+    if len(reasons) == 1:
+        return reasons[0]
+    return f"{reasons[0]} [and {len(reasons) - 1} more batches, similarly]"
+
+
 class Selector:
     """Owns the selection prompt and the model client. Knows nothing about disk."""
 
@@ -164,27 +218,98 @@ class Selector:
         keep: int,
         max_tokens: int | None = None,
     ) -> Selection:
-        """One call, returning the notes to keep. Failures never narrow.
+        """Choose which notes to keep, in batches of `BATCH_SIZE`.
 
-        `keep` is how many notes fit the budget, so exactly `len(summaries) -
-        keep` have to go and that number is what the reply is asked for. A quota
-        rather than a ceiling, and the difference is measured: asked for *at
-        most* 318 drops when 159 were needed, the model took the whole
-        allowance, under-filled the budget by 60%, and produced a list long
-        enough to truncate — which is what sent two of four questions down the
-        fallback path.
+        **One call per sixty notes, each with its proportional share of the
+        quota.** See `BATCH_SIZE` for why this is structural rather than a sixth
+        attempt at wording.
 
-        Failures return `parsed=False` rather than raising. The caller retries
-        once and then refuses; it no longer fills the budget by position, for
-        the reason recorded in PLAN.md.
+        **A failed batch keeps all of its notes.** That is rule 8 at the level
+        the failure now happens: one unreadable reply costs its batch's share of
+        the drops — about twenty-three notes' worth of budget, trimmed later by
+        position — rather than costing the whole question. Only if *every* batch
+        fails does this return `parsed=False`, and the caller then refuses.
 
-        A refusal re-raises for rule 24's reason: every later call fails
-        identically, so continuing would spend the answering call against a
-        provider that has already said no.
+        **What batching gives up, recorded rather than solved.** There is no
+        global comparison: a note ranking tenth in its batch but fiftieth
+        overall is dropped anyway, because each batch fills its own quota. The
+        cost is bounded and the assumption behind it is the best available —
+        proportional quotas assume quality is spread evenly across batches, and
+        since video ids sort essentially at random, the batches *are* random
+        samples of the library.
         """
+        batches = list(batched(list(summaries), BATCH_SIZE))
+        quotas = _quotas(max(0, len(summaries) - keep), [len(batch) for batch in batches])
+
+        kept: list[str] = []
+        reasons: list[str] = []
+        usage = [0, 0]
+        totals = {"requested": 0, "allowed": 0, "refused": 0}
+        failures: list[str] = []
+
+        for batch, quota in zip(batches, quotas):
+            if quota <= 0:
+                # Nothing has to go from this batch, so there is nothing to ask.
+                kept.extend(summary.video_id for summary in batch)
+                continue
+            decision = self._one_batch(question, batch, quota, max_tokens)
+            usage[0] += decision.input_tokens
+            usage[1] += decision.output_tokens
+            totals["requested"] += decision.requested_drops
+            totals["allowed"] += decision.allowed_drops
+            totals["refused"] += decision.refused_drops
+            if not decision.parsed:
+                # Keep the whole batch. It costs this batch's share of the
+                # quota, not the question.
+                failures.append(decision.problem or "unreadable")
+                kept.extend(summary.video_id for summary in batch)
+                continue
+            kept.extend(decision.video_ids)
+            if decision.reason:
+                reasons.append(decision.reason)
+
+        if failures and len(failures) == len([q for q in quotas if q > 0]):
+            return Selection(
+                mode=SELECTION_SELECTED,
+                considered=len(summaries),
+                parsed=False,
+                problem=f"every batch failed ({failures[0]})",
+                input_tokens=usage[0],
+                output_tokens=usage[1],
+            )
+
+        problem = ""
+        if failures:
+            problem = f"{len(failures)} of {len(batches)} batches unreadable ({failures[0]})"
+            log.warning(
+                "select: %d of %d batches failed — their notes were all kept",
+                len(failures),
+                len(batches),
+            )
+        return Selection(
+            video_ids=kept,
+            mode=SELECTION_SELECTED,
+            reason=_merge_reasons(reasons),
+            considered=len(summaries),
+            requested_drops=totals["requested"],
+            allowed_drops=totals["allowed"],
+            refused_drops=totals["refused"],
+            parsed=True,
+            problem=problem,
+            input_tokens=usage[0],
+            output_tokens=usage[1],
+        )
+
+    def _one_batch(
+        self,
+        question: str,
+        batch: Sequence[NoteSummary],
+        drop: int,
+        max_tokens: int | None,
+    ) -> Selection:
+        """One call over one batch. Every failure returns `parsed=False`."""
         prompt = self.prompt(SELECT_PROMPT)
-        known = [summary.video_id for summary in summaries]
-        drop = max(0, len(summaries) - keep)
+        known = [summary.video_id for summary in batch]
         try:
             reply = self.client.complete(
                 "You rank notes by how little they would contribute, so another "
@@ -192,49 +317,34 @@ class Selector:
                 prompt.render(
                     question=question,
                     drop=str(drop),
-                    keep=str(keep),
-                    count=str(len(summaries)),
-                    summaries="\n".join(summary.line for summary in summaries),
+                    keep=str(len(batch) - drop),
+                    count=str(len(batch)),
+                    summaries="\n".join(summary.line for summary in batch),
                 ),
                 max_tokens=max_tokens or SELECT_MAX_TOKENS,
                 task="select_notes",
             )
         except LlmConfigError:
             raise
-        except Exception as exc:  # noqa: BLE001 - a failed selection must not narrow
-            log.warning("select: the selection call failed (%s)", exc)
+        except Exception as exc:  # noqa: BLE001 - a failed batch keeps its notes
+            log.warning("select: a batch failed (%s)", exc)
             return Selection(
-                mode=SELECTION_SELECTED,
-                considered=len(known),
-                parsed=False,
-                problem=f"call failed: {exc}",
+                mode=SELECTION_SELECTED, considered=len(known),
+                parsed=False, problem=f"call failed: {exc}",
             )
 
         if reply.finish_reason == "length":
-            # A fragment of a drop list is safe to *apply* — it drops less than
-            # it meant to — but it is the signature of a reply that ran away,
-            # and the quota exists partly to stop producing them.
-            log.warning("select: the reply was truncated")
+            log.warning("select: a batch reply was truncated")
             return Selection(
-                mode=SELECTION_SELECTED,
-                considered=len(known),
-                parsed=False,
+                mode=SELECTION_SELECTED, considered=len(known), parsed=False,
                 problem="reply hit the token ceiling before finishing",
                 input_tokens=reply.usage.input_tokens,
                 output_tokens=reply.usage.output_tokens,
             )
 
         parsed = parse_selection(reply.text, known=known, most=drop)
-        return Selection(
-            video_ids=parsed.video_ids,
-            mode=parsed.mode,
-            reason=parsed.reason,
-            considered=parsed.considered,
-            requested_drops=parsed.requested_drops,
-            allowed_drops=parsed.allowed_drops,
-            refused_drops=parsed.refused_drops,
-            parsed=parsed.parsed,
-            problem=parsed.problem,
+        return replace(
+            parsed,
             input_tokens=reply.usage.input_tokens,
             output_tokens=reply.usage.output_tokens,
         )
