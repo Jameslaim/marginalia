@@ -906,6 +906,34 @@ class Ledger:
             rows = [row for row in rows if not row.note_is_current(version)]
         return rows[:limit] if limit is not None else rows
 
+    def videos_to_refetch(self, *, limit: int | None = None) -> list[VideoRow]:
+        """Transient failures, the known-wanted ones first.
+
+        **Ordering is the whole of the policy here.** A video some run judged
+        YES is one this library was told to want and does not have; the rest are
+        speculative, and a `--limit` run should spend itself on the first group.
+        Within each group the oldest failure comes first, so a limited run is a
+        stable prefix rather than a random sample — the same reason
+        `videos_needing_note` orders by `first_seen`.
+
+        Only `transient` is returned. A permanent failure is a claim that the
+        video is gone, and re-asking about it is how a rule-8 error gets made
+        twice: nothing here promotes a transient failure to permanent, so this
+        list can only shrink by videos actually coming back.
+        """
+        rows = [row for row in self.list_by_status(STATUS_FAILED) if row.fail_kind == FAIL_TRANSIENT]
+        wanted = {
+            row.video_id
+            for row in rows
+            if any(d.verdict == VERDICT_YES for d in self.decisions_for(row.video_id))
+        }
+        rows.sort(key=lambda row: (row.video_id not in wanted, row.last_updated))
+        return rows[:limit] if limit is not None else rows
+
+    def was_wanted(self, video_id: str) -> bool:
+        """Did any run judge this video YES? Reported beside each attempt."""
+        return any(d.verdict == VERDICT_YES for d in self.decisions_for(video_id))
+
     def note_counts(self, *, version: str) -> dict[str, int]:
         """Of the videos holding a transcript: current, stale, or never noted.
 

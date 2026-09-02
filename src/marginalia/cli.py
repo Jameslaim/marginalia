@@ -37,6 +37,11 @@ from typing import Any, Sequence
 from . import __version__
 from .config import Config, ConfigError, library_root, load_config
 from .contracts import (
+    GONE,
+    NO_CAPTIONS,
+    RECOVERED,
+    STILL_FAILING,
+    STOP_THROTTLED,
     FAILED,
     HARD_FILTERS,
     KNOWN,
@@ -57,6 +62,7 @@ from .contracts import (
 from .core.ids import extract_video_id, is_video_id
 from .flow.discover import discover
 from .flow.export import export_run
+from .flow.refetch import refetch
 from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
@@ -639,6 +645,70 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
             for report in run.rounds
         ],
     }
+
+
+def _cmd_refetch(args: argparse.Namespace) -> int:
+    """Retry the transcript fetches that failed transiently.
+
+    Uses no search quota — this is transcript fetching, not the search API — and
+    makes no model calls at all.
+    """
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+    with Ledger(library.ledger_path) as ledger:
+        run = refetch(config, ledger, library, limit=args.limit, dry_run=args.dry_run)
+
+    if not run.considered:
+        print("refetch:  nothing to retry — no transient failures on the ledger")
+        return EXIT_OK
+
+    if run.dry_run:
+        wanted = sum(1 for r in run.results if r.wanted)
+        print(
+            f"refetch:  {run.considered} transient failure(s) would be retried, "
+            f"{wanted} of them judged YES by some run (those go first)"
+        )
+        for result in run.results[: args.limit or 20]:
+            mark = "wanted" if result.wanted else "      "
+            print(f"  {mark}  {result.video_id}  {result.attempts} attempt(s) so far")
+        if len(run.results) > (args.limit or 20):
+            print(f"  … and {len(run.results) - (args.limit or 20)} more")
+        return EXIT_OK
+
+    for result in run.results:
+        if result.outcome == RECOVERED:
+            print(f"recovered {result.video_id}")
+    parts = [
+        (run.count(RECOVERED), "recovered"),
+        (run.count(STILL_FAILING), "failed again"),
+        (run.count(NO_CAPTIONS), "no captions, routed to ASR"),
+        (run.count(GONE), "gone (the provider says permanently)"),
+    ]
+    detail = ", ".join(f"{n} {label}" for n, label in parts if n)
+    print(
+        f"run:      {len(run.results)} of {run.considered} tried"
+        f"{' — ' + detail if detail else ''}, {_elapsed(run.elapsed_s)}, "
+        f"stopped: {run.stopped_because}"
+    )
+
+    # Reported, never acted on. No threshold turns `transient` into permanent:
+    # a video written off is rule 8's invisible error with extra steps, and an
+    # attempt count cannot tell a deleted video from an unlucky one.
+    stubborn = sorted(
+        (r for r in run.results if r.attempts >= 3 and r.outcome == STILL_FAILING),
+        key=lambda r: -r.attempts,
+    )
+    if stubborn:
+        print(
+            f"          {len(stubborn)} video(s) have now failed 3+ times and are "
+            f"worth a look — still retryable, nothing was written off:"
+        )
+        for result in stubborn[:5]:
+            print(f"            {result.video_id}  {result.attempts} attempts")
+    if run.count(RECOVERED):
+        print("          recovered videos have no note yet — run `marg note`")
+    return EXIT_FAILED if run.stopped_because == STOP_THROTTLED else EXIT_OK
 
 
 def _cmd_note(args: argparse.Namespace) -> int:
@@ -1371,6 +1441,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     disco.add_argument("--json", action="store_true", help="emit structured output")
     disco.set_defaults(handler=_cmd_discover)
+
+    again = subparsers.add_parser(
+        "refetch", help="retry transcript fetches that failed transiently"
+    )
+    again.add_argument(
+        "--limit", type=int, default=None, help="stop after N videos"
+    )
+    again.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="list what would be retried, in judged-YES-first order, and touch nothing",
+    )
+    again.set_defaults(handler=_cmd_refetch)
 
     note = subparsers.add_parser("note", help="generate understanding notes")
     note.add_argument("video", nargs="*", help="YouTube URL or video ID (default: everything due)")

@@ -622,6 +622,7 @@ marg ingest <url>                  ingest one video
 marg search "<q>" [--limit N]      find candidates; --topic T, --json
 marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requests
 marg note [<video_id>...]          write notes; --limit N, --regenerate [--all], --status
+marg refetch                       retry transient fetch failures; --limit N, --dry-run
 marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --dry-run
 marg ask "<question>"              answer from every note; --deep <id>, --json,
                                    --no-save (saving to answers/ is the default)

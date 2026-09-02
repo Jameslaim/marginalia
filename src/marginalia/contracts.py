@@ -114,6 +114,13 @@ __all__ = [
     "STOP_LIMIT",
     "STOP_REPEATED_FAILURES",
     "STOP_REFUSED",
+    "RECOVERED",
+    "STILL_FAILING",
+    "NO_CAPTIONS",
+    "GONE",
+    "STOP_THROTTLED",
+    "RefetchResult",
+    "RefetchRun",
     "NoteResult",
     "NoteRun",
     # answers
@@ -1404,6 +1411,50 @@ class NoteRun:
     input_tokens: int = 0
     output_tokens: int = 0
     cost_usd: float = 0.0
+    elapsed_s: float = 0.0
+    stopped_because: str = STOP_DONE
+
+    def count(self, outcome: str) -> int:
+        return sum(1 for result in self.results if result.outcome == outcome)
+
+
+# -- refetch -----------------------------------------------------------------
+#
+# What a retry of a transient failure did. `RECOVERED` is the point; the other
+# three are what the run has to be able to tell apart, because "it failed again"
+# and "it turns out to have no captions" and "it is gone" are three different
+# findings and only one of them means try again tomorrow.
+RECOVERED = "recovered"
+STILL_FAILING = "still_failing"
+NO_CAPTIONS = "no_captions"
+GONE = "gone"
+
+# Why a refetch run stopped. `throttled` is its own reason and not a failure
+# streak: YouTube refusing a burst is the provider being authoritative, which is
+# rule 24 one layer down from the model provider, and a run that keeps asking
+# through it is how the 108-video backlog was created in the first place.
+STOP_THROTTLED = "throttled"
+
+
+@dataclass(frozen=True)
+class RefetchResult:
+    video_id: str
+    outcome: str
+    detail: str = ""
+    # How many times this video has now been tried, ever. Reported, never acted
+    # on: no threshold flips `transient` to permanent, because a video written
+    # off is rule 8's invisible error with extra steps. Some of these are
+    # genuinely gone and some are unlucky, and the count cannot tell them apart
+    # — a person reading it can.
+    attempts: int = 0
+    wanted: bool = False
+
+
+@dataclass
+class RefetchRun:
+    results: list[RefetchResult] = field(default_factory=list)
+    considered: int = 0
+    dry_run: bool = False
     elapsed_s: float = 0.0
     stopped_because: str = STOP_DONE
 

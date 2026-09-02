@@ -418,6 +418,14 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "STOP_LIMIT",
         "STOP_REPEATED_FAILURES",
         "STOP_REFUSED",
+        # refetch: four outcomes, because "it failed again", "it has no
+        # captions" and "it is gone" are three different findings and only one
+        # means try again tomorrow.
+        "RECOVERED",
+        "STILL_FAILING",
+        "NO_CAPTIONS",
+        "GONE",
+        "STOP_THROTTLED",
         # M7. The selector's vocabulary: `all` fit, `selected` was chosen,
         # `fallback` means the selector failed and the budget was filled anyway.
         "SELECTION_ALL",
@@ -428,6 +436,8 @@ def test_every_shared_structure_is_in_contracts() -> None:
         # answers
         "AnswerCitation",
         "CitationScan",
+        "RefetchResult",
+        "RefetchRun",
         "LoadedNote",
         # M7. One line per note, built in `ask.py` and read by `brain/selector.py`.
         "NoteSummary",

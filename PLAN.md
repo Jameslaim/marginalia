@@ -1981,6 +1981,51 @@ says the reasoning is the half you cannot correct from.
 they are note text: they go to the model and nowhere else — not stdout, not
 `logs/`, not an answer file. What gets reported is the counts they produce.
 
+### `marg refetch` — the backlog nobody read back
+
+The system recorded 119 videos as retryable — rule 6's write-before-fetch
+ordering is what produces that state — and then nothing ever read the flag back.
+They were not a missing capability. They were an unread field.
+
+**The premise, checked before building.** 108 of the 119 failed on a single day,
+2026-08-26, in two sustained bursts: 11:01–11:16 and 12:18–12:29, running five to
+eight failures a minute, with a tightest burst of nine inside sixty seconds. That
+is throttling, not videos being gone. Nothing had failed in the five days before
+the retry, and attempt counts were 102 × once, 16 × twice, 1 × three times —
+nothing had been hammered.
+
+**The result.** 114 tried after a 5-video probe, 18m49s, no model calls and no
+search quota:
+
+| | before | after |
+|---|---|---|
+| `has_transcript` | 538 | **651** |
+| `failed` | 119 | **3** |
+| `needs_asr` | 24 | 27 |
+| judged YES and still missing | 36 | **0** |
+
+113 recovered. Every video some run had judged YES came back. The three still
+failing are on two attempts, still `transient`, and none was ever judged YES.
+
+**Whisper's honest floor is 9 videos.** That is what `needs_asr` holds that a run
+actually wanted, and it is the number ASR has to justify a local model, a
+dependency and 10–15 minutes of CPU per hour of video against. Before this run
+the comparison looked like 36 refetchable against 8 transcribable; it is now 0
+against 9, which is the same conclusion reached from the other side — the cheap
+half was worth doing first, and it took the expensive half's case with it.
+
+**What the command will not do.** No threshold promotes `transient` to
+`permanent`. Only the provider may call a video gone, because a video written
+off is rule 8's invisible error with extra steps and an attempt count cannot
+tell a deleted video from an unlucky one. High-attempt videos are reported for a
+person to look at, and that is all.
+
+**And it stops rather than recreating the backlog.** Three consecutive transient
+failures end the run with `STOP_THROTTLED` — its own reason, not a generic
+failure streak, because a provider refusing a burst is being authoritative about
+rate. That is rule 24 one layer below the model provider, and a loop that keeps
+asking through a throttle is exactly what produced the 108.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source
