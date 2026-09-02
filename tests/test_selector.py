@@ -138,15 +138,17 @@ def test_the_selector_names_its_own_task() -> None:
     assert tasks == ["select_notes"]
 
 
-def test_a_failed_call_falls_through_rather_than_narrowing(
+def test_a_failed_call_reports_rather_than_narrowing(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """`parsed=False` is the caller's signal to retry and then refuse. What it
+    must never be is a small selection wearing a successful one's clothes."""
     with caplog.at_level(logging.WARNING, logger="marginalia.brain.selector"):
         selection = Selector(client(RuntimeError("boom"))).select("q", _summaries(), keep=2)
 
     assert not selection.parsed
     assert selection.video_ids == []
-    assert "filling the budget" in caplog.text
+    assert "call failed" in selection.problem
 
 
 def test_a_truncated_reply_is_discarded() -> None:
@@ -171,7 +173,7 @@ def test_a_refusal_is_raised_not_swallowed() -> None:
         Selector(client(Refused())).select("q", _summaries(), keep=2)
 
 
-def test_dropping_more_than_the_cap_is_refused_and_re_included() -> None:
+def test_the_quota_is_exact_and_excess_drops_are_refused() -> None:
     """Measured, not hypothetical. On a real run the model was told it could
     drop at most 88 of 309 and dropped 297; the answer that followed cited 2
     videos where the same question over the whole library cited 7. Nothing
@@ -191,3 +193,23 @@ def test_a_selection_inside_the_cap_is_untouched() -> None:
     assert selection.video_ids == [B, C]
     assert selection.overflowed == 0
     assert selection.problem == ""
+
+
+def test_the_reply_is_asked_for_exactly_the_number_that_must_go() -> None:
+    """A quota, not a ceiling. Asked for *at most* twice the requirement, the
+    model took the whole allowance: 318 drops where 159 were needed, which
+    under-filled the budget by 60% and made a list long enough to truncate."""
+    made = client(FakeReply(f"DROPPED: {A}\nWHY: x"))
+    sent: list[str] = []
+    original = made.complete
+
+    def spy(system, user, **kwargs):
+        sent.append(user)
+        return original(system, user, **kwargs)
+
+    made.complete = spy  # type: ignore[method-assign]
+    Selector(made).select("q", _summaries(), keep=2)
+
+    assert "room for 2" in sent[0]
+    assert "Exactly 1 have to" in sent[0]
+    assert "contribute least" in sent[0], "ranking, not thresholding"

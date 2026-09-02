@@ -53,6 +53,19 @@ from .llm import LlmClient, LlmError, Prompt, load_prompt
 log = logging.getLogger(__name__)
 
 
+class SelectionFailed(RuntimeError):
+    """The library needs selection and the selector could not deliver one.
+
+    Raised instead of answering from an arbitrary slice. The original
+    design filled the budget by position when selection failed, on the
+    reasoning that more notes is safer — and at 422 notes that produced
+    worse answers than selection did, because 159 notes went unread on an
+    ordering unrelated to the question and the answer said nothing about
+    it. Rule 8 is about exclusion nobody can see; an arbitrary fill is
+    exactly that.
+    """
+
+
 class AskTooLarge(RuntimeError):
     """The library no longer fits the configured context window.
 
@@ -99,6 +112,7 @@ def estimate_tokens(notes: Sequence[LoadedNote]) -> int:
 __all__ = [
     "answer_question",
     "AskTooLarge",
+    "SelectionFailed",
     "choose_notes",
     "estimate_tokens",
     "fill_to_budget",
@@ -617,17 +631,22 @@ def choose_notes(
     """Decide which notes the answering call reads. M7's whole decision.
 
     **Below the budget, everything loads.** That is not a fallback, it is the
-    measured-better path — 182 notes produced better answers than 87, and the
+    measured-better path — 182 notes produced better answers than 87 — and the
     selector exists because of a ceiling rather than because selection improves
-    an answer. Giving that up on small libraries as a side effect of building
-    this would be the milestone making things worse.
+    an answer.
 
-    Above the budget, the selector chooses whole notes, and every way that can
-    go wrong resolves toward loading more: no ceiling configured, no selector,
-    a refused or truncated or unparseable reply, an empty list — all fall
-    through to `fill_to_budget` over the whole library rather than to a narrow
-    selection or to none. A note wrongly excluded is invisible, which is this
-    project's defining error arriving in a new place.
+    **Above the budget, a failed selection refuses rather than fills.** The
+    original spec said the opposite, on rule 8's logic that including more is
+    safer, and a run at 422 notes disproved it: the two questions that fell
+    through to a positional fill loaded 263 notes and cited 6 and 3 videos,
+    while the two that selected loaded 104 and cited 29 and 8. Filling by sorted
+    video id is silent exclusion wearing a different hat — 159 notes go unread,
+    chosen by an ordering that has nothing to do with the question, and the
+    answer reads as confident either way. Rule 8 protects against exclusion
+    nobody can see, and an arbitrary fill is exactly that.
+
+    So the selector gets one retry, and a second failure raises. A visible
+    failure someone can act on beats a degradation they cannot see.
     """
     ceiling = config.ask.max_input_tokens
     if not ceiling:
@@ -639,10 +658,6 @@ def choose_notes(
 
     room, _ = fill_to_budget(notes, budget)
     if estimate_tokens(room) > ceiling:
-        # Selection cannot rescue this: `fill_to_budget` always keeps at least
-        # one note, so a single note larger than the window leaves nothing for
-        # the selector to choose differently. Skip the call rather than spend it
-        # on a question the guard is about to refuse anyway.
         log.warning(
             "select: the smallest loadable set is still over the ceiling — "
             "not calling the selector"
@@ -655,7 +670,16 @@ def choose_notes(
             overflowed=len(notes) - len(room),
         )
 
+    if len(room) >= len(notes):
+        # Over the budget, but nothing actually has to go — one note wider
+        # than the budget and narrower than the ceiling lands here. There
+        # is no quota to ask for, so asking would spend a call to be told
+        # to drop nothing.
+        return room, Selection(mode=SELECTION_ALL, considered=len(notes))
+
     if selector is None:
+        # The one case a positional fill is still right for: nothing was
+        # configured to choose, and the ordering is all there is.
         log.warning(
             "select: %d notes exceed the budget and no selector is configured — "
             "loading the %d that fit",
@@ -672,38 +696,38 @@ def choose_notes(
 
     summaries = [summarise(note) for note in notes]
     decision = selector.select(question, summaries, keep=len(room))
+    if not decision.parsed or not decision.video_ids:
+        # Once. The quota makes the runaway reply much less likely, so most of
+        # what used to fall through now succeeds on a second attempt.
+        log.warning(
+            "select: the selector returned nothing usable (%s) — retrying once",
+            decision.problem or "no ids",
+        )
+        decision = selector.select(question, summaries, keep=len(room))
 
     if not decision.parsed or not decision.video_ids:
-        log.warning(
-            "select: the selector returned nothing usable (%s) — filling the budget "
-            "with %d of %d notes",
-            decision.problem or "no ids",
-            len(room),
-            len(notes),
-        )
-        return room, replace(
-            decision,
-            video_ids=[note.video_id for note in room],
-            mode=SELECTION_FALLBACK,
-            considered=len(notes),
-            overflowed=len(notes) - len(room),
+        raise SelectionFailed(
+            f"the library is {len(notes)} notes and {estimate_tokens(notes):,} "
+            f"estimated tokens, past the {budget:,}-token selection budget, so "
+            f"{len(notes) - len(room)} of them have to go — and the selector "
+            f"failed twice ({decision.problem or 'no ids'}). Nothing was sent. "
+            f"Answering from the first {len(room)} notes by video id would drop "
+            f"the other {len(notes) - len(room)} for a reason unrelated to the "
+            f"question, which is the silent exclusion this refuses to make."
         )
 
-    # The reply named what to drop; `video_ids` is what survived it. Order is
-    # the library's own, so a keep-list longer than the budget is trimmed from
-    # the tail rather than reshuffled.
     wanted = {note.video_id: note for note in notes}
     chosen = [wanted[video_id] for video_id in decision.video_ids if video_id in wanted]
     packed, dropped = fill_to_budget(chosen, budget)
     if dropped:
         log.warning(
-            "select: the selector asked for %d notes and %d fit the budget — %d dropped",
+            "select: the selector kept %d notes and %d fit the budget — %d trimmed",
             len(chosen),
             len(packed),
             dropped,
         )
     log.info(
-        "select: %d of %d notes selected (%d loaded after the budget)",
+        "select: %d of %d notes kept (%d loaded after the budget)",
         len(chosen),
         len(notes),
         len(packed),

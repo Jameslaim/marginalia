@@ -67,7 +67,14 @@ from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
 from .enrich.note import note_version, write_notes
-from .ask import AskTooLarge, answer_question, deep_link, render_answer, render_links
+from .ask import (
+    AskTooLarge,
+    SelectionFailed,
+    answer_question,
+    deep_link,
+    render_answer,
+    render_links,
+)
 from .enrich.timestamps import snap_library
 from .providers import PermanentError, TransientError, get_provider
 from .providers.base import TranscriptProvider
@@ -103,6 +110,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # A bad query, a rejected key, an unknown provider name. Deliberately
         # not softened into a fallback: all three are the user's to fix.
         return _error(str(exc), EXIT_USAGE)
+    except SelectionFailed as exc:
+        # Same shape as AskTooLarge: a sentence naming what happened and
+        # what was not sent, rather than a class name and a traceback.
+        return _error(str(exc), EXIT_FAILED)
     except AskTooLarge as exc:
         # A sentence someone can act on, not a class name and a traceback. The
         # whole point of the guard is that the run ends with the two numbers and

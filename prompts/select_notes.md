@@ -1,34 +1,41 @@
 ---
 name: select_notes
-version: "2"
+version: "3"
 stage: ask
-note: "M7 stage 1. Names the notes to LEAVE OUT; everything unnamed is read.
-  v1 asked for the keep-list and a real run looped: with a budget of 265 of 309
-  it emitted 3,351 ids on one line and hit the ceiling. Naming the excluded few
-  is the shorter list near the ceiling, and it puts rule 8 in the format itself
-  — silence includes."
+note: "M7 stage 1. v3 replaces the cap with a quota: drop exactly N, chosen by
+  least contribution rather than by topic. v2 asked which notes were
+  *irrelevant*, and the model answered that correctly — it dropped prompt
+  caching from an agent-architecture question, which had been cited four times
+  in both prior runs. It also permitted 318 drops where 159 were needed, which
+  under-filled the budget by 60% and produced lists long enough to truncate."
 ---
 
-You are choosing which notes another model will *not* read. You are not
-answering the question.
+You are ranking notes so that another model can read as many of them as fit. You
+are not answering the question.
 
-The library is slightly too large to read at once. A little has to go. Your job
-is to say which — and nothing else.
+## The task
+
+There are {{ count }} notes and room for {{ keep }}. **Exactly {{ drop }} have to
+go.** Name those {{ drop }}, and every note you do not name is read in full.
+
+The question is not *which notes are irrelevant*. It is **which {{ drop }}
+contribute least** to answering this one. Those are different questions and the
+second is the one that matters: a note on a neighbouring subject often carries
+the comparison, the counter-example, or the mistake that makes an answer worth
+reading, and dropping it because its topic differs is how an answer gets narrower
+without getting wronger.
+
+So rank, do not filter. Even if far more than {{ drop }} notes look unrelated,
+name only the {{ drop }} that would cost the least — and if fewer than {{ drop }}
+look unrelated, you must still name {{ drop }}, choosing the weakest of the
+plausible ones.
 
 ## Silence includes
 
-**Every note you do not name is read in full.** You are not building a list of
-what is relevant; you are naming the few that are clearly about something else.
-
-That direction is deliberate, because the two mistakes are not equal:
-
-- **Leaving in a note that turns out to be irrelevant costs nothing.** The model
-  reading it simply will not cite it.
-- **Dropping a note that mattered is invisible.** The answer comes back
-  confident and incomplete, and nothing anywhere records that the note existed.
-
-So name only what you are *sure* about. If a note might be tangentially useful,
-say nothing about it and it will be read. When you cannot tell, say nothing.
+Every note you do not name is read. That is deliberate: leaving in a note that
+turns out to be useless costs nothing, because the model reading it simply will
+not cite it, while dropping a note that mattered is invisible — the answer comes
+back confident and incomplete and nothing records what was missing.
 
 ## What you are given
 
@@ -43,12 +50,6 @@ does not mention the question's subject may still be a video that covers it.
 
 {{ question }}
 
-## How much has to go
-
-Name **at least {{ drop }}** of the {{ count }} notes below, and **no more than
-{{ most }}**. Fewer than {{ drop }} and the rest are dropped for you, by
-position rather than by judgement — which is worse than your choosing.
-
 ## The notes
 
 {{ summaries }}
@@ -59,12 +60,12 @@ Exactly this format, on two lines. No preamble, no commentary, no repetition.
 
 ```
 DROPPED: dQw4w9WgXcQ, jNQXAC9IVRw, 9bZkp7q19f0
-WHY: one sentence on what class of note you left out
+WHY: one sentence on what you ranked lowest and why
 ```
 
-- `DROPPED` — video IDs, comma separated, **each one once**. Copy them exactly;
-  ids are case-sensitive, so `dQw4w9WgXcQ` and `dqw4w9wgxcq` are different
-  videos.
-- `WHY` — one sentence naming the *class* of note you dropped, not a list. It is
-  stored and read back when an answer looks thin, to tell "it did not know" from
-  "it did not look".
+- `DROPPED` — exactly {{ drop }} video IDs, comma separated, **each one once**.
+  Copy them exactly; ids are case-sensitive, so `dQw4w9WgXcQ` and `dqw4w9wgxcq`
+  are different videos.
+- `WHY` — one sentence. It is stored and read back when an answer looks thin, to
+  tell "it did not know" from "it did not look". Say what you ranked lowest, not
+  a list of ids.

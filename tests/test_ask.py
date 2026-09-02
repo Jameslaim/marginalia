@@ -16,6 +16,7 @@ import pytest
 
 from marginalia.ask import (
     AskTooLarge,
+    SelectionFailed,
     answer_question,
     deep_link,
     estimate_tokens,
@@ -29,7 +30,6 @@ from marginalia.ask import (
 )
 from marginalia.contracts import (
     SELECTION_ALL,
-    SELECTION_FALLBACK,
     SELECTION_SELECTED,
     AnswerCitation,
     LoadedNote,
@@ -718,21 +718,44 @@ def test_selected_notes_arrive_whole(tmp_path):
     assert whole.strip() in answering, "the note, unchanged and entire"
 
 
-def test_a_failed_selector_fills_the_budget_rather_than_selecting_narrowly(tmp_path):
-    """Rule 8's whole point here. The alternative — answering from whatever the
-    broken reply happened to name — is a narrow answer wearing a confident
-    one's clothes."""
+def test_a_failed_selector_refuses_rather_than_filling_arbitrarily(tmp_path):
+    """**The correction a real run forced.** The original design filled the
+    budget by position when selection failed, on rule 8's logic that more notes
+    is safer. At 422 notes that produced *worse* answers than selection did: the
+    two questions that fell through loaded 263 notes and cited 6 and 3 videos,
+    while the two that selected loaded 104 and cited 29 and 8.
+
+    Filling by sorted video id is silent exclusion wearing a different hat —
+    159 notes go unread on an ordering unrelated to the question, and the answer
+    reads as confident either way. Rule 8 is about exclusion nobody can see."""
     config, library = build(
         tmp_path, {A: "aaa " * 1_000, B: "bbb " * 1_000, C: "ccc " * 1_000}
     )
     config = replace(config, ask=make_ask_config(max_input_tokens=5_334))
-    spoken = client(["I think the first one looks good.", "An answer."])
+    spoken = client(["I think the first one looks good.", "still not a list.", "An answer."])
+
+    with pytest.raises(SelectionFailed) as caught:
+        answer_question(config, library, spoken, "q")
+
+    assert len(spoken.sent) == 2, "one retry, then it stops"
+    assert "failed twice" in str(caught.value)
+    assert "unrelated to the question" in str(caught.value)
+
+
+def test_a_retry_rescues_a_selector_that_stumbled_once(tmp_path):
+    """The quota makes the runaway reply much less likely, so most of what used
+    to fall through now succeeds on a second attempt."""
+    config, library = build(
+        tmp_path, {A: "aaa " * 1_000, B: "bbb " * 1_000, C: "ccc " * 1_000}
+    )
+    config = replace(config, ask=make_ask_config(max_input_tokens=5_334))
+    spoken = client(["not a list at all", f"DROPPED: {C}\nWHY: it ranked lowest", "An answer."])
 
     answer = answer_question(config, library, spoken, "q")
 
-    assert answer.selection.mode == SELECTION_FALLBACK
-    assert answer.notes_loaded > 1, "the budget was filled, not a guess honoured"
-    assert answer.notes_considered == 3
+    assert answer.text == "An answer."
+    assert answer.selection.mode == SELECTION_SELECTED
+    assert C not in answer.selection.video_ids
 
 
 def test_the_summary_lines_never_reach_the_answer_file_or_the_log(tmp_path, caplog):

@@ -1966,6 +1966,52 @@ damage and would have been read as evidence without the control. The same trap
 this project has hit before: one sample against one sample, with the difference
 read as an effect.
 
+**v3: drop exactly N, and a fallback that fails visibly.** At 422 notes the
+selector must drop 159. Three defects were measured at that scale, and the
+quota was meant to fix all three at once.
+
+Two of the three are fixed and one is not, which is the part worth writing down.
+
+*Fixed: the under-fill.* v2's cap permitted 318 drops where 159 were needed, and
+two runs loaded 104 notes against a 263-note budget. Under v3 the three runs
+that selected loaded 253, 259 and 261 — the budget, as intended.
+
+*Fixed: the silent fallback.* The original design filled the budget by sorted
+video id when selection failed, on rule 8's reasoning that including more is
+safer. **That reasoning was wrong at scale and the correction belongs beside the
+rule.** The two questions that fell through at 422 notes loaded 263 notes and
+cited 6 and 3 videos, while the two that selected loaded 104 and cited 29 and 8:
+the safe path answered worse than the path it was protecting against. Filling by
+video id is silent exclusion wearing a different hat — 159 notes go unread on an
+ordering unrelated to the question and the answer reads as confident either way,
+which is the same shape as the uncapped bug. Rule 8 protects against exclusion
+*nobody can see*; an arbitrary fill is that. So the selector is retried once and
+a second failure raises `SelectionFailed`, naming what happened and sending no
+answer request. `fill_to_budget` remains only for packing an oversized selection
+and for the case where no selector is configured.
+
+*Not fixed: the criterion.* The prompt now says "exactly 159 have to go — which
+159 contribute least?" and the model does not do it. Measured directly with a
+single selector call and no answer: **it asked to drop 409 of 422**, and the code
+capped it at 159. The reply still reads as a threshold — *"I ranked lowest the
+videos that are entirely off-topic (music videos, unrelated SQLite/Postgres
+tutorials, generic LangChain/RAG walkthroughs)"* — and the ranking language is
+the only thing that changed.
+
+So the cap is doing the work the quota was supposed to do, and which 159 actually
+go is decided by the order the model happened to list them in. On the sharpest
+available test — does prompt caching survive, having been cited four times for
+Q4 in both whole-library runs — the answer is **28 of 95 prompt-caching notes
+kept, 67 dropped**. It is still being excluded by subject.
+
+What that leaves: the mechanical defects are gone and the failure mode is now
+visible, which is worth having. Whether a model can be made to rank rather than
+threshold on a list of 422 is open, and counts will not settle it — Q1 returned
+9 videos and 2 videos on two *identical* whole-library runs, and Q4 returned 34
+and 18. The observability gap is the more tractable half: an answer records the
+selector's sentence but not which notes survived, so "was it dropped or was it
+loaded and not cited?" needs a separate selector call to answer.
+
 **Where it lives.** `brain/selector.py` reasons and returns identifiers, and
 performs no filesystem, database or provider access. `ask.py` builds the summary
 lines, applies the budget and loads the notes. `NoteSummary` and `Selection`

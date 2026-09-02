@@ -58,14 +58,17 @@ def parse_selection(text: str, *, known: Sequence[str], most: int | None = None)
     much, and one that cannot be read at all drops nothing here — the caller
     fills the budget instead.
 
-    **`most` is a cap the code enforces, not a request the prompt makes.** The
-    prompt states a ceiling on how many notes may go; on a real run the model
-    ignored it and dropped 297 of 309, and the answer that followed cited 2
-    videos where the same question over the whole library had cited 7. Nothing
-    downstream could see that, which is exactly the invisible error rule 8
-    exists for — so the excess is re-included here, from the end of the named
-    list, and counted. Same shape as the search-filter validator: the model
+    **`most` is the quota the code enforces, not a request the prompt makes.**
+    It is now exactly the number of notes that have to go, and excess drops are
+    re-included from the end of the named list and counted. Measured twice on
+    the way here: asked with no cap the model dropped 297 of 309, and asked for
+    *at most* twice the requirement it took the whole allowance and under-filled
+    the budget by 60%. Same shape as the search-filter validator — the model
     proposes, the code decides how much of it runs.
+
+    Naming *fewer* than the quota is left alone. It is the safe direction: the
+    keep set is then larger than the budget and the caller trims the remainder,
+    so a short reply costs a little arbitrary trimming rather than a lot.
 
     Ids are checked against the notes that were offered, and case is never
     repaired. Rule 5: two ids differing by case are two videos, so a "repair"
@@ -156,31 +159,33 @@ class Selector:
     ) -> Selection:
         """One call, returning the notes to keep. Failures never narrow.
 
-        `keep` is how many notes fit the budget; the reply names the rest. Every
-        failure returns `parsed=False` rather than raising, and the caller then
-        fills the budget — a refused, truncated, empty or unreadable reply must
-        not become a small selection, because a note dropped by accident is
-        indistinguishable from one dropped on purpose.
+        `keep` is how many notes fit the budget, so exactly `len(summaries) -
+        keep` have to go and that number is what the reply is asked for. A quota
+        rather than a ceiling, and the difference is measured: asked for *at
+        most* 318 drops when 159 were needed, the model took the whole
+        allowance, under-filled the budget by 60%, and produced a list long
+        enough to truncate — which is what sent two of four questions down the
+        fallback path.
 
-        A refusal is the exception and re-raises, for rule 24's reason: every
-        later call fails identically, so continuing would spend the answering
-        call against a provider that has already said no.
+        Failures return `parsed=False` rather than raising. The caller retries
+        once and then refuses; it no longer fills the budget by position, for
+        the reason recorded in PLAN.md.
+
+        A refusal re-raises for rule 24's reason: every later call fails
+        identically, so continuing would spend the answering call against a
+        provider that has already said no.
         """
         prompt = self.prompt(SELECT_PROMPT)
         known = [summary.video_id for summary in summaries]
         drop = max(0, len(summaries) - keep)
-        # The cap the prompt states and `parse_selection` enforces. Twice what
-        # has to go, so a model with a genuine reason to drop more has room,
-        # and a model ignoring the instruction is bounded rather than obeyed.
-        most = min(len(summaries) - 1, max(drop * 2, drop))
         try:
             reply = self.client.complete(
-                "You name the notes another model should skip. Everything you do not "
-                "name is read in full.",
+                "You rank notes by how little they would contribute, so another "
+                "model can read the rest in full.",
                 prompt.render(
                     question=question,
                     drop=str(drop),
-                    most=str(most),
+                    keep=str(keep),
                     count=str(len(summaries)),
                     summaries="\n".join(summary.line for summary in summaries),
                 ),
@@ -190,7 +195,7 @@ class Selector:
         except LlmConfigError:
             raise
         except Exception as exc:  # noqa: BLE001 - a failed selection must not narrow
-            log.warning("select: the selection call failed (%s) — filling the budget", exc)
+            log.warning("select: the selection call failed (%s)", exc)
             return Selection(
                 mode=SELECTION_SELECTED,
                 considered=len(known),
@@ -199,11 +204,10 @@ class Selector:
             )
 
         if reply.finish_reason == "length":
-            # A fragment of a drop-list is *safe* to apply — it drops less than
-            # it meant to — but it is also the signature of the loop v1 hit, and
-            # a reply that ran away is not one to reason from. Discarded, and
-            # the caller fills the budget.
-            log.warning("select: the reply was truncated — filling the budget instead")
+            # A fragment of a drop list is safe to *apply* — it drops less than
+            # it meant to — but it is the signature of a reply that ran away,
+            # and the quota exists partly to stop producing them.
+            log.warning("select: the reply was truncated")
             return Selection(
                 mode=SELECTION_SELECTED,
                 considered=len(known),
@@ -213,12 +217,13 @@ class Selector:
                 output_tokens=reply.usage.output_tokens,
             )
 
-        parsed = parse_selection(reply.text, known=known, most=most)
+        parsed = parse_selection(reply.text, known=known, most=drop)
         return Selection(
             video_ids=parsed.video_ids,
             mode=parsed.mode,
             reason=parsed.reason,
             considered=parsed.considered,
+            overflowed=parsed.overflowed,
             parsed=parsed.parsed,
             problem=parsed.problem,
             input_tokens=reply.usage.input_tokens,
