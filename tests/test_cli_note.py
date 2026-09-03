@@ -19,7 +19,11 @@ from marginalia.contracts import FAILED, NOTED, SKIPPED, NoteResult, NoteRun
 
 # The distinctive strings the leak tests look for.
 SECRET_NOTE = "## Claims\nthe speaker calls quadratic growth exponential twice\n"
-SECRET_TRANSCRIPT = "[00:00:00.000 --> 00:00:02.000] a phrase only the transcript contains\n"
+# Repeated to clear `[note] min_transcript_chars`: the floor is a real guard,
+# and a fixture below it would skip the very note this test inspects.
+SECRET_TRANSCRIPT = (
+    "[00:00:00.000 --> 00:00:02.000] a phrase only the transcript contains\n" * 20
+)
 
 
 def fake_run(**overrides) -> NoteRun:
@@ -138,8 +142,15 @@ def test_a_real_run_prints_neither_the_transcript_nor_the_note(
 
     library = Library(configured)
     library.ensure()
+    # Twenty lines, to clear `[note] min_transcript_chars`. The floor is a
+    # real guard and a fixture under it would skip the note this inspects.
     library.write_transcript(
-        "aaaaaaaaaaa", [TranscriptLine(0, 2000, "a phrase only the transcript contains")]
+        "aaaaaaaaaaa",
+        [
+            TranscriptLine(i * 2000, (i + 1) * 2000,
+                           "a phrase only the transcript contains")
+            for i in range(20)
+        ],
     )
     library.write_meta("aaaaaaaaaaa", {"title": "A video", "channel": "Chan"})
     with Ledger(library.ledger_path) as ledger:

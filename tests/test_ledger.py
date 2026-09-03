@@ -1378,3 +1378,95 @@ def test_first_noted_at_is_null_before_any_note(tmp_path: Path) -> None:
     )
 
     assert ledger.get("aaaaaaaaaaa").first_noted_at is None
+
+
+def _decision(topic: str, stage: str, verdict: str, when: str = "2026-01-01T00:00:00+00:00"):
+    from marginalia.core.ledger import DecisionRow
+
+    return DecisionRow("a" * 11, topic, stage, verdict, None, when, None, None, None, None)
+
+
+def test_a_later_stage_supersedes_an_earlier_one(tmp_path: Path) -> None:
+    """**Rule 13 at the layer below it.** Stage 2 read the transcript, stage 1
+    read the title; when they disagree the one that read wins.
+
+    The defect this closes kept 69 of 422 notes: `x6akeHQ5f-M` had
+    `metadata/yes` then `full/no`, same run, same topic, seconds apart, and
+    `wanted_for_a_note` returned True on the stage-1 verdict the pipeline had
+    just recorded as wrong. Rule 13 already names it — `overturned`."""
+    from marginalia.core.ledger import wanted_for_a_note
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_pending("a" * 11)
+    row = ledger.mark_has_transcript(
+        "a" * 11, source="captions", caption_kind="auto", provider="ytdlp"
+    )
+
+    overturned = [_decision("t1", "metadata", "yes"), _decision("t1", "full", "no")]
+
+    assert not wanted_for_a_note(row, overturned)
+
+
+def test_a_genuine_cross_topic_acceptance_still_wins(tmp_path: Path) -> None:
+    """What must not change. A video declined for one brief and wanted by
+    another is rule 12's whole reason for existing; only an earlier stage of
+    *the same* judgement stops counting."""
+    from marginalia.core.ledger import wanted_for_a_note
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_pending("a" * 11)
+    row = ledger.mark_has_transcript(
+        "a" * 11, source="captions", caption_kind="auto", provider="ytdlp"
+    )
+
+    cross = [
+        _decision("t1", "metadata", "yes"),
+        _decision("t1", "full", "no"),
+        _decision("t2", "metadata", "yes"),
+    ]
+
+    assert wanted_for_a_note(row, cross)
+
+
+def test_a_stage_one_yes_that_never_reached_stage_two_still_accepts(tmp_path: Path) -> None:
+    """Nothing superseded it."""
+    from marginalia.core.ledger import wanted_for_a_note
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_pending("a" * 11)
+    row = ledger.mark_has_transcript(
+        "a" * 11, source="captions", caption_kind="auto", provider="ytdlp"
+    )
+
+    assert wanted_for_a_note(row, [_decision("t1", "metadata", "yes")])
+
+
+def test_a_video_with_no_decisions_is_still_wanted(tmp_path: Path) -> None:
+    """`marg ingest <url>` writes no decision. A rule keyed on verdicts must not
+    exclude the one path that produces none."""
+    from marginalia.core.ledger import wanted_for_a_note
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_pending("a" * 11)
+    row = ledger.mark_has_transcript(
+        "a" * 11, source="captions", caption_kind="auto", provider="ytdlp"
+    )
+
+    assert wanted_for_a_note(row, [])
+
+
+def test_an_existing_note_still_overrides(tmp_path: Path) -> None:
+    """Regeneration must reach every note that exists, or `--regenerate --all`
+    quietly stops maintaining some of them."""
+    from marginalia.core.ledger import wanted_for_a_note
+
+    ledger = Ledger(tmp_path / "ledger.db")
+    ledger.mark_pending("a" * 11)
+    ledger.mark_has_transcript(
+        "a" * 11, source="captions", caption_kind="auto", provider="ytdlp"
+    )
+    row = ledger.mark_noted("a" * 11, version="6", model="m")
+
+    overturned = [_decision("t1", "metadata", "yes"), _decision("t1", "full", "no")]
+
+    assert wanted_for_a_note(row, overturned)

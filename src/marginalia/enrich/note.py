@@ -344,6 +344,40 @@ def _one(
     transcript = library.read_transcript(video_id)
     ledger.touch_accessed(video_id)
 
+    floor = config.note.min_transcript_chars
+    if floor and len(transcript) < floor:
+        # **Its own outcome, not a failure and not the ceiling's twin.** Nothing
+        # went wrong and nothing was too big: there is not enough transcript for
+        # seven sections to be written from, so whatever a note contained would
+        # be mostly the model's own supply. Rule 14 — a skip that shared the
+        # ceiling's counter would report "too short" and "too long" as one
+        # number, and they have opposite causes.
+        #
+        # **Measured rather than chosen.** A note is normally about *half* its
+        # transcript: the library-wide note/transcript ratio has a median of
+        # 0.469 and a p90 of 1.42. Below roughly 1,200 characters that inverts
+        # hard — 1,153 chars produced a note 7.4x its source, 887 produced 5.1x,
+        # and a 37-character transcript produced a 4,681-character note, 126x
+        # the thing it was written from. The break sits between 1,153 and 1,378,
+        # which is where the ratio falls under 5x and stays there.
+        #
+        # The floor is deliberately low. Raising it to 2,000 would catch 17
+        # transcripts instead of 7 and start excluding genuine short-form video,
+        # which is the duration bias `judge_metadata` spends four paragraphs
+        # forbidding, relocated to the note layer where nobody would look for it.
+        log.info(
+            "note: %s is %d characters, under the %d floor — too little to write "
+            "a note from, skipped",
+            video_id,
+            len(transcript),
+            floor,
+        )
+        return NoteResult(
+            video_id,
+            SKIPPED,
+            f"transcript is {len(transcript):,} chars, under the {floor:,} floor",
+        )
+
     ceiling = config.note.max_transcript_chars
     if len(transcript) > ceiling:
         # Logged and skipped, never split. See the module docstring.

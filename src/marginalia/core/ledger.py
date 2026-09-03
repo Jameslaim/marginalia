@@ -96,6 +96,10 @@ _STAGES = frozenset(
 # Anything asking "was this video declined after being read?" must ask about
 # both, or B3 would silently un-reject everything B2 rejected.
 _STAGE_TWO = frozenset({STAGE_OPENING, STAGE_FULL})
+# Which stage read more. Used to decide, within one topic, which verdict
+# is the current one: a stage that read the transcript supersedes one that
+# read the title, which supersedes one that read a search result.
+_STAGE_ORDER = {STAGE_SEARCH: 1, STAGE_METADATA: 2, STAGE_OPENING: 3, STAGE_FULL: 3}
 
 _EVIDENCE = frozenset({EVIDENCE_CLEAR, EVIDENCE_DEGRADED})
 
@@ -634,8 +638,38 @@ def wanted_for_a_note(row: VideoRow, decisions: Sequence[DecisionRow]) -> bool:
     if row.noted_at is not None:
         return True
 
-    declined = False
+    # **For one video and one topic, a later stage supersedes an earlier one.**
+    #
+    # Stage 2 read the transcript; stage 1 read the title. When they disagree
+    # the one that read wins, which is not a new rule — it is what rule 13 says,
+    # expressed where this function can act on it.
+    #
+    # The defect this closes: the loop below used to return True on a stage-1
+    # YES wherever it found one, including when the same run's stage 2 had
+    # overturned it seconds later on the same topic. `x6akeHQ5f-M` is the worked
+    # case — `metadata/yes` then `full/no`, same day, same topic, no other
+    # acceptance anywhere — and 69 of 422 notes are in that shape. The pipeline
+    # judged the title, judged the transcript, correctly recorded that the title
+    # had been wrong, and then kept the video on the title's verdict.
+    #
+    # Rule 13 already names it: `overturned`. B6 made every keeper reach stage 2
+    # precisely so a video could not be stored because of its title, and note
+    # selection handed that decision straight back.
+    #
+    # **What is deliberately not changed.** A genuine cross-topic acceptance
+    # still overrides, because a video declined for one brief and wanted by
+    # another is rule 12's whole reason for existing; only an earlier stage of
+    # *the same* judgement stops counting. And a topic that never reached stage
+    # 2 still accepts on its stage-1 YES — nothing superseded it.
+    latest: dict[str, DecisionRow] = {}
     for decision in decisions:
+        rank = _STAGE_ORDER.get(decision.stage, 0)
+        seen = latest.get(decision.topic)
+        if seen is None or rank >= _STAGE_ORDER.get(seen.stage, 0):
+            latest[decision.topic] = decision
+
+    declined = False
+    for decision in latest.values():
         if decision.stage in _STAGE_TWO and decision.verdict == VERDICT_NO:
             declined = True
         elif decision.stage in _STAGE_TWO and decision.verdict in _KEPT:

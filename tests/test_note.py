@@ -92,7 +92,15 @@ def client(replies, *, usage: FakeUsage | None = None) -> LlmClient:
     return made
 
 
-def library_with(tmp_path: Path, *video_ids: str, text: str = "hello world") -> tuple:
+# Long enough to clear `[note] min_transcript_chars`. The floor is a real
+# guard — below it there is not enough transcript for seven sections — and a
+# fixture that trips it would make every drain test assert the wrong thing.
+FIXTURE_TRANSCRIPT = "hello world, and here is some more of it. " * 40
+
+
+def library_with(
+    tmp_path: Path, *video_ids: str, text: str = FIXTURE_TRANSCRIPT
+) -> tuple:
     """A library and ledger holding stored transcripts for each id."""
     config = make_config(tmp_path)
     library = Library(config.library_path)
@@ -513,7 +521,7 @@ def test_reading_a_transcript_records_the_access(tmp_path: Path) -> None:
 
 
 def test_the_whole_transcript_is_sent_in_one_call(tmp_path: Path) -> None:
-    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", text="a distinctive phrase")
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", text="a distinctive phrase " + FIXTURE_TRANSCRIPT)
     made = client(GOOD_NOTE)
 
     write_notes(config, ledger, library, made, prompts_directory=prompts(tmp_path))
@@ -651,3 +659,29 @@ def test_the_drain_honours_missing_only(tmp_path: Path) -> None:
     )
 
     assert run.count(NOTED) == 2, "the stale v4 note was left alone"
+
+
+def test_a_transcript_under_the_floor_is_skipped_with_its_own_reason(tmp_path: Path) -> None:
+    """**Its own outcome, not a failure and not the ceiling's twin.** Nothing
+    went wrong and nothing was too big: there is not enough transcript for seven
+    sections, so whatever a note contained would be mostly the model's own
+    supply. Measured — a note is normally about half its transcript (median
+    0.469x), and a 37-character transcript produced a 4,681-character note."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", text="too short")
+    made = client(GOOD_NOTE)
+
+    run = write_notes(config, ledger, library, made, prompts_directory=prompts(tmp_path))
+
+    assert run.count(NOTED) == 0
+    assert run.results[0].outcome == SKIPPED
+    assert "under the" in run.results[0].detail and "floor" in run.results[0].detail
+    assert made.sent == [], "no model call was made"  # type: ignore[attr-defined]
+
+
+def test_a_transcript_above_the_floor_is_unaffected(tmp_path: Path) -> None:
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa")
+    made = client(GOOD_NOTE)
+
+    run = write_notes(config, ledger, library, made, prompts_directory=prompts(tmp_path))
+
+    assert run.count(NOTED) == 1

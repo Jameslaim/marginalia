@@ -56,6 +56,7 @@ def make_note_config(**overrides: object) -> NoteConfig:
     values: dict[str, object] = {
         "max_cost_usd": 5.0,
         "max_transcript_chars": 400_000,
+        "min_transcript_chars": 1_200,
         "max_tokens": 8192,
     }
     values.update(overrides)

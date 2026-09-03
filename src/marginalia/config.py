@@ -165,6 +165,12 @@ DEFAULT_NOTE_MAX_COST_USD = 5.0
 # unchanged — one note is one model reading one thing whole, and past some
 # length that stops being true — but the number was guessed and is now measured.
 DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS = 1_000_000
+# The other end. 1,200 because the note/transcript ratio breaks there: the
+# library median is 0.469x and the p90 is 1.42x, while 1,153 characters
+# produced 7.4x and 37 characters produced 126x. Low on purpose — a floor
+# at 2,000 would start excluding genuine short-form video, which is the
+# duration bias the stage-1 prompt forbids, moved somewhere less visible.
+DEFAULT_NOTE_MIN_TRANSCRIPT_CHARS = 1_200
 # Higher than the global default: the reply is a full note, and on a provider
 # whose thinking is always on the reasoning bills against the same ceiling.
 #
@@ -307,6 +313,10 @@ class NoteConfig:
     # entire premise of a note is one model reading the whole thing at once —
     # chunking would produce something that looks like a note and is not.
     max_transcript_chars: int
+    # M-later. Below this, there is not enough transcript for seven sections
+    # to be written from. Measured: a note is normally ~0.47x its transcript,
+    # and below ~1,200 characters that inverts to 5x-126x.
+    min_transcript_chars: int
     max_tokens: int
 
 
@@ -605,6 +615,13 @@ def _note(data: dict, config_path: Path) -> NoteConfig:
             section,
             "max_transcript_chars",
             DEFAULT_NOTE_MAX_TRANSCRIPT_CHARS,
+            config_path,
+            "note",
+        ),
+        min_transcript_chars=_positive(
+            section,
+            "min_transcript_chars",
+            DEFAULT_NOTE_MIN_TRANSCRIPT_CHARS,
             config_path,
             "note",
         ),
