@@ -18,6 +18,7 @@ from marginalia.ask import (
     AskTooLarge,
     SelectionFailed,
     answer_question,
+    check_grounding,
     deep_link,
     estimate_tokens,
     load_notes,
@@ -878,3 +879,96 @@ def test_no_note_text_reaches_a_stored_answer(tmp_path):
     assert marker not in rendered, "no note text"
     assert "title for" not in rendered.split("## Answer")[0], "and no titles either"
     assert f"- notes read: {B}" in rendered, "ids, which are safe"
+
+
+# -- what the answer layer invents ------------------------------------------
+#
+# Every other check in this system reads shape: an HTTP status, five lines,
+# citation syntax. A reply that terminates cleanly, parses, and is simply wrong
+# passes all three — rule 24's semantic failure. An external check of one real
+# answer found 5 of 23 checkable strings in neither transcript nor note, four
+# of them inside quote marks, and two cited ids that do not exist, on a run
+# that reported 23 parsed and 0 unparsed.
+
+
+def test_a_quote_missing_from_the_cited_note_is_counted(tmp_path):
+    config, library = build(tmp_path, {A: "## Claims\n\n- the speaker says caching is cheap\n"})
+    text = f'The video claims "caching is free forever" [{A} 01:00].'
+    notes = load_notes(library)
+
+    ids, unverified, uncited = check_grounding(text, notes, [A])
+
+    assert ids == []
+    assert len(unverified) == 1 and A in unverified[0]
+    assert uncited == []
+
+
+def test_a_quote_present_in_the_cited_note_is_not_counted(tmp_path):
+    config, library = build(tmp_path, {A: "## Claims\n\n- the speaker says caching is cheap\n"})
+    text = f'The video says "caching is cheap" [{A} 01:00].'
+
+    ids, unverified, uncited = check_grounding(text, load_notes(library), [A])
+
+    assert (ids, unverified, uncited) == ([], [], [])
+
+
+def test_a_quote_with_no_citation_is_its_own_outcome(tmp_path):
+    """Rule 14. "Attributed to the wrong video" and "attributed to nothing" are
+    different failures with different fixes."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
+    text = 'Somebody said "this is a completely unattributed claim" in one of them.'
+
+    ids, unverified, uncited = check_grounding(text, load_notes(library), [A])
+
+    assert unverified == []
+    assert len(uncited) == 1
+
+
+def test_an_id_naming_no_loaded_video_is_counted(tmp_path):
+    """The gap the citation counter cannot see: a fabricated id inside the
+    model's own deliberation is not citation-shaped, so it was never counted as
+    anything. `EXLCnmcyLcQ` and `VkLnUsKX0Cw` were reported as zero problems."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
+    text = f"Some claim [EXLCnmcyLcQ — I might be making this up] and [{A} 01:00]."
+
+    ids, _, _ = check_grounding(text, load_notes(library), [A])
+
+    assert ids == ["EXLCnmcyLcQ"]
+
+
+def test_an_eleven_letter_word_in_brackets_is_not_an_id(tmp_path):
+    """`consolidate`, `fabricating` and `contradicti` all matched the id shape
+    inside the model's prose. A real id carries a digit, a case change or -/_."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
+    text = "[a note about the contradiction and the fabricating of claims]"
+
+    ids, _, _ = check_grounding(text, load_notes(library), [A])
+
+    assert ids == []
+
+
+def test_a_mis_cased_id_is_a_citation_repair_not_a_missing_video(tmp_path):
+    """Counting it here would report one event under two names."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- caching is cheap\n"})
+    text = f'It says "caching is cheap" [{A.upper()} 01:00].'
+
+    ids, unverified, uncited = check_grounding(text, load_notes(library), [A])
+
+    assert ids == []
+    assert unverified == [], "and the quote still resolves against the right note"
+
+
+def test_the_grounding_section_never_prints_the_note(tmp_path):
+    """A failing quote may travel — it came from the answer. The note may not:
+    not the passage searched, not the nearest match, not what stood there
+    instead. Same trap as the size warning, in the same shape."""
+    secret = "the speaker contradicts himself about cache expiry four minutes apart"
+    config, library = build(tmp_path, {A: f"## Claims\n\n- {secret}\n"})
+    spoken = client([f'It claims "an invented quotation here" [{A} 01:00].'])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert len(answer.unverified_quotes) == 1
+    assert "an invented quotation here" in rendered, "the failing quote is shown"
+    assert secret not in rendered, "the note is not"

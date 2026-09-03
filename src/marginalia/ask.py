@@ -124,6 +124,7 @@ __all__ = [
     "answer_question",
     "AskTooLarge",
     "SelectionFailed",
+    "check_grounding",
     "choose_notes",
     "estimate_tokens",
     "fill_to_budget",
@@ -284,6 +285,112 @@ def _find_id(entry: str, known: Sequence[str] | None) -> tuple[str | None, bool]
         return None, False
     match = _ID_SHAPE_RE.search(entry)
     return (match.group(0) if match else None), False
+
+
+# -- what the answer layer invents -------------------------------------------
+#
+# **Every existing check in this system reads shape.** `_classify` reads an HTTP
+# status, rule 13 reads five lines, the citation parser reads syntax. A reply
+# that terminates cleanly, parses, and is simply wrong passes all three — the
+# semantic failure rule 24 records as a known class.
+#
+# An external check of one Q4 answer found 5 of 23 checkable strings appearing
+# in neither the transcript nor the note, four of them inside quotation marks,
+# and two cited video ids that do not exist. The run reported 23 parsed, 0
+# unparsed, because none of those is a shape problem.
+#
+# You cannot stop a model inventing a plausible quote. You can count it.
+#
+# **Three outcomes, three counters, per rule 14.** An id naming no video, a
+# quote attributed to the wrong video, and a quote attributed to nothing are
+# three different failures with three different fixes, and summing them would
+# report a number nobody can act on.
+
+# Quoted spans the checker will look at. Four characters minimum, because "a"
+# and "AI" in quotes are punctuation rather than attribution.
+_QUOTE_RE = re.compile(r"[\"\u201c]([^\"\u201c\u201d]{4,300})[\"\u201d]")
+
+# How far from a quote a citation may sit and still be its attribution. Two
+# hundred characters is about a sentence either side.
+_CITE_WINDOW = 200
+
+
+def _flatten(text: str) -> str:
+    """Case, whitespace and punctuation removed, for substring matching.
+
+    **Deliberately blunt.** A cleverer matcher is a second thing that can be
+    wrong, and this counter's job is to raise a flag rather than to adjudicate.
+    False positives are expected and acceptable: the output is a number a
+    reader weighs, not a gate that suppresses anything.
+    """
+    return re.sub(r"[^a-z0-9]+", "", text.lower())
+
+
+def check_grounding(
+    text: str, notes: Sequence[LoadedNote], loaded: Sequence[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Count what the answer asserts that its own sources do not support.
+
+    Returns `(unresolved_ids, unverified_quotes, uncited_quotes)`.
+
+    **Hard rule 1 governs the return value.** A failing quote may travel — it
+    came from the answer, which the reader is already holding. The *note* may
+    not: not the passage searched, not the nearest match, not "the note says X
+    instead". This reports whether a string was found and never what stood in
+    its place, and the trap is that the note text is sitting right there in the
+    same function — the same shape as the size-warning that wanted to name the
+    largest note.
+    """
+    known = set(loaded)
+    folded = {video_id.lower(): video_id for video_id in known}
+    flat = {note.video_id: _flatten(note.text) for note in notes}
+
+    # Brackets only. Scanning free prose would flag every eleven-character word.
+    unresolved: list[str] = []
+    for group in _GROUP_RE.finditer(text):
+        for candidate in _ID_SHAPE_RE.findall(group.group(1)):
+            if candidate in known or candidate in unresolved:
+                continue
+            # An eleven-letter lowercase run is an English word, not an id:
+            # `consolidate`, `fabricating`, `contradicti` all matched the shape
+            # inside the model's own prose. A real id carries a digit, a case
+            # change, or `-`/`_` — this drops the words without inventing a
+            # dictionary to check against.
+            if candidate.isalpha() and candidate.islower():
+                continue
+            # A case variant of a loaded id is the citation parser's `repaired`
+            # outcome, not a missing video. Counting it here would report one
+            # event under two names — rule 14 in the other direction.
+            if candidate.lower() in folded:
+                continue
+            unresolved.append(candidate)
+
+    unverified: list[str] = []
+    uncited: list[str] = []
+    for quote in _QUOTE_RE.finditer(text):
+        body = quote.group(1).strip()
+        if len(_flatten(body)) < 8:
+            continue
+        window = text[max(0, quote.start() - _CITE_WINDOW) : quote.end() + _CITE_WINDOW]
+        # Case-folded, matching what the citation parser already repairs: an
+        # id the model mis-cased still names a real video, and treating the
+        # quote as unattributed would report a *citation* problem as an
+        # *attribution* one.
+        ids = [
+            folded[found.lower()]
+            for group in _GROUP_RE.finditer(window)
+            for found in _ID_SHAPE_RE.findall(group.group(1))
+            if found.lower() in folded
+        ]
+        if not ids:
+            uncited.append(body)
+            continue
+        needle = _flatten(body)
+        if not any(needle in flat[video_id] for video_id in ids):
+            # Every nearby id, not the first: the check passed if *any* of them
+            # held the string, so naming one would misreport what was tested.
+            unverified.append(f"{'/'.join(dict.fromkeys(ids))}: {body}")
+    return unresolved, unverified, uncited
 
 
 def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationScan:
@@ -474,6 +581,28 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         # unrecoverable once the answer scrolls away.
         lines.extend(["", "Citation-shaped but unreadable:"])
         lines.extend(f"  {fragment}" for fragment in answer.unparsed)
+
+    if answer.unresolved_ids or answer.unverified_quotes or answer.uncited_quotes:
+        # **The failing strings, and never the notes.** A quote may be printed:
+        # it came from the answer, which the reader is already holding. What the
+        # note contained instead may not — this section reports whether a string
+        # was found, never what stood in its place.
+        lines.extend(["", "## Grounding", ""])
+        lines.append(
+            f"- {len(answer.unresolved_ids)} cited id(s) name no loaded video"
+            f", {len(answer.unverified_quotes)} quoted string(s) are not in the note"
+            f" they cite, {len(answer.uncited_quotes)} are attributed to nothing"
+        )
+        lines.append(
+            "- counted, not corrected: a paraphrase inside quote marks flags here"
+            " too, so these are numbers to weigh rather than errors to trust"
+        )
+        for video_id in answer.unresolved_ids:
+            lines.append(f"- no such loaded video: {video_id}")
+        for item in answer.unverified_quotes:
+            lines.append(f"- not in the cited note: {item}")
+        for item in answer.uncited_quotes:
+            lines.append(f"- quoted, uncited: {item}")
 
     lines.extend(["", "## Notes read", ""])
     if answer.titles:
@@ -949,6 +1078,21 @@ def answer_question(
 
     result.text = reply.text.strip()
     result.opened = [(item.video_id, item.why) for item in opened]
+    (
+        result.unresolved_ids,
+        result.unverified_quotes,
+        result.uncited_quotes,
+    ) = check_grounding(result.text, notes, [note.video_id for note in notes])
+    if result.unverified_quotes or result.unresolved_ids:
+        # Counts only. Naming the note that failed to contain a string is
+        # one step from printing what it held instead, which is the line
+        # hard rule 1 draws at every other surface.
+        log.warning(
+            "ask: %d quoted string(s) are not in the notes they cite, "
+            "%d cited id(s) name no loaded video",
+            len(result.unverified_quotes),
+            len(result.unresolved_ids),
+        )
     scan = scan_citations(result.text, known)
     result.citations = scan.citations
     result.unparsed = scan.unparsed

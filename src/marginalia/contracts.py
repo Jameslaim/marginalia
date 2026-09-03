@@ -1632,6 +1632,19 @@ class Answer:
     cost_usd: float = 0.0
     elapsed_s: float = 0.0
     truncated: bool = False
+    # What the answer asserts that its own sources do not support. Three
+    # outcomes, three lists, per rule 14: an id naming no video, a quote
+    # attributed to a video whose note does not contain it, and a quote
+    # attributed to nothing are three failures with three fixes.
+    #
+    # **Reported, never used to suppress.** The answer is written whether or
+    # not a quote verifies — same discipline as `unparsed` and
+    # `unmarked_currency`. These will carry false positives, because a
+    # paraphrase inside quote marks flags, and that is the price of a check
+    # simple enough to be trustworthy.
+    unresolved_ids: list[str] = field(default_factory=list)
+    unverified_quotes: list[str] = field(default_factory=list)
+    uncited_quotes: list[str] = field(default_factory=list)
 
     @property
     def escalated(self) -> bool:

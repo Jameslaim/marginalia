@@ -985,6 +985,14 @@ def _ask_summary(answer: Answer) -> str:
         f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
         f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
     )
+    if answer.unresolved_ids or answer.unverified_quotes:
+        # Its own line, never summed with the citation counters: those read
+        # syntax and this reads content, so a run where both are non-zero has
+        # two different problems.
+        line += "\n          " + (
+            f"grounding: {len(answer.unresolved_ids)} id(s) name no loaded "
+            f"video, {len(answer.unverified_quotes)} quote(s) not in the note cited"
+        )
     if answer.repaired:
         # The model got a video ID's casing wrong and the parser covered for it.
         # Worth seeing rather than inferring from a debug log.
