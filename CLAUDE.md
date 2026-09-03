@@ -158,6 +158,35 @@ not drift.
     has always followed: a judgement made for one brief says nothing about a video the
     user has now handed over directly.
 
+    **For one video and one topic, a later stage supersedes an earlier one.** Stage 2
+    read the transcript; stage 1 read the title. When they disagree the one that read
+    wins — not a new rule, but rule 13 expressed where `wanted_for_a_note` can act on
+    it. The acceptance clause above used to count *any* stage-1 YES, including one the
+    same run's stage 2 overturned seconds later on the same topic: the pipeline judged
+    the title, judged the transcript, correctly recorded that the title had been wrong,
+    and then kept the video on the title's verdict. Rule 13 already names that case —
+    `overturned` — and B6 made every keeper reach stage 2 precisely so nothing would be
+    stored because of its title.
+
+    Measured: **69 of 422 notes were in that shape**, and 68 stop being wanted. The
+    sixty-ninth is the clause working — `3KWRWdOqGg4` carries a stage-2 NO for one topic
+    and a stage-1 YES for another that never reached stage 2, a genuine cross-topic
+    acceptance that still overrides.
+
+    **The 69 keep their notes.** `noted_at` overrides everything but degraded evidence,
+    so this changes what gets noted next rather than what is on disk — and removing them
+    would not be free: **37 of the 69 have been cited in stored answers**, one of them in
+    nine. Stage 2 declining a video that then carries answers is a finding about stage 2,
+    not a cleanup task.
+
+    **A note is refused below `[note] min_transcript_chars`** — its own outcome and its
+    own counter, not a failure, not degraded evidence, not the length ceiling. Measured
+    rather than chosen: a note is normally about half its transcript (library median
+    0.469x, p90 1.42x), and below ~1,200 characters that inverts to 5x–126x, with a
+    37-character transcript producing a 4,681-character note. Kept low on purpose — a
+    floor at 2,000 would start excluding genuine short-form video, which is the duration
+    bias `judge_metadata` forbids, relocated to where nobody would look for it.
+
 13. **Stage 2 reads the whole transcript, and its output format is enforced in code.**
     An opening cannot tell a video that delivers from one that opens well and never
     arrives — for a thousand words they are the same video, and padding is the thing
