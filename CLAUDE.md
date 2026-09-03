@@ -134,7 +134,10 @@ not drift.
     looked at into a phantom crash and delete the one signal that says a fetch died here.
 
     **A video is in the library if it has a note**, and `in_library()` is the only place
-    that decides. Notes are what `/ask` loads, so note existence *is* membership;
+    that decides. **Note existence no longer implies anyone judged the video relevant to
+    anything** — a note says only that a readable transcript was on disk. Relevance is a
+    property of `decisions` alone, read through `current_verdicts`, and the two must not
+    be inferred from each other in either direction. Notes are what `/ask` loads, so note existence *is* membership;
     `ask.py` already selected this way, which is what makes it the honest rule rather
     than a new one. Holding a transcript is a different question and has a different
     caller: `flow/discover.py` checks the disk before the network so an unnoted
@@ -148,15 +151,29 @@ not drift.
     seconds when YouTube throttled a run — and discarding content already in hand means
     paying that risk again for a video rejected for one topic and wanted for the next.
 
-    The consequence is that `has_transcript` **no longer implies anyone chose the
-    video**, so note selection cannot key on it. `wanted_for_a_note` decides, and the
-    discriminator is a stage-`opening` NO — nothing else writes one. Three things
-    override it: an existing note (regeneration must reach every note that exists), an
-    acceptance for any topic, and no judgement at all (`marg ingest <url>` logs no
-    decision, and a rule keyed on verdicts must not exclude the one path that produces
-    none). **Naming a video explicitly always overrides**, for the reason `skip_reason`
-    has always followed: a judgement made for one brief says nothing about a video the
-    user has now handed over directly.
+    **Note-writing consults the transcript, never the verdict.** `wanted_for_a_note`
+    refuses on exactly two grounds, and both are claims about the *text*: `EVIDENCE:
+    DEGRADED`, and a transcript below `[note] min_transcript_chars`. A stage-2 NO no
+    longer suppresses a note.
+
+    That reverses an earlier reading of this rule, and the measurement is why. Of the
+    69 videos a stage 2 declined and note-writing kept anyway, **37 are cited in stored
+    answers and one in nine of them**. Two different questions had been sharing one
+    function: *stage 2* asks whether a video satisfies the brief for topic T, `/ask`
+    asks whether a note helps answer question Q. `x6akeHQ5f-M` was declined for *ai
+    agent memory* because it missed that brief, then cited by "what do these videos get
+    wrong?", where a mediocre video is excellent evidence. Neither judgement was wrong.
+
+    Rule 13's concern never applied here. It exists to stop *"a video stored because of
+    its title"* — but this rule keeps the transcript either way, so the title only ever
+    decided whether to **fetch**. A note is written from the transcript, so a note for a
+    declined video is a faithful account of real content.
+
+    **And the cost that justified the old rule has since changed.** When it was written,
+    an extra note made answers worse: a library over budget filled the context by sorted
+    video id, so one more note displaced a better one at random. The selector now ranks
+    and fills to a budget. A rule written under a cost that no longer holds is worth
+    re-deriving rather than inheriting.
 
     **For one video and one topic, a later stage supersedes an earlier one.** Stage 2
     read the transcript; stage 1 read the title. When they disagree the one that read

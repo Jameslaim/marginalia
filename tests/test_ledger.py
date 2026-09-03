@@ -45,6 +45,7 @@ from marginalia.core.ledger import (
     in_library,
     quota_day,
     skip_reason,
+    current_verdicts,
     wanted_for_a_note,
 )
 
@@ -908,12 +909,18 @@ def test_a_video_nobody_judged_is_wanted() -> None:
     assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), []) is True
 
 
-def test_a_stage_two_rejection_is_not_wanted() -> None:
-    """The case B2 created. The transcript is kept so a later topic need not
-    re-fetch it; a note would be a model call spent on something no brief
-    accepted, which `/ask` would then load."""
+def test_a_stage_two_rejection_is_still_wanted_for_a_note() -> None:
+    """**Reversed, and the measurement is the reason.** Of the 69 videos a
+    stage 2 declined and note-writing kept anyway, 37 are cited in stored
+    answers and one in nine of them.
+
+    Stage 2 asks whether a video satisfies a brief; `/ask` asks whether a note
+    helps answer a question. `x6akeHQ5f-M` was declined for *ai agent memory*
+    and then cited by "what do these videos get wrong?", where a mediocre video
+    is excellent evidence. Both judgements were right about their own question,
+    and only one of them is about whether a transcript can be read."""
     decisions = [decision(STAGE_METADATA, VERDICT_MAYBE), decision(STAGE_OPENING, VERDICT_NO)]
-    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), decisions) is False
+    assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), decisions) is True
 
 
 def test_a_stage_two_keeper_is_wanted() -> None:
@@ -972,14 +979,15 @@ def test_an_existing_note_is_always_wanted() -> None:
 # -- and the same policy through the ledger ---------------------------------
 
 
-def test_a_rejected_video_is_not_offered_to_the_note_worker(ledger: Ledger) -> None:
+def test_a_rejected_video_is_offered_to_the_note_worker(ledger: Ledger) -> None:
+    """Note-writing consults the transcript, never the verdict."""
     ledger.mark_pending(VIDEO_ID)
     ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
     ledger.log_decision(
         VIDEO_ID, "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="off topic"
     )
 
-    assert ledger.videos_needing_note(version="1") == []
+    assert [r.video_id for r in ledger.videos_needing_note(version="1")] == [VIDEO_ID]
 
 
 def test_a_kept_video_is_offered_to_the_note_worker(ledger: Ledger) -> None:
@@ -1017,9 +1025,9 @@ def test_regenerate_all_still_reaches_a_rejected_video_that_has_a_note(
     assert [r.video_id for r in rows] == [VIDEO_ID]
 
 
-def test_the_note_count_separates_unwanted_from_missing(ledger: Ledger) -> None:
-    """A rejected transcript is not a missing note. Folding it into `missing`
-    would report work that will never be done, permanently."""
+def test_a_rejection_no_longer_makes_a_transcript_unwanted(ledger: Ledger) -> None:
+    """`unwanted` now means one thing only: the judge could not read it. A
+    rejection is a claim about a brief and says nothing about the text."""
     ledger.mark_pending(VIDEO_ID)
     ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
     ledger.log_decision(
@@ -1031,8 +1039,8 @@ def test_the_note_count_separates_unwanted_from_missing(ledger: Ledger) -> None:
     counts = ledger.note_counts(version="1")
 
     assert counts["has_transcript"] == 2
-    assert counts["missing"] == 1
-    assert counts["unwanted"] == 1
+    assert counts["missing"] == 2
+    assert counts["unwanted"] == 0
 
 
 # -- B3: degraded evidence is never noted -----------------------------------
@@ -1084,9 +1092,20 @@ def test_an_old_opening_verdict_still_counts_as_stage_two() -> None:
     would silently un-reject everything B2 rejected."""
     old = DecisionRow(
         VIDEO_ID, "prompt caching", STAGE_OPENING, VERDICT_NO, None,
-        "2026-01-01T00:00:00+00:00",
+        "2026-01-01T00:00:00+00:00", None, None, EVIDENCE_DEGRADED, None,
     )
+    # A rejection no longer suppresses a note, so the stage name is asserted
+    # through the thing that still does: degraded evidence, which only counts
+    # when the row is recognised as stage two.
     assert wanted_for_a_note(row(STATUS_HAS_TRANSCRIPT), [old]) is False
+
+    # And through supersession, which ranks `opening` alongside `full`.
+    stage_one = DecisionRow(
+        VIDEO_ID, "prompt caching", STAGE_METADATA, VERDICT_YES, None,
+        "2025-01-01T00:00:00+00:00",
+    )
+    latest = current_verdicts([stage_one, old])
+    assert latest["prompt caching"].stage == STAGE_OPENING
 
 
 def test_the_ledger_refuses_an_evidence_value_it_does_not_know(ledger: Ledger) -> None:
@@ -1387,24 +1406,32 @@ def _decision(topic: str, stage: str, verdict: str, when: str = "2026-01-01T00:0
 
 
 def test_a_later_stage_supersedes_an_earlier_one(tmp_path: Path) -> None:
-    """**Rule 13 at the layer below it.** Stage 2 read the transcript, stage 1
-    read the title; when they disagree the one that read wins.
+    """**The supersession rule, which is unchanged and still correct.** Stage 2
+    read the transcript, stage 1 read the title; when they disagree the one that
+    read wins. Rule 13 names it `overturned`.
 
-    The defect this closes kept 69 of 422 notes: `x6akeHQ5f-M` had
-    `metadata/yes` then `full/no`, same run, same topic, seconds apart, and
-    `wanted_for_a_note` returned True on the stage-1 verdict the pipeline had
-    just recorded as wrong. Rule 13 already names it — `overturned`."""
-    from marginalia.core.ledger import wanted_for_a_note
-
-    ledger = Ledger(tmp_path / "ledger.db")
-    ledger.mark_pending("a" * 11)
-    row = ledger.mark_has_transcript(
-        "a" * 11, source="captions", caption_kind="auto", provider="ytdlp"
-    )
-
+    It no longer gates note-writing — that was the error — but it is still what
+    a verdict *means*, and discovery and planning read relevance through it."""
     overturned = [_decision("t1", "metadata", "yes"), _decision("t1", "full", "no")]
 
-    assert not wanted_for_a_note(row, overturned)
+    latest = current_verdicts(overturned)
+
+    assert latest["t1"].stage == "full"
+    assert latest["t1"].verdict == "no"
+
+
+def test_supersession_is_per_topic(tmp_path: Path) -> None:
+    """A NO for one brief says nothing about another brief's YES."""
+    mixed = [
+        _decision("t1", "metadata", "yes"),
+        _decision("t1", "full", "no"),
+        _decision("t2", "metadata", "yes"),
+    ]
+
+    latest = current_verdicts(mixed)
+
+    assert latest["t1"].verdict == "no"
+    assert latest["t2"].verdict == "yes"
 
 
 def test_a_genuine_cross_topic_acceptance_still_wins(tmp_path: Path) -> None:

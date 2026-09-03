@@ -572,113 +572,85 @@ def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None
 _KEPT = frozenset({VERDICT_YES, VERDICT_MAYBE})
 
 
-def wanted_for_a_note(row: VideoRow, decisions: Sequence[DecisionRow]) -> bool:
-    """Should the note worker spend a model call on this video?
+def current_verdicts(decisions: Sequence[DecisionRow]) -> dict[str, DecisionRow]:
+    """Per topic, the verdict of the latest stage that ran.
 
-    B2 made this a real question. Before it, holding a transcript meant some
-    topic had accepted the video, so `has_transcript` was a good enough proxy
-    for "we chose this". Now a video declined at stage 2 keeps its transcript
-    too — that is the point of keeping it — and writing a note for a video no
-    topic has ever wanted is money spent on something `/ask` will then load.
+    **For one video and one topic, a later stage supersedes an earlier one.**
+    Stage 2 read the transcript; stage 1 read the title. When they disagree the
+    one that read wins — rule 13's `overturned`, expressed as a query.
 
-    The discriminator is exact and already recorded: **a stage-`opening` NO**.
-    Nothing else in the system writes one. Checked against the live library at
-    the time of writing, it identified all fifteen rejections and nothing else.
+    This is what a verdict *means*, and it is correct: 69 notes existed because
+    a stage-1 YES was counted as an acceptance after the same run's stage 2 had
+    overturned it seconds later on the same topic. Discovery and planning read
+    relevance through here.
 
-    Three things override it, and each is a case where "we never wanted this"
-    is simply false:
-
-    ``noted_at``
-        The video is already in the library. Regeneration must be able to reach
-        every note that exists, or `--regenerate --all` would quietly stop
-        maintaining some of them — and a note nobody can rewrite is a note
-        frozen at whichever prompt happened to produce it.
-
-    an acceptance elsewhere
-        A stage-2 YES or MAYBE, or a stage-1 YES, means some brief wanted this
-        video. A NO for one topic and a YES for another is not a contradiction;
-        it is the whole reason relevance left the status column in B1.
-
-    no judgement at all
-        `marg ingest <url>` logs no decision, because there is no topic and no
-        brief — the user simply asked for this video. A rule keyed on verdicts
-        must not exclude the one path that never produces any.
-
-    Since B3 there is a fourth answer that overrides all three: **degraded
-    evidence is never noted**. That is not a judgement about relevance that a
-    later topic might overturn — it is a statement that the transcript could
-    not be read, and the transcript does not change between topics.
-
-    Pure, and takes the decisions rather than fetching them, for the same reason
-    `skip_reason` takes ``transcript_present``: policy is testable without a
-    database and the ledger owns the queries.
+    It no longer gates note-writing. That was the error in the pass that added
+    it: `x6akeHQ5f-M` was declined for *ai agent memory* because it missed that
+    brief, and then cited by "what do these videos get wrong?", where a mediocre
+    video is excellent evidence. Both judgements were right; they answer
+    different questions, and only one of them is about whether a transcript can
+    be read.
     """
-    # B3, and it goes first — ahead of every other answer including an existing
-    # note. Evidence the judge could not read cannot produce a note worth
-    # having: `/ask` loads notes and has no way to know the text behind one was
-    # noise, so the failure mode is a confident wrong answer, which is the thing
-    # a library exists to not do.
-    #
-    # Ahead of ``noted_at`` deliberately. That override exists so regeneration
-    # can reach every note that exists — but regenerating a note from a
-    # transcript now known to be garbled spends a model call to produce the same
-    # bad note again, more expensively. The stale note stays on disk; it simply
-    # stops being refreshed. Removing it is a real question and belongs to
-    # whatever phase owns deletion.
-    #
-    # Unlike a rejection, this is not a claim about relevance that another topic
-    # might overturn. It is a claim about the transcript, and the transcript is
-    # the same for every topic that ever looks at this video.
-    if any(
-        decision.stage in _STAGE_TWO and decision.evidence == EVIDENCE_DEGRADED
-        for decision in decisions
-    ):
-        return False
-
-    if row.noted_at is not None:
-        return True
-
-    # **For one video and one topic, a later stage supersedes an earlier one.**
-    #
-    # Stage 2 read the transcript; stage 1 read the title. When they disagree
-    # the one that read wins, which is not a new rule — it is what rule 13 says,
-    # expressed where this function can act on it.
-    #
-    # The defect this closes: the loop below used to return True on a stage-1
-    # YES wherever it found one, including when the same run's stage 2 had
-    # overturned it seconds later on the same topic. `x6akeHQ5f-M` is the worked
-    # case — `metadata/yes` then `full/no`, same day, same topic, no other
-    # acceptance anywhere — and 69 of 422 notes are in that shape. The pipeline
-    # judged the title, judged the transcript, correctly recorded that the title
-    # had been wrong, and then kept the video on the title's verdict.
-    #
-    # Rule 13 already names it: `overturned`. B6 made every keeper reach stage 2
-    # precisely so a video could not be stored because of its title, and note
-    # selection handed that decision straight back.
-    #
-    # **What is deliberately not changed.** A genuine cross-topic acceptance
-    # still overrides, because a video declined for one brief and wanted by
-    # another is rule 12's whole reason for existing; only an earlier stage of
-    # *the same* judgement stops counting. And a topic that never reached stage
-    # 2 still accepts on its stage-1 YES — nothing superseded it.
     latest: dict[str, DecisionRow] = {}
     for decision in decisions:
         rank = _STAGE_ORDER.get(decision.stage, 0)
         seen = latest.get(decision.topic)
         if seen is None or rank >= _STAGE_ORDER.get(seen.stage, 0):
             latest[decision.topic] = decision
+    return latest
 
-    declined = False
-    for decision in latest.values():
-        if decision.stage in _STAGE_TWO and decision.verdict == VERDICT_NO:
-            declined = True
-        elif decision.stage in _STAGE_TWO and decision.verdict in _KEPT:
-            return True
-        elif decision.stage == STAGE_METADATA and decision.verdict == VERDICT_YES:
-            return True
 
-    return not declined
+def wanted_for_a_note(row: VideoRow, decisions: Sequence[DecisionRow]) -> bool:
+    """Can a useful note be written from what we hold? Not: is it relevant.
 
+    **Note-writing consults the transcript, never the verdict.** Two questions
+    have been sharing this function and they are not the same one:
+
+    * *is this video relevant to topic T?* — lives in `decisions`, read by
+      discovery and planning through `current_verdicts`
+    * *can we write a useful note from what we hold?* — lives in the transcript,
+      and is the only question here
+
+    The measurement that forced the split: of the 69 videos a stage 2 declined
+    and note-writing kept anyway, **37 are cited in stored answers and one in
+    nine of them**. Stage 2 asks whether a video satisfies a brief; `/ask` asks
+    whether a note helps answer a question, and a video that missed the first
+    can be strong evidence for the second.
+
+    Rule 13's concern never applied here either. It exists to stop *"a video
+    stored because of its title"* — but rule 12 keeps the transcript whatever
+    stage 2 said, so the title only ever decided whether to **fetch**. A note is
+    written from the transcript, so a note for a declined video is a faithful
+    account of real content.
+
+    Two things still refuse, and both are about the text rather than the topic:
+
+    ``EVIDENCE: DEGRADED``
+        The judge said it could not read the transcript. `/ask` loads notes and
+        has no way to know the text behind one was noise, so the failure mode is
+        a confident wrong answer. Ahead of ``noted_at``, because regenerating
+        from a transcript known to be garbled spends a model call to make the
+        same bad note again. Unlike a rejection this is not a claim about
+        relevance that another topic might overturn — it is a claim about the
+        transcript, and the transcript is the same for every topic.
+
+    below the length floor
+        Enforced in the worker, where the transcript is in hand: this function
+        is pure and takes decisions rather than fetching bytes. See
+        `[note] min_transcript_chars`.
+
+    **A cost that changed is why this is re-derived rather than inherited.**
+    When the old rule was written, more notes meant a worse answer, because a
+    library over budget filled the context by sorted video id and an extra note
+    displaced a better one at random. The selector now ranks and fills to a
+    budget, so an extra note is cheap in a way it was not.
+    """
+    if any(
+        decision.stage in _STAGE_TWO and decision.evidence == EVIDENCE_DEGRADED
+        for decision in decisions
+    ):
+        return False
+    return True
 
 
 class Ledger:

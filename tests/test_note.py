@@ -31,7 +31,7 @@ from marginalia.contracts import (
     STOP_REPEATED_FAILURES,
     VERDICT_NO,
 )
-from marginalia.core.ledger import STAGE_OPENING, Ledger
+from marginalia.core.ledger import STAGE_FULL, STAGE_OPENING, Ledger
 from marginalia.core.library import Library
 from marginalia.llm import LlmClient, LlmError
 from marginalia.enrich.note import (
@@ -543,42 +543,16 @@ def test_the_stored_note_carries_the_header_and_the_body(tmp_path: Path) -> None
     assert (row.note_version, row.note_model) == ("1", "test-model")
 
 
-def test_a_named_video_is_noted_even_after_a_stage_two_rejection(tmp_path: Path) -> None:
-    """B2. Bulk selection skips a video no topic accepted; naming it does not.
+def test_a_bulk_run_notes_a_rejected_video_too(tmp_path: Path) -> None:
+    """**Note-writing consults the transcript, never the verdict.** A stage-2 NO
+    says a video missed one brief; it says nothing about whether the transcript
+    can be read, and a note is written from the transcript.
 
-    The same principle `skip_reason` has always followed: a judgement made for
-    one brief says nothing about a video the user has now handed over directly.
-    The filter exists to stop the worker spending money unprompted, not to
-    overrule the person at the keyboard.
-    """
-    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa")
-    ledger.log_decision(
-        "aaaaaaaaaaa",
-        "prompt caching",
-        stage=STAGE_OPENING,
-        verdict=VERDICT_NO,
-        reason="actually a product demo",
-    )
-    # Bulk selection wants nothing to do with it...
-    assert ledger.videos_needing_note(version="1") == []
-
-    run = write_notes(
-        config,
-        ledger,
-        library,
-        client(GOOD_NOTE),
-        video_ids=["aaaaaaaaaaa"],
-        prompts_directory=prompts(tmp_path),
-    )
-
-    # ...but a direct request outranks it.
-    assert run.count(NOTED) == 1
-    assert library.has_note("aaaaaaaaaaa")
-
-
-def test_a_bulk_run_leaves_a_rejected_video_alone(tmp_path: Path) -> None:
-    """The money-saving half. One kept video and one rejected one; only the
-    kept one costs a model call."""
+    Measured: of the 69 videos a stage 2 declined and note-writing kept anyway,
+    37 are cited in stored answers and one in nine of them. Stage 2 asks whether
+    a video satisfies a brief, `/ask` asks whether a note helps answer a
+    question, and a video that missed the first is often evidence for the
+    second."""
     config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", "bbbbbbbbbbb")
     ledger.log_decision(
         "bbbbbbbbbbb", "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="no"
@@ -589,76 +563,29 @@ def test_a_bulk_run_leaves_a_rejected_video_alone(tmp_path: Path) -> None:
         prompts_directory=prompts(tmp_path),
     )
 
-    assert [r.video_id for r in run.results if r.outcome == NOTED] == ["aaaaaaaaaaa"]
-    assert not library.has_note("bbbbbbbbbbb")
+    assert sorted(r.video_id for r in run.results if r.outcome == NOTED) == [
+        "aaaaaaaaaaa",
+        "bbbbbbbbbbb",
+    ]
 
 
-def test_a_note_without_the_currency_section_is_refused() -> None:
-    """v5. Required rather than optional, because the videos most needing it are
-    the ones giving no version signal — exactly where a model would skip it."""
-    sections = {name: "something" for name in REQUIRED_SECTIONS if name != "How current is it"}
-    text = "\n".join(f"## {name}\n\n{body}\n" for name, body in sections.items())
-
-    with pytest.raises(NoteInvalid) as caught:
-        validate_note(text)
-
-    assert "How current is it" in str(caught.value)
-
-
-def test_the_note_prompt_asks_the_currency_question() -> None:
-    """The date was already in the prompt; nothing asked the note to use it, so
-    11 of 24 LangChain notes recorded era and only by accident."""
-    from marginalia.llm import load_prompt, prompts_dir
-
-    text = load_prompt("write_note", directory=prompts_dir()).text
-
-    assert "PUBLISHED" in text
-    assert "How current is it" in text
-    assert "outside knowledge" in text.lower(), "era claims must be markable"
-
-
-def test_missing_only_ignores_the_prompt_version(tmp_path: Path) -> None:
-    """**What makes a prompt bump affordable.** `note_is_current` is exact
-    string equality, so bumping to v6 marks every existing note stale and a
-    plain run would queue all of them — 422 notes, thirteen hours, $2.30 on the
-    real library. When the change clarifies a rare failure path rather than
-    adding content, that regeneration is a choice, not a consequence."""
-    ids = [f"aaaaaaaaaa{n}" for n in range(1, 4)]
-    config, library, ledger = library_with(tmp_path, *ids)
-    ledger.mark_noted(ids[0], version="5", model="m")
-    ledger.mark_noted(ids[1], version="5", model="m")
-
-    stale = ledger.videos_needing_note(version="6")
-    missing = ledger.videos_needing_note(version="6", missing_only=True)
-
-    assert len(stale) == 3, "a version bump makes every note stale"
-    assert [row.video_id for row in missing] == [ids[2]], "only the one with no note"
-
-
-def test_missing_only_and_a_matching_version_agree(tmp_path: Path) -> None:
-    """When nothing is stale the two widths are the same set, which is what says
-    the flag narrows rather than reorders."""
-    ids = [f"aaaaaaaaaa{n}" for n in range(1, 4)]
-    config, library, ledger = library_with(tmp_path, *ids)
-    ledger.mark_noted(ids[0], version="5", model="m")
-
-    assert ledger.videos_needing_note(version="5") == ledger.videos_needing_note(
-        version="5", missing_only=True
+def test_degraded_evidence_still_stops_a_note(tmp_path: Path) -> None:
+    """The one verdict that still refuses, and it is a claim about the *text*
+    rather than the topic: `/ask` loads notes and cannot tell that the transcript
+    behind one was noise."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", "bbbbbbbbbbb")
+    ledger.log_decision(
+        "bbbbbbbbbbb", "prompt caching", stage=STAGE_FULL, verdict="yes",
+        reason="kept", evidence="DEGRADED",
     )
-
-
-def test_the_drain_honours_missing_only(tmp_path: Path) -> None:
-    ids = [f"aaaaaaaaaa{n}" for n in range(1, 4)]
-    config, library, ledger = library_with(tmp_path, *ids)
-    ledger.mark_noted(ids[0], version="4", model="m")
-    made = client(GOOD_NOTE)
 
     run = write_notes(
-        config, ledger, library, made,
-        missing_only=True, prompts_directory=prompts(tmp_path),
+        config, ledger, library, client(GOOD_NOTE),
+        prompts_directory=prompts(tmp_path),
     )
 
-    assert run.count(NOTED) == 2, "the stale v4 note was left alone"
+    assert [r.video_id for r in run.results if r.outcome == NOTED] == ["aaaaaaaaaaa"]
+    assert not library.has_note("bbbbbbbbbbb")
 
 
 def test_a_transcript_under_the_floor_is_skipped_with_its_own_reason(tmp_path: Path) -> None:
