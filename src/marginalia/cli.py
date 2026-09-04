@@ -72,6 +72,7 @@ from .ask import (
     SelectionFailed,
     answer_question,
     deep_link,
+    mark_unverified,
     render_answer,
     render_links,
 )
@@ -946,7 +947,9 @@ def _cmd_ask(args: argparse.Namespace) -> int:
             log.warning("ask: the empty answer was recorded at %s", saved)
         return _error("the model returned an empty answer", EXIT_FAILED)
 
-    print(answer.text)
+    # The same markers the stored file carries, so the record matches what
+    # was read. `mark_unverified` adds only marginalia's own annotation.
+    print(mark_unverified(answer))
 
     links = render_links(answer.citations, answer.titles)
     if links:

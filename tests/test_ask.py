@@ -22,6 +22,7 @@ from marginalia.ask import (
     deep_link,
     estimate_tokens,
     load_notes,
+    mark_unverified,
     normalise_dashes,
     note_digest,
     parse_citations,
@@ -931,7 +932,7 @@ def test_a_quote_missing_from_the_cited_note_is_counted(tmp_path):
     ids, speech, phrases, uncited = check_grounding(text, notes, [A])
 
     assert ids == []
-    assert len(speech) == 1 and A in speech[0]
+    assert len(speech) == 1 and A in speech[0].video_ids
     assert (phrases, uncited) == ([], [])
 
 
@@ -947,7 +948,7 @@ def test_a_short_unverified_phrase_is_not_counted_as_speech(tmp_path):
     ids, speech, phrases, uncited = check_grounding(text, load_notes(library), [A])
 
     assert speech == [], "too short to be a claim about what somebody said"
-    assert len(phrases) == 1 and A in phrases[0]
+    assert len(phrases) == 1 and A in phrases[0].video_ids
     assert (ids, uncited) == ([], [])
 
 
@@ -1052,6 +1053,75 @@ def test_a_mis_cased_id_is_a_citation_repair_not_a_missing_video(tmp_path):
 
     assert ids == []
     assert (speech, phrases) == ([], []), "and the quote still resolves against the note"
+
+
+def test_a_failing_quote_is_marked_where_it_stands(tmp_path):
+    """A counter saying "1 unverified" tells a reader to distrust the answer.
+    A marker on the sentence tells them to distrust the sentence."""
+    config, library = build(tmp_path, {A: "## Verbatim\n\n- nothing alike here\n"})
+    invented = "here is an invented quotation nobody in the video ever said"
+    spoken = client([f'It claims "{invented}" [{A} 01:00]. The rest is fine.'])
+
+    answer = answer_question(config, library, spoken, "q")
+    marked = mark_unverified(answer)
+
+    assert f'"{invented}" [unverified]' in marked
+    assert "The rest is fine." in marked, "and nothing else is touched"
+
+
+def test_a_loose_rendering_of_verbatim_is_marked_differently(tmp_path):
+    """Of 42 measured failures, 5 were `## Verbatim` passages rendered
+    imprecisely and 24 had no source at all. One marker would accuse the first
+    group of what the second did."""
+    config, library = build(
+        tmp_path,
+        {A: "## Verbatim\n\n- you delivered one hundred thousand tokens worth of value here\n"},
+    )
+    loose = "you delivered one hundred thousand tokens of value here"
+    spoken = client([f'He says "{loose}" [{A} 01:00].'])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert [q.loose for q in answer.unverified_speech] == [True]
+    assert f'"{loose}" [loosely quoted]' in mark_unverified(answer)
+
+
+def test_prose_outside_verbatim_is_not_a_loose_quote(tmp_path):
+    """The 13 in the middle: the claim is in the note, but as the note-writer's
+    account rather than as speech, and worded differently. Marking that
+    `[loosely quoted]` would say a speaker nearly said it, which is the collapse
+    the rule exists to stop — `loose` looks at `## Verbatim` and nowhere else.
+
+    Note what this cannot catch, and the failing first draft of this test is
+    what showed it: `check_grounding` matches against the *whole* note, so prose
+    copied into quotation marks **exactly** verifies and is never counted. The
+    13 are the paraphrased ones; an exact lift of note prose is invisible."""
+    config, library = build(
+        tmp_path,
+        {A: "## Claims\n\n- the pipeline collapses under real production load\n\n"
+            "## Verbatim\n\n- something entirely unrelated to that\n"},
+    )
+    paraphrase = "the whole pipeline falls over once real production traffic arrives"
+    spoken = client([f'He says "{paraphrase}" [{A} 01:00].'])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert [q.loose for q in answer.unverified_speech] == [False]
+    assert "[unverified]" in mark_unverified(answer)
+
+
+def test_the_marker_never_says_what_the_note_held(tmp_path):
+    """Rule 1. Closeness may travel; content may not."""
+    secret = "you delivered one hundred thousand tokens worth of value here"
+    config, library = build(tmp_path, {A: f"## Verbatim\n\n- {secret}\n"})
+    loose = "you delivered one hundred thousand tokens of value here"
+    spoken = client([f'He says "{loose}" [{A} 01:00].'])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert "[loosely quoted]" in rendered
+    assert secret not in rendered
 
 
 def test_the_grounding_section_never_prints_the_note(tmp_path):

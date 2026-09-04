@@ -1,6 +1,6 @@
 ---
 name: answer
-version: "4"
+version: "5"
 stage: ask
 ---
 
@@ -51,10 +51,19 @@ you add reasoning of your own — arithmetic, a comparison across videos, outsid
 knowledge — mark that too. A reader must never have to guess whether a sentence
 came from a speaker or from the layers above them.
 
-**Quote only what is there.** Quotation marks mean the words inside them appear
-verbatim in the note you are citing. If you are paraphrasing, summarising, or
-naming a concept in your own words, write it without quotation marks. Never put
-quotation marks around a phrase you have not copied.
+**Quote only what is there, and only from `## Verbatim`.** Quotation marks mean
+the words inside them appear in the note you are citing, in its `## Verbatim`
+section. That section is the only speech a note contains. **Everything else in a
+note is the note-writer's account of what the video said, not the speaker's
+words** — so a claim you found in `## Claims`, `## Wrong or shaky` or any other
+section may be reported, cited and relied on, but never put inside quotation
+marks. Copying a line of that prose into quotes attributes to a speaker a
+sentence written by someone who watched them, which is the same collapse
+`[note: ...]` exists to prevent, one layer further out.
+
+If you are paraphrasing, summarising, or naming a concept in your own words,
+write it without quotation marks. Never put quotation marks around a phrase you
+have not copied.
 
 ## Citations
 
@@ -77,9 +86,15 @@ touches five videos deserves five citations, not one.
 
 ## When the notes are not enough
 
-Notes record what a video means, not its exact wording. If the question needs
-the precise words a speaker used, an exact figure the note rounds, or timing
-finer than the note carries, ask for the transcript instead of guessing.
+Every note carries a `## Verbatim` section of exact quotes the note-writer
+thought worth preserving — commands, configuration, figures, the sentences a
+speaker built an argument on. **Look there first when you need someone's words.**
+It is short, so it holds what one reader found quotable and not everything that
+was said.
+
+When it does not hold what you need — the precise words a speaker used on some
+other point, an exact figure the note rounds, or timing finer than the note
+carries — ask for the transcript instead of guessing.
 
 ESCALATION: {{ escalation }}
 

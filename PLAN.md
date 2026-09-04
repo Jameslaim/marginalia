@@ -775,6 +775,65 @@ spans their note actually contains is ~50% at every length band.
 **The number covers only what is inside quotation marks**, which is the limit on
 all of it. See the caveat below.
 
+**And the mechanism is known.** All 42 sentence-length failures were scored
+against the note they cite — best-matching window over word sequences — and they
+split three ways:
+
+| mechanism | count | share |
+|---|---|---|
+| a `## Verbatim` passage rendered imprecisely | 5 | 12% |
+| the note-writer's prose promoted into quotation marks | 13 | 31% |
+| no source anywhere in the note | **24** | **57%** |
+
+*The `Verbatim` threshold is hard.* The similarity distribution has an **empty
+band from 0.30 to 0.50** and the count is identical at every cut from 0.40 to
+0.50 — nothing sits near the line. That is the opposite of `_SPEECH_CHARS`, where
+the corpus offered no break and 40 is a stated convention.
+
+*The whole-note cut is soft*, called at 0.70 content-word overlap, and justified
+against chance: scoring each quote against a note it did **not** cite gives
+median overlap 0.25 and reaches 0.70 only **2 of 42 times**, against 18 of 42 for
+the cited notes — about nine times chance. It moves with the threshold (17
+"nothing anywhere" at 0.5, 24 at 0.7, 32 at 0.9), so the number is reported with
+its cut.
+
+Spread across ~36 distinct videos, at most 3 from any one. Not one bad note.
+
+**This refuted the hypothesis it was built to test.** The prompt used to say
+*"Notes record what a video means, not its exact wording"*, which is false — every
+note carries `## Verbatim` — and the obvious theory was that the model invents
+because it has been told the wording does not exist. But the five highest-scoring
+failures are quotes drawn *from* `Verbatim` and rendered loosely. The model reads
+that section and uses it. The false premise explains at most 6 of 42, and it was
+corrected in `answer` v5 because it is false, not because it is the cause.
+
+**The 13 in the middle are the second correction**, also in v5: a note's prose is
+the note-writer's account, and only `## Verbatim` is speech. Note what the
+counters cannot see here — `check_grounding` matches against the *whole* note, so
+prose copied into quotation marks **exactly** verifies and is never counted. The
+13 are only the paraphrased ones, and the true size of that class is unknown.
+
+**Expected effect of v5: ~43% of cases at best**, being the 5 plus the 13. The 24
+with no source are untouched by anything the prompt can say about where to look.
+Stated so a future measurement has an expectation rather than a hope — and
+measured against the ~40-samples-per-arm cost established for v4, not at n=3.
+
+**Escalation is not the remedy for the 24, and should not be expected to become
+one.** Escalation requires recognising a gap, and fabrication does not feel like
+a gap from the inside. It fired on 2026-08-25 for a question that explicitly
+demanded exact words — a case where the model *knew* it needed wording it did not
+have. It cannot fire for the 24, because there the model does not think anything
+is missing. **You cannot escalate for something you do not know you are
+missing.**
+
+**What can be done is marking, and that is now per claim.** A counter saying "5
+unverified" tells a reader to distrust the answer; `[unverified]` and
+`[loosely quoted]` beside the sentences tell them which five and how badly. Two
+markers rather than one, because marking a loosely-copied `Verbatim` passage
+identically to an invention accuses it of something it did not do. The marker
+says a string was not found and never what stood there instead, and it is applied
+identically to stdout and to the stored file so the record matches what was read.
+
 **What made it measurable at all, and what it cost.** The counters are a pure
 function of the answer text and the notes loaded, and both are stored — so the
 history could be re-scored for free. Except it could not: **43 of 55 answers are

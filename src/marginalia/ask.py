@@ -26,6 +26,7 @@ change and these must keep telling the truth about it.
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import logging
 import re
@@ -45,6 +46,7 @@ from .contracts import (
     NoteSummary,
     Opened,
     Selection,
+    UnverifiedQuote,
 )
 from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
@@ -140,6 +142,7 @@ __all__ = [
     "scan_citations",
     "parse_escalations",
     "render_answer",
+    "mark_unverified",
     "render_links",
 ]
 
@@ -393,6 +396,58 @@ _CITE_WINDOW = 200
 # boundary separates is two kinds of claim, not two error rates.
 _SPEECH_CHARS = 40
 
+# Above this, a failing quote is a *loose* rendering of something the cited
+# note's `## Verbatim` section holds rather than an invention.
+#
+# **Measured, and the threshold is hard rather than chosen.** All 42
+# sentence-length failures were scored against the Verbatim section of the note
+# they cite, best-matching window, word sequences. The distribution has an empty
+# band from 0.30 to 0.50 — nothing lands near the line — and the count is
+# identical at every cut from 0.40 to 0.50. That is the opposite of
+# `_SPEECH_CHARS`, where the corpus offered no break and 40 is a convention.
+#
+# The five above it are quotes drawn *from* Verbatim and rendered imprecisely,
+# which is why the model cannot be said to be ignoring that section.
+_LOOSE_RATIO = 0.5
+
+# The one section of a note that is speech. Everything else is the note-writer's
+# account of what the video said, and 13 of the 42 failures are that prose
+# rendered inside quotation marks.
+_VERBATIM_RE = re.compile(r"^## Verbatim\s*$", re.MULTILINE)
+_SECTION_RE = re.compile(r"^#{1,4}\s", re.MULTILINE)
+
+
+def _verbatim_of(note_text: str) -> str:
+    """The note's `## Verbatim` section, or empty if it has none."""
+    heading = _VERBATIM_RE.search(note_text)
+    if not heading:
+        return ""
+    rest = note_text[heading.end() :]
+    following = _SECTION_RE.search(rest)
+    return (rest[: following.start()] if following else rest).strip()
+
+
+def _closeness(quote: str, hay: str) -> float:
+    """Best word-sequence similarity of `quote` against any window of `hay`.
+
+    Cheap enough to run per failing quote and no cheaper than it needs to be: a
+    Verbatim section is ~150 words and a quote ~14, so this is a few hundred
+    `SequenceMatcher` calls on short sequences, only for spans that already
+    failed the exact check. `difflib` is stdlib, so it adds no dependency.
+    """
+    needle = _WORD_RE.findall(quote.lower())
+    field = _WORD_RE.findall(hay.lower())
+    if not needle or not field:
+        return 0.0
+    best = 0.0
+    for start in range(max(1, len(field) - len(needle) + 1)):
+        window = field[start : start + len(needle) + 4]
+        best = max(best, difflib.SequenceMatcher(None, needle, window).ratio())
+    return best
+
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
 
 def _flatten(text: str) -> str:
     """Case, whitespace and punctuation removed, for substring matching.
@@ -435,6 +490,9 @@ def check_grounding(
     known = set(loaded)
     folded = {video_id.lower(): video_id for video_id in known}
     flat = {note.video_id: _flatten(note.text) for note in notes}
+    # Built once per answer rather than per failing quote: a Verbatim section is
+    # extracted with two regexes and there may be nine failures over 250 notes.
+    verbatim = {note.video_id: _verbatim_of(note.text) for note in notes}
 
     # Brackets only. Scanning free prose would flag every eleven-character word.
     unresolved: list[str] = []
@@ -479,7 +537,13 @@ def check_grounding(
         if not any(needle in flat[video_id] for video_id in ids):
             # Every nearby id, not the first: the check passed if *any* of them
             # held the string, so naming one would misreport what was tested.
-            entry = f"{'/'.join(dict.fromkeys(ids))}: {body}"
+            cited = "/".join(dict.fromkeys(ids))
+            # Loose against *any* note it cited, for the same reason the
+            # membership test above is: the quote passes if one of them holds it.
+            loose = any(
+                _closeness(body, verbatim[video_id]) >= _LOOSE_RATIO for video_id in ids
+            )
+            entry = UnverifiedQuote(text=body, video_ids=cited, loose=loose)
             # Measured on the raw span, not the flattened one: the boundary was
             # placed against quoted text as a reader sees it, and flattening
             # strips the spaces that make a sentence long.
@@ -591,6 +655,45 @@ def render_links(citations: Sequence[AnswerCitation], titles: dict[str, str]) ->
     return lines
 
 
+MARK_UNVERIFIED = "[unverified]"
+MARK_LOOSE = "[loosely quoted]"
+
+
+def mark_unverified(answer: Answer) -> str:
+    """The answer text with a marker beside each quote its note does not hold.
+
+    **Per claim, because the counter is not enough.** "5 unverified" tells a
+    reader to distrust the whole answer; a marker on five sentences tells them
+    which five, and leaves the rest readable.
+
+    Two markers rather than one, because the failures are two: `[loosely quoted]`
+    is a passage the cited note's `## Verbatim` section holds in almost these
+    words, and `[unverified]` is a span with no near match there. Measured, 5 of
+    42 against 24 with no source anywhere — marking those identically would
+    accuse the first group of something it did not do.
+
+    **The marker is marginalia's, not the model's**, and it says only that a
+    string was not found. It never carries what the note held instead. Applied
+    identically in the stored file and on stdout, so the record still matches
+    what the reader saw — `render_answer` keeps the answer verbatim in the sense
+    that matters, which is that nothing the model wrote is altered or removed.
+    """
+    failing = {quote.text: quote for quote in (*answer.unverified_speech, *answer.unverified_phrases)}
+    if not failing:
+        return answer.text
+    out: list[str] = []
+    at = 0
+    for match in _QUOTE_RE.finditer(answer.text):
+        quote = failing.get(match.group(1).strip())
+        if quote is None:
+            continue
+        out.append(answer.text[at : match.end()])
+        out.append(" " + (MARK_LOOSE if quote.loose else MARK_UNVERIFIED))
+        at = match.end()
+    out.append(answer.text[at:])
+    return "".join(out)
+
+
 def note_digest(text: str) -> str:
     """A short fingerprint of one note's text.
 
@@ -694,7 +797,7 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         "",
         "## Answer",
         "",
-        answer.text.strip() or "(the model returned nothing)",
+        mark_unverified(answer).strip() or "(the model returned nothing)",
         "",
         "## Citations",
         "",
@@ -731,6 +834,14 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
             f"- {len(answer.unresolved_ids)} cited id(s) name no loaded video"
             f", {len(answer.uncited_quotes)} quoted string(s) are attributed to nothing"
         )
+        loose = sum(
+            1 for q in (*answer.unverified_speech, *answer.unverified_phrases) if q.loose
+        )
+        lines.append(
+            f"- of those, {loose} are marked {MARK_LOOSE} in the answer above — the"
+            f" cited note holds the passage in almost these words; the rest are"
+            f" marked {MARK_UNVERIFIED}, with no near match there"
+        )
         lines.append(
             "- counted, not corrected, and never summed: a paraphrase inside quote"
             " marks flags here too, and a quoted phrase is usually the model"
@@ -739,9 +850,11 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         for video_id in answer.unresolved_ids:
             lines.append(f"- no such loaded video: {video_id}")
         for item in answer.unverified_speech:
-            lines.append(f"- sentence not in the cited note: {item}")
+            mark = "loosely quoted sentence" if item.loose else "sentence not in the cited note"
+            lines.append(f"- {mark}: {item.render()}")
         for item in answer.unverified_phrases:
-            lines.append(f"- phrase not in the cited note: {item}")
+            mark = "loosely quoted phrase" if item.loose else "phrase not in the cited note"
+            lines.append(f"- {mark}: {item.render()}")
         for item in answer.uncited_quotes:
             lines.append(f"- quoted, uncited: {item}")
 

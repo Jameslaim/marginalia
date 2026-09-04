@@ -1592,6 +1592,36 @@ class Opened:
     text: str
 
 
+@dataclass(frozen=True)
+class UnverifiedQuote:
+    """A quoted span the note it cites does not contain, and how badly.
+
+    **Per claim rather than per answer.** A counter saying "5 unverified" tells
+    a reader to distrust the whole answer; naming which five tells them to
+    distrust five sentences and read the rest normally.
+
+    `loose` separates the two measured failures, which one marker would
+    conflate. Of 42 sentence-length cases, 5 were quotes drawn from the cited
+    note's ``## Verbatim`` section and rendered imprecisely — substantively
+    right, loosely copied — while 24 had no source anywhere in the note. Marking
+    those identically overstates the first group by a lot.
+
+    **`loose` is a statement about closeness, never about content.** It says a
+    near passage exists; it does not carry it, name it, or locate it. Hard rule
+    1 draws the line at what the note held, and closeness is on the safe side of
+    it — the same line the availability measurement was run under.
+    """
+
+    text: str
+    # The ids cited near the quote, joined — the check passed if *any* of them
+    # held the string, so naming one would misreport what was tested.
+    video_ids: str
+    loose: bool = False
+
+    def render(self) -> str:
+        return f"{self.video_ids}: {self.text}"
+
+
 @dataclass
 class Answer:
     question: str
@@ -1662,8 +1692,8 @@ class Answer:
     # position, are different claims and one number over-reported fabrication
     # by roughly 3x. Never summed. See `ask._SPEECH_CHARS` for the boundary.
     unresolved_ids: list[str] = field(default_factory=list)
-    unverified_speech: list[str] = field(default_factory=list)
-    unverified_phrases: list[str] = field(default_factory=list)
+    unverified_speech: list[UnverifiedQuote] = field(default_factory=list)
+    unverified_phrases: list[UnverifiedQuote] = field(default_factory=list)
     uncited_quotes: list[str] = field(default_factory=list)
 
     @property
