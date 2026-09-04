@@ -929,7 +929,7 @@ def test_a_quote_missing_from_the_cited_note_is_counted(tmp_path):
     text = f'The video claims "caching is free forever and always will be" [{A} 01:00].'
     notes = load_notes(library)
 
-    ids, speech, phrases, uncited = check_grounding(text, notes, [A])
+    ids, speech, phrases, unspoken, uncited = check_grounding(text, notes, [A])
 
     assert ids == []
     assert len(speech) == 1 and A in speech[0].video_ids
@@ -945,7 +945,7 @@ def test_a_short_unverified_phrase_is_not_counted_as_speech(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something else entirely\n"})
     text = f'It leans on "an agent loop" throughout [{A} 01:00].'
 
-    ids, speech, phrases, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, unspoken, uncited = check_grounding(text, load_notes(library), [A])
 
     assert speech == [], "too short to be a claim about what somebody said"
     assert len(phrases) == 1 and A in phrases[0].video_ids
@@ -961,7 +961,7 @@ def test_the_two_unverified_counters_are_reported_apart(tmp_path):
         f'"the whole pipeline collapses under any real production load" [{A} 02:00].'
     )
 
-    _ids, speech, phrases, _uncited = check_grounding(text, load_notes(library), [A])
+    _ids, speech, phrases, _unspoken, _uncited = check_grounding(text, load_notes(library), [A])
 
     assert len(speech) == 1 and len(phrases) == 1
     rendered = render_answer(
@@ -972,13 +972,41 @@ def test_the_two_unverified_counters_are_reported_apart(tmp_path):
     assert "1 shorter quoted phrase(s) likewise" in rendered
 
 
-def test_a_quote_present_in_the_cited_note_is_not_counted(tmp_path):
-    config, library = build(tmp_path, {A: "## Claims\n\n- the speaker says caching is cheap\n"})
+def test_a_quote_present_in_verbatim_is_not_counted(tmp_path):
+    """Real speech, correctly quoted — the only outcome that reports nothing."""
+    config, library = build(tmp_path, {A: "## Verbatim\n\n- caching is cheap\n"})
     text = f'The video says "caching is cheap" [{A} 01:00].'
 
-    ids, speech, phrases, uncited = check_grounding(text, load_notes(library), [A])
+    assert check_grounding(text, load_notes(library), [A]) == ([], [], [], [], [])
 
+
+def test_a_quote_found_only_in_note_prose_is_its_own_outcome(tmp_path):
+    """The hidden class this pass exists for.
+
+    `check_grounding` used to match against the whole note, so the note-writer's
+    own sentence inside quotation marks verified silently — and note prose is
+    roughly twelve times the size of `## Verbatim`, a median 11,400 characters
+    against 916, all of it text nobody said.
+
+    Its own outcome rather than folded into `unverified`: a legitimate quote can
+    sit inline in `## Claims`, the note-writer quoting a phrase in passing, and a
+    Verbatim-only test would call that a failure. Rule 14 — keeping the
+    ambiguity visible beats miscounting it either way."""
+    config, library = build(
+        tmp_path,
+        {
+            A: "## Claims\n\n- the speaker says caching is cheap\n\n"
+            "## Verbatim\n\n- nothing about cost here\n"
+        },
+    )
+    text = f'The video says "the speaker says caching is cheap" [{A} 01:00].'
+
+    ids, speech, phrases, unspoken, uncited = check_grounding(text, load_notes(library), [A])
+
+    assert len(unspoken) == 1 and unspoken[0].video_ids == A
     assert (ids, speech, phrases, uncited) == ([], [], [], [])
+    marked = mark_unverified(Answer(question="q", text=text, unspoken_quotes=unspoken))
+    assert "[not spoken]" in marked
 
 
 def test_a_quote_with_no_citation_is_its_own_outcome(tmp_path):
@@ -987,7 +1015,7 @@ def test_a_quote_with_no_citation_is_its_own_outcome(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = 'Somebody said "this is a completely unattributed claim" in one of them.'
 
-    ids, speech, phrases, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, unspoken, uncited = check_grounding(text, load_notes(library), [A])
 
     assert (speech, phrases) == ([], [])
     assert len(uncited) == 1
@@ -1000,7 +1028,7 @@ def test_an_id_naming_no_loaded_video_is_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = f"Some claim [EXLCnmcyLcQ — I might be making this up] and [{A} 01:00]."
 
-    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
 
     assert ids == ["EXLCnmcyLcQ"]
 
@@ -1011,7 +1039,7 @@ def test_an_eleven_letter_word_in_brackets_is_not_an_id(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = "[a note about the contradiction and the fabricating of claims]"
 
-    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
 
     assert ids == []
 
@@ -1024,7 +1052,7 @@ def test_a_hyphenated_compound_is_not_an_id(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = f"[{A} results are single-scalar points with no memory-coupling shown]"
 
-    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
 
     assert ids == []
 
@@ -1039,7 +1067,7 @@ def test_a_fabricated_id_of_the_wrong_length_is_still_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = "the orchestration choice [2s0ixGRLo8QM — not in corpus] and the rest"
 
-    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
 
     assert ids == ["2s0ixGRLo8QM"], "caught by rule, where before it was caught by truncation"
 
@@ -1049,7 +1077,7 @@ def test_a_mis_cased_id_is_a_citation_repair_not_a_missing_video(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- caching is cheap\n"})
     text = f'It says "caching is cheap" [{A.upper()} 01:00].'
 
-    ids, speech, phrases, _uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, _unspoken, _uncited = check_grounding(text, load_notes(library), [A])
 
     assert ids == []
     assert (speech, phrases) == ([], []), "and the quote still resolves against the note"

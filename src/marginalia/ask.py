@@ -466,7 +466,18 @@ def check_grounding(
     """Count what the answer asserts that its own sources do not support.
 
     Returns `(unresolved_ids, unverified_speech, unverified_phrases,
-    uncited_quotes)`.
+    unspoken_quotes, uncited_quotes)`.
+
+    **A quote is checked against the note's speech, not against the note.**
+    Three outcomes, per rule 14: found in ``## Verbatim`` is real speech and is
+    not reported; found elsewhere in the note is the note-writer's words
+    presented as a speaker's, which used to verify silently; found nowhere is
+    what ``unverified`` has always meant.
+
+    The middle one is deliberately not folded into ``unverified``. A legitimate
+    quote can sit inline in ``## Claims`` -- the note-writer quoting a phrase in
+    passing -- so a Verbatim-only test would flag it as a failure. Its own
+    counter keeps that ambiguity visible instead of miscounting it.
 
     **The two unverified lists are never summed.** A sentence attributed to a
     video its note does not contain is a claim about what somebody said; a
@@ -493,6 +504,11 @@ def check_grounding(
     # Built once per answer rather than per failing quote: a Verbatim section is
     # extracted with two regexes and there may be nine failures over 250 notes.
     verbatim = {note.video_id: _verbatim_of(note.text) for note in notes}
+    # The speech half of a note, flattened for the same substring test the whole
+    # note gets. Note prose is roughly twelve times the size of Verbatim -- a
+    # median 11,400 characters against 916 -- so matching against the whole note
+    # verifies a quote against a great deal of text nobody ever said.
+    spoken = {video_id: _flatten(text) for video_id, text in verbatim.items()}
 
     # Brackets only. Scanning free prose would flag every eleven-character word.
     unresolved: list[str] = []
@@ -512,8 +528,9 @@ def check_grounding(
                 continue
             unresolved.append(candidate)
 
-    speech: list[str] = []
-    phrases: list[str] = []
+    speech: list[UnverifiedQuote] = []
+    phrases: list[UnverifiedQuote] = []
+    unspoken: list[UnverifiedQuote] = []
     uncited: list[str] = []
     for quote in _QUOTE_RE.finditer(text):
         body = quote.group(1).strip()
@@ -534,21 +551,29 @@ def check_grounding(
             uncited.append(body)
             continue
         needle = _flatten(body)
-        if not any(needle in flat[video_id] for video_id in ids):
-            # Every nearby id, not the first: the check passed if *any* of them
-            # held the string, so naming one would misreport what was tested.
-            cited = "/".join(dict.fromkeys(ids))
-            # Loose against *any* note it cited, for the same reason the
-            # membership test above is: the quote passes if one of them holds it.
-            loose = any(
-                _closeness(body, verbatim[video_id]) >= _LOOSE_RATIO for video_id in ids
-            )
-            entry = UnverifiedQuote(text=body, video_ids=cited, loose=loose)
-            # Measured on the raw span, not the flattened one: the boundary was
-            # placed against quoted text as a reader sees it, and flattening
-            # strips the spaces that make a sentence long.
-            (speech if len(body) >= _SPEECH_CHARS else phrases).append(entry)
-    return unresolved, speech, phrases, uncited
+        # Every nearby id, not the first: the check passes if *any* of them
+        # held the string, so naming one would misreport what was tested.
+        cited = "/".join(dict.fromkeys(ids))
+        if any(needle in spoken[video_id] for video_id in ids):
+            continue  # real speech, correctly quoted
+        if any(needle in flat[video_id] for video_id in ids):
+            # **The words are in the note; nobody said them.** Its own outcome
+            # rather than folded into `unverified`, because a legitimate quote
+            # can sit inline in `## Claims` — the note-writer quoting a phrase
+            # in passing — and a Verbatim-only test would call that a failure.
+            # Keeping it separate makes the ambiguity visible instead of
+            # miscounting it, which is what rule 14 is for.
+            unspoken.append(UnverifiedQuote(text=body, video_ids=cited))
+            continue
+        # Loose against *any* note it cited, for the same reason the
+        # membership test above is: the quote passes if one of them holds it.
+        loose = any(_closeness(body, verbatim[video_id]) >= _LOOSE_RATIO for video_id in ids)
+        entry = UnverifiedQuote(text=body, video_ids=cited, loose=loose)
+        # Measured on the raw span, not the flattened one: the boundary was
+        # placed against quoted text as a reader sees it, and flattening
+        # strips the spaces that make a sentence long.
+        (speech if len(body) >= _SPEECH_CHARS else phrases).append(entry)
+    return unresolved, speech, phrases, unspoken, uncited
 
 
 def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationScan:
@@ -657,6 +682,8 @@ def render_links(citations: Sequence[AnswerCitation], titles: dict[str, str]) ->
 
 MARK_UNVERIFIED = "[unverified]"
 MARK_LOOSE = "[loosely quoted]"
+# The words are in the note. Nobody spoke them.
+MARK_UNSPOKEN = "[not spoken]"
 
 
 def mark_unverified(answer: Answer) -> str:
@@ -678,17 +705,23 @@ def mark_unverified(answer: Answer) -> str:
     what the reader saw — `render_answer` keeps the answer verbatim in the sense
     that matters, which is that nothing the model wrote is altered or removed.
     """
-    failing = {quote.text: quote for quote in (*answer.unverified_speech, *answer.unverified_phrases)}
+    failing = {
+        quote.text: MARK_LOOSE if quote.loose else MARK_UNVERIFIED
+        for quote in (*answer.unverified_speech, *answer.unverified_phrases)
+    }
+    # Last, so an entry here wins: a span the note holds outside `## Verbatim`
+    # is a different claim from one it does not hold at all.
+    failing.update({quote.text: MARK_UNSPOKEN for quote in answer.unspoken_quotes})
     if not failing:
         return answer.text
     out: list[str] = []
     at = 0
     for match in _QUOTE_RE.finditer(answer.text):
-        quote = failing.get(match.group(1).strip())
-        if quote is None:
+        marker = failing.get(match.group(1).strip())
+        if marker is None:
             continue
         out.append(answer.text[at : match.end()])
-        out.append(" " + (MARK_LOOSE if quote.loose else MARK_UNVERIFIED))
+        out.append(" " + marker)
         at = match.end()
     out.append(answer.text[at:])
     return "".join(out)
@@ -815,6 +848,7 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         answer.unresolved_ids
         or answer.unverified_speech
         or answer.unverified_phrases
+        or answer.unspoken_quotes
         or answer.uncited_quotes
     ):
         # **The failing strings, and never the notes.** A quote may be printed:
@@ -829,6 +863,12 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
             f"- {len(answer.unverified_speech)} sentence(s) attributed to a video"
             f" whose note does not contain them"
             f", {len(answer.unverified_phrases)} shorter quoted phrase(s) likewise"
+        )
+        spoken_long = sum(1 for q in answer.unspoken_quotes if len(q.text) >= _SPEECH_CHARS)
+        lines.append(
+            f"- {len(answer.unspoken_quotes)} quoted string(s) are in the cited note"
+            f" but outside its Verbatim section — the note-writer's words rather than"
+            f" a speaker's ({spoken_long} of them sentence-length)"
         )
         lines.append(
             f"- {len(answer.unresolved_ids)} cited id(s) name no loaded video"
@@ -855,6 +895,8 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         for item in answer.unverified_phrases:
             mark = "loosely quoted phrase" if item.loose else "phrase not in the cited note"
             lines.append(f"- {mark}: {item.render()}")
+        for item in answer.unspoken_quotes:
+            lines.append(f"- in the note, outside Verbatim: {item.render()}")
         for item in answer.uncited_quotes:
             lines.append(f"- quoted, uncited: {item}")
 
@@ -1339,8 +1381,15 @@ def answer_question(
         result.unresolved_ids,
         result.unverified_speech,
         result.unverified_phrases,
+        result.unspoken_quotes,
         result.uncited_quotes,
     ) = check_grounding(result.text, notes, [note.video_id for note in notes])
+    if result.unspoken_quotes:
+        log.warning(
+            "ask: %d quoted string(s) are in the cited note but outside its "
+            "Verbatim section — the note-writer's words, not a speaker's",
+            len(result.unspoken_quotes),
+        )
     if result.unverified_speech or result.unverified_phrases or result.unresolved_ids:
         # Counts only. Naming the note that failed to contain a string is
         # one step from printing what it held instead, which is the line

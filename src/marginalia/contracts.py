@@ -1694,6 +1694,13 @@ class Answer:
     unresolved_ids: list[str] = field(default_factory=list)
     unverified_speech: list[UnverifiedQuote] = field(default_factory=list)
     unverified_phrases: list[UnverifiedQuote] = field(default_factory=list)
+    # Quotes the cited note contains **outside** its `## Verbatim` section: the
+    # note-writer's words presented as a speaker's. Its own outcome rather than
+    # part of `unverified`, because a legitimate quote can sit inline in
+    # `## Claims` and a Verbatim-only test would call that a failure. Until this
+    # existed these verified silently, so "verified" meant "somewhere in eleven
+    # thousand characters of note", most of which nobody said.
+    unspoken_quotes: list[UnverifiedQuote] = field(default_factory=list)
     uncited_quotes: list[str] = field(default_factory=list)
 
     @property

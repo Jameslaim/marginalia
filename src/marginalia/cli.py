@@ -988,7 +988,12 @@ def _ask_summary(answer: Answer) -> str:
         f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
         f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
     )
-    if answer.unresolved_ids or answer.unverified_speech or answer.unverified_phrases:
+    if (
+        answer.unresolved_ids
+        or answer.unverified_speech
+        or answer.unverified_phrases
+        or answer.unspoken_quotes
+    ):
         # Its own line, never summed with the citation counters: those read
         # syntax and this reads content, so a run where both are non-zero has
         # two different problems. The two unverified counts are printed apart
@@ -998,6 +1003,7 @@ def _ask_summary(answer: Answer) -> str:
         line += "\n          " + (
             f"grounding: {len(answer.unverified_speech)} sentence(s) and "
             f"{len(answer.unverified_phrases)} phrase(s) not in the note cited, "
+            f"{len(answer.unspoken_quotes)} in the note but not spoken, "
             f"{len(answer.unresolved_ids)} id(s) name no loaded video"
         )
     if answer.repaired:

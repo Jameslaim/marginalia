@@ -271,6 +271,18 @@ not drift.
     had a precedent: thirteen transient fetch failures once left no trace in a report
     at all.
 
+    **And the other half: a counter's name is a claim about what it measures, and the
+    claim needs checking.** Four times in three days a counter measured something
+    narrower than its name — `unwanted` meant "declined for relevance" and then
+    "unreadable" under an unchanged name; `unresolved_ids` could not see a
+    twelve-character id; `unverified_quotes` conflated a scare-quote with attributed
+    speech; and `check_grounding` matched the whole note while meaning the speech
+    section, so 101 of 204 "verified" quotes turned out to be the note-writer's words.
+    Every one was found by accident — a hyphen, a hand-split, a failing test draft — and
+    not one by someone asking whether the counter measured what it claimed. Splitting an
+    outcome into its own counter is worth nothing if the counter beside it is quietly
+    measuring something else.
+
 15. **A territory term is never, on its own, a reason to keep a video.** The map says
     what words a subject uses; the **brief** says what counts as relevant. A LangChain
     document-loading tutorial is not about agent memory because LangChain is in the
