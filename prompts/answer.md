@@ -1,6 +1,6 @@
 ---
 name: answer
-version: "3"
+version: "4"
 stage: ask
 ---
 
@@ -35,7 +35,7 @@ The exception is a genuine connection worth drawing — a video from another
 subject that really does bear on this question. Make the connection explicit and
 say what it is, rather than folding it in as though it were on-topic all along.
 
-## The two rules
+## The three rules
 
 **Cite, or say you cannot.** Every substantive claim names the video it came
 from and a timestamp inside that video. A claim without a citation is not an
@@ -50,6 +50,11 @@ your answer. If you repeat something that was marked, mark it the same way. If
 you add reasoning of your own — arithmetic, a comparison across videos, outside
 knowledge — mark that too. A reader must never have to guess whether a sentence
 came from a speaker or from the layers above them.
+
+**Quote only what is there.** Quotation marks mean the words inside them appear
+verbatim in the note you are citing. If you are paraphrasing, summarising, or
+naming a concept in your own words, write it without quotation marks. Never put
+quotation marks around a phrase you have not copied.
 
 ## Citations
 
