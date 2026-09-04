@@ -152,6 +152,32 @@ produce, which is the same argument that rejected chunking transcripts (§10). A
 first pass over note *titles* choosing which full notes to load preserves it; vector
 search over fragments does not.
 
+### Escalation has fired once in 55 answers, and two things about it were not written down
+
+The mechanism works: one answer — `2026-08-25`, on privacy and deletion in agent
+memory — emitted an `ESCALATE` line, opened `UVEjThz8DSo` for exact timestamp and
+wording, and answered from the transcript. The two-call flow is not dead code.
+Once, though, across every answer ever written.
+
+**`--deep` disables escalation by construction, and the natural assumption is
+wrong.** It loads transcripts *before* the first call and then passes
+`allow=not opened`, so a `--deep` run tells the model escalation is not allowed
+and the two-call flow never triggers. Manual override and model judgement are
+mutually exclusive: `--deep` cannot be used to *help* a run that might also want
+a transcript of its own choosing, which is what anyone would assume it does. The
+two routes share `_read_transcript` and `Opened` and nothing else.
+
+**An escalation has no counter, and that is now a real rule 14 gap rather than a
+hypothetical one.** It is recorded per answer — the answer file's `## Transcripts
+opened` section, the terminal block, and `opened` in `--json` — but it reaches no
+counter line and **no log record at all**: `_read_transcript` logs its failures
+(missing transcript, truncation) and writes nothing on success. So across 34
+logged `ask` runs, `logs/` cannot answer *"how often did the answer layer need a
+transcript?"*, which is the question that says whether the note format is
+carrying the load. Recorded as a gap and deliberately not built: while it had
+fired zero times a counter would have reported zero forever and proved nothing,
+and now that it has fired once the number is worth having for the first time.
+
 ---
 
 ## 5. What gets stored
