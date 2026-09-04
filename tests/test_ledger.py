@@ -1025,8 +1025,8 @@ def test_regenerate_all_still_reaches_a_rejected_video_that_has_a_note(
     assert [r.video_id for r in rows] == [VIDEO_ID]
 
 
-def test_a_rejection_no_longer_makes_a_transcript_unwanted(ledger: Ledger) -> None:
-    """`unwanted` now means one thing only: the judge could not read it. A
+def test_a_rejection_no_longer_makes_a_transcript_unreadable(ledger: Ledger) -> None:
+    """`unreadable` means one thing only: the judge could not read it. A
     rejection is a claim about a brief and says nothing about the text."""
     ledger.mark_pending(VIDEO_ID)
     ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
@@ -1040,7 +1040,7 @@ def test_a_rejection_no_longer_makes_a_transcript_unwanted(ledger: Ledger) -> No
 
     assert counts["has_transcript"] == 2
     assert counts["missing"] == 2
-    assert counts["unwanted"] == 0
+    assert counts["unreadable"] == 0
 
 
 # -- B3: degraded evidence is never noted -----------------------------------
@@ -1150,7 +1150,7 @@ def test_a_degraded_video_is_not_offered_to_the_note_worker(ledger: Ledger) -> N
     )
 
     assert ledger.videos_needing_note(version="1") == []
-    assert ledger.note_counts(version="1")["unwanted"] == 1
+    assert ledger.note_counts(version="1")["unreadable"] == 1
 
 
 def test_degraded_evidence_beats_an_existing_note() -> None:

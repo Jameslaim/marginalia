@@ -967,18 +967,25 @@ class Ledger:
         a transcript and no note, which means they are *not in the library*
         and no question can reach them.
 
-        ``unwanted`` is B2's: transcripts kept from a stage-2 rejection, which
-        are deliberately unnoted. Counted separately rather than folded into
-        ``missing``, because they are not work waiting to be done.
+        ``unreadable`` is what is left of B2's ``unwanted``: transcripts a stage
+        2 marked ``EVIDENCE: DEGRADED``. Counted separately rather than folded
+        into ``missing``, because they are not work waiting to be done.
+
+        **Renamed because the word stopped being true.** ``unwanted`` meant
+        "declined for relevance" and covered 229 videos; once note-writing
+        stopped consulting the verdict it covered 3, and they are a different
+        claim — the judge could not *read* the text. A count that shrinks by two
+        orders of magnitude under an unchanged name is one nobody can compare
+        across two days of ``--status``.
         """
-        counts = {"has_transcript": 0, "current": 0, "stale": 0, "missing": 0, "unwanted": 0}
+        counts = {"has_transcript": 0, "current": 0, "stale": 0, "missing": 0, "unreadable": 0}
         for row in self.list_by_status(STATUS_HAS_TRANSCRIPT):
             counts["has_transcript"] += 1
             if not wanted_for_a_note(row, self.decisions_for(row.video_id)):
-                # Declined by every topic that judged it. Not a missing note —
-                # a note deliberately not written, and counting it as missing
-                # would report permanent work that will never be done.
-                counts["unwanted"] += 1
+                # The judge said it could not read the transcript. Not a missing
+                # note — a note deliberately not written, and counting it as
+                # missing would report permanent work that will never be done.
+                counts["unreadable"] += 1
                 continue
             if row.noted_at is None:
                 counts["missing"] += 1

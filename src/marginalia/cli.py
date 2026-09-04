@@ -781,7 +781,7 @@ def _note_status(config: Config, library: Library) -> int:
     print(
         f"notes:    {counts['has_transcript']} with transcript, {counts['current']} current, "
         f"{counts['stale']} stale, {counts['missing']} missing, "
-        f"{counts['unwanted']} unwanted  (prompt v{version})"
+        f"{counts['unreadable']} unreadable  (prompt v{version})"
     )
     return EXIT_OK
 
