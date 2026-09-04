@@ -985,13 +985,17 @@ def _ask_summary(answer: Answer) -> str:
         f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
         f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
     )
-    if answer.unresolved_ids or answer.unverified_quotes:
+    if answer.unresolved_ids or answer.unverified_speech or answer.unverified_phrases:
         # Its own line, never summed with the citation counters: those read
         # syntax and this reads content, so a run where both are non-zero has
-        # two different problems.
+        # two different problems. The two unverified counts are printed apart
+        # for the same reason one layer down — a quoted sentence the note does
+        # not contain and a quoted phrase it does not contain are different
+        # claims about the answer.
         line += "\n          " + (
-            f"grounding: {len(answer.unresolved_ids)} id(s) name no loaded "
-            f"video, {len(answer.unverified_quotes)} quote(s) not in the note cited"
+            f"grounding: {len(answer.unverified_speech)} sentence(s) and "
+            f"{len(answer.unverified_phrases)} phrase(s) not in the note cited, "
+            f"{len(answer.unresolved_ids)} id(s) name no loaded video"
         )
     if answer.repaired:
         # The model got a video ID's casing wrong and the parser covered for it.

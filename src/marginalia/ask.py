@@ -301,10 +301,11 @@ def _find_id(entry: str, known: Sequence[str] | None) -> tuple[str | None, bool]
 #
 # You cannot stop a model inventing a plausible quote. You can count it.
 #
-# **Three outcomes, three counters, per rule 14.** An id naming no video, a
-# quote attributed to the wrong video, and a quote attributed to nothing are
-# three different failures with three different fixes, and summing them would
-# report a number nobody can act on.
+# **Four outcomes, four counters, per rule 14.** An id naming no video, a
+# *sentence* attributed to a video whose note does not contain it, a *phrase*
+# in the same position, and a quote attributed to nothing are four different
+# failures with four different fixes, and summing them would report a number
+# nobody can act on.
 
 # Quoted spans the checker will look at. Four characters minimum, because "a"
 # and "AI" in quotes are punctuation rather than attribution.
@@ -313,6 +314,37 @@ _QUOTE_RE = re.compile(r"[\"\u201c]([^\"\u201c\u201d]{4,300})[\"\u201d]")
 # How far from a quote a citation may sit and still be its attribution. Two
 # hundred characters is about a sentence either side.
 _CITE_WINDOW = 200
+
+# Where a quoted phrase stops being a phrase and starts being speech.
+#
+# `"an agent loop"` next to a citation is the model quoting its own concept.
+# `"agents haven't been particularly reliable to date"` next to a citation is a
+# claim about what somebody said. Both used to land on one counter, and the
+# ratio between them is large: across four samples of one question the totals
+# were 14, 11, 34 and 22 while the sentence-length subsets were 4, 4, 5 and 9.
+# A single number therefore over-reported fabrication by roughly 3x.
+#
+# **Forty characters, and the corpus does not offer a better answer.** Every
+# quoted span in `answers/` \u2014 940 of them across 54 files \u2014 was measured, and
+# there is no break to snap to:
+#
+#   * the word-count histogram is a single smooth decay from a peak at two
+#     words, with no trough anywhere to put a boundary in;
+#   * the share containing a finite verb rises gradually with length \u2014 3% under
+#     20 characters, 16%, 32%, 51%, then 72% above 70 \u2014 rather than stepping;
+#   * every candidate cut from 25 to 60 separates the verb-bearing spans by
+#     38-43 points, and 40 is the marginal best at 43. Inside the noise.
+#
+# So this is a convention the data declines to contradict, not a discovered
+# threshold, and it is written here as one. It will misfile a long noun phrase
+# and a four-word sentence, which is why both counters are reported and neither
+# is a gate.
+#
+# **The split does not separate a wrong class from a right one.** The share of
+# quoted spans their cited note actually contains is roughly 50% at *every*
+# length band, from 40% under ten characters to 75% over eighty. What the
+# boundary separates is two kinds of claim, not two error rates.
+_SPEECH_CHARS = 40
 
 
 def _flatten(text: str) -> str:
@@ -331,7 +363,19 @@ def check_grounding(
 ) -> tuple[list[str], list[str], list[str]]:
     """Count what the answer asserts that its own sources do not support.
 
-    Returns `(unresolved_ids, unverified_quotes, uncited_quotes)`.
+    Returns `(unresolved_ids, unverified_speech, unverified_phrases,
+    uncited_quotes)`.
+
+    **The two unverified lists are never summed.** A sentence attributed to a
+    video its note does not contain is a claim about what somebody said; a
+    quoted phrase in the same position is usually the model quoting its own
+    vocabulary. See `_SPEECH_CHARS` for where the line sits and why the corpus
+    could not place it better.
+
+    **Renamed rather than narrowed.** `unverified_quotes` used to mean both, so
+    keeping the name for the smaller half would leave a count that fell ~3x
+    without saying so — the mistake `note_counts` made with `unwanted` and had
+    to be renamed out of.
 
     **Hard rule 1 governs the return value.** A failing quote may travel — it
     came from the answer, which the reader is already holding. The *note* may
@@ -365,7 +409,8 @@ def check_grounding(
                 continue
             unresolved.append(candidate)
 
-    unverified: list[str] = []
+    speech: list[str] = []
+    phrases: list[str] = []
     uncited: list[str] = []
     for quote in _QUOTE_RE.finditer(text):
         body = quote.group(1).strip()
@@ -389,8 +434,12 @@ def check_grounding(
         if not any(needle in flat[video_id] for video_id in ids):
             # Every nearby id, not the first: the check passed if *any* of them
             # held the string, so naming one would misreport what was tested.
-            unverified.append(f"{'/'.join(dict.fromkeys(ids))}: {body}")
-    return unresolved, unverified, uncited
+            entry = f"{'/'.join(dict.fromkeys(ids))}: {body}"
+            # Measured on the raw span, not the flattened one: the boundary was
+            # placed against quoted text as a reader sees it, and flattening
+            # strips the spaces that make a sentence long.
+            (speech if len(body) >= _SPEECH_CHARS else phrases).append(entry)
+    return unresolved, speech, phrases, uncited
 
 
 def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationScan:
@@ -582,25 +631,40 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         lines.extend(["", "Citation-shaped but unreadable:"])
         lines.extend(f"  {fragment}" for fragment in answer.unparsed)
 
-    if answer.unresolved_ids or answer.unverified_quotes or answer.uncited_quotes:
+    if (
+        answer.unresolved_ids
+        or answer.unverified_speech
+        or answer.unverified_phrases
+        or answer.uncited_quotes
+    ):
         # **The failing strings, and never the notes.** A quote may be printed:
         # it came from the answer, which the reader is already holding. What the
         # note contained instead may not — this section reports whether a string
         # was found, never what stood in its place.
         lines.extend(["", "## Grounding", ""])
+        # Two lines, because the reader's question is "did the model quote a
+        # video, or quote itself?" and neither number answers it alone. Speech
+        # first: it is the one that asserts somebody said something.
         lines.append(
-            f"- {len(answer.unresolved_ids)} cited id(s) name no loaded video"
-            f", {len(answer.unverified_quotes)} quoted string(s) are not in the note"
-            f" they cite, {len(answer.uncited_quotes)} are attributed to nothing"
+            f"- {len(answer.unverified_speech)} sentence(s) attributed to a video"
+            f" whose note does not contain them"
+            f", {len(answer.unverified_phrases)} shorter quoted phrase(s) likewise"
         )
         lines.append(
-            "- counted, not corrected: a paraphrase inside quote marks flags here"
-            " too, so these are numbers to weigh rather than errors to trust"
+            f"- {len(answer.unresolved_ids)} cited id(s) name no loaded video"
+            f", {len(answer.uncited_quotes)} quoted string(s) are attributed to nothing"
+        )
+        lines.append(
+            "- counted, not corrected, and never summed: a paraphrase inside quote"
+            " marks flags here too, and a quoted phrase is usually the model"
+            " quoting its own vocabulary rather than a video"
         )
         for video_id in answer.unresolved_ids:
             lines.append(f"- no such loaded video: {video_id}")
-        for item in answer.unverified_quotes:
-            lines.append(f"- not in the cited note: {item}")
+        for item in answer.unverified_speech:
+            lines.append(f"- sentence not in the cited note: {item}")
+        for item in answer.unverified_phrases:
+            lines.append(f"- phrase not in the cited note: {item}")
         for item in answer.uncited_quotes:
             lines.append(f"- quoted, uncited: {item}")
 
@@ -1080,17 +1144,19 @@ def answer_question(
     result.opened = [(item.video_id, item.why) for item in opened]
     (
         result.unresolved_ids,
-        result.unverified_quotes,
+        result.unverified_speech,
+        result.unverified_phrases,
         result.uncited_quotes,
     ) = check_grounding(result.text, notes, [note.video_id for note in notes])
-    if result.unverified_quotes or result.unresolved_ids:
+    if result.unverified_speech or result.unverified_phrases or result.unresolved_ids:
         # Counts only. Naming the note that failed to contain a string is
         # one step from printing what it held instead, which is the line
         # hard rule 1 draws at every other surface.
         log.warning(
-            "ask: %d quoted string(s) are not in the notes they cite, "
-            "%d cited id(s) name no loaded video",
-            len(result.unverified_quotes),
+            "ask: %d sentence(s) and %d shorter phrase(s) are not in the notes "
+            "they cite, %d cited id(s) name no loaded video",
+            len(result.unverified_speech),
+            len(result.unverified_phrases),
             len(result.unresolved_ids),
         )
     scan = scan_citations(result.text, known)

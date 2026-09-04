@@ -1642,8 +1642,13 @@ class Answer:
     # `unmarked_currency`. These will carry false positives, because a
     # paraphrase inside quote marks flags, and that is the price of a check
     # simple enough to be trustworthy.
+    # `unverified_quotes` was split in two rather than narrowed: a sentence
+    # attributed to a video whose note lacks it, and a phrase in the same
+    # position, are different claims and one number over-reported fabrication
+    # by roughly 3x. Never summed. See `ask._SPEECH_CHARS` for the boundary.
     unresolved_ids: list[str] = field(default_factory=list)
-    unverified_quotes: list[str] = field(default_factory=list)
+    unverified_speech: list[str] = field(default_factory=list)
+    unverified_phrases: list[str] = field(default_factory=list)
     uncited_quotes: list[str] = field(default_factory=list)
 
     @property

@@ -32,6 +32,7 @@ from marginalia.ask import (
 from marginalia.contracts import (
     SELECTION_ALL,
     SELECTION_SELECTED,
+    Answer,
     AnswerCitation,
     LoadedNote,
 )
@@ -893,23 +894,59 @@ def test_no_note_text_reaches_a_stored_answer(tmp_path):
 
 def test_a_quote_missing_from_the_cited_note_is_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- the speaker says caching is cheap\n"})
-    text = f'The video claims "caching is free forever" [{A} 01:00].'
+    text = f'The video claims "caching is free forever and always will be" [{A} 01:00].'
     notes = load_notes(library)
 
-    ids, unverified, uncited = check_grounding(text, notes, [A])
+    ids, speech, phrases, uncited = check_grounding(text, notes, [A])
 
     assert ids == []
-    assert len(unverified) == 1 and A in unverified[0]
-    assert uncited == []
+    assert len(speech) == 1 and A in speech[0]
+    assert (phrases, uncited) == ([], [])
+
+
+def test_a_short_unverified_phrase_is_not_counted_as_speech(tmp_path):
+    """Rule 14, and the reason for the split. `"an agent loop"` beside a
+    citation is the model quoting its own vocabulary; a sentence beside one is
+    a claim that somebody said it. Summing them over-reported fabrication by
+    roughly 3x — four samples of one question gave 14, 11, 34 and 22 against
+    sentence-length subsets of 4, 4, 5 and 9."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- something else entirely\n"})
+    text = f'It leans on "an agent loop" throughout [{A} 01:00].'
+
+    ids, speech, phrases, uncited = check_grounding(text, load_notes(library), [A])
+
+    assert speech == [], "too short to be a claim about what somebody said"
+    assert len(phrases) == 1 and A in phrases[0]
+    assert (ids, uncited) == ([], [])
+
+
+def test_the_two_unverified_counters_are_reported_apart(tmp_path):
+    """Never summed, and both rendered: the reader's question is "did the model
+    quote a video, or quote itself?" and neither number answers it alone."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- nothing that matches\n"})
+    text = (
+        f'It calls this "the read path" [{A} 01:00] and reports that '
+        f'"the whole pipeline collapses under any real production load" [{A} 02:00].'
+    )
+
+    _ids, speech, phrases, _uncited = check_grounding(text, load_notes(library), [A])
+
+    assert len(speech) == 1 and len(phrases) == 1
+    rendered = render_answer(
+        Answer(question="q", unverified_speech=speech, unverified_phrases=phrases),
+        asked_at="2026-01-01T00:00:00+00:00",
+    )
+    assert "1 sentence(s) attributed to a video" in rendered
+    assert "1 shorter quoted phrase(s) likewise" in rendered
 
 
 def test_a_quote_present_in_the_cited_note_is_not_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- the speaker says caching is cheap\n"})
     text = f'The video says "caching is cheap" [{A} 01:00].'
 
-    ids, unverified, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, uncited = check_grounding(text, load_notes(library), [A])
 
-    assert (ids, unverified, uncited) == ([], [], [])
+    assert (ids, speech, phrases, uncited) == ([], [], [], [])
 
 
 def test_a_quote_with_no_citation_is_its_own_outcome(tmp_path):
@@ -918,9 +955,9 @@ def test_a_quote_with_no_citation_is_its_own_outcome(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = 'Somebody said "this is a completely unattributed claim" in one of them.'
 
-    ids, unverified, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, uncited = check_grounding(text, load_notes(library), [A])
 
-    assert unverified == []
+    assert (speech, phrases) == ([], [])
     assert len(uncited) == 1
 
 
@@ -931,7 +968,7 @@ def test_an_id_naming_no_loaded_video_is_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = f"Some claim [EXLCnmcyLcQ — I might be making this up] and [{A} 01:00]."
 
-    ids, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
 
     assert ids == ["EXLCnmcyLcQ"]
 
@@ -942,7 +979,7 @@ def test_an_eleven_letter_word_in_brackets_is_not_an_id(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = "[a note about the contradiction and the fabricating of claims]"
 
-    ids, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
 
     assert ids == []
 
@@ -952,10 +989,10 @@ def test_a_mis_cased_id_is_a_citation_repair_not_a_missing_video(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- caching is cheap\n"})
     text = f'It says "caching is cheap" [{A.upper()} 01:00].'
 
-    ids, unverified, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, _uncited = check_grounding(text, load_notes(library), [A])
 
     assert ids == []
-    assert unverified == [], "and the quote still resolves against the right note"
+    assert (speech, phrases) == ([], []), "and the quote still resolves against the note"
 
 
 def test_the_grounding_section_never_prints_the_note(tmp_path):
@@ -964,11 +1001,12 @@ def test_the_grounding_section_never_prints_the_note(tmp_path):
     instead. Same trap as the size warning, in the same shape."""
     secret = "the speaker contradicts himself about cache expiry four minutes apart"
     config, library = build(tmp_path, {A: f"## Claims\n\n- {secret}\n"})
-    spoken = client([f'It claims "an invented quotation here" [{A} 01:00].'])
+    invented = "here is an invented quotation nobody in the video ever said"
+    spoken = client([f'It claims "{invented}" [{A} 01:00].'])
 
     answer = answer_question(config, library, spoken, "q")
     rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
 
-    assert len(answer.unverified_quotes) == 1
-    assert "an invented quotation here" in rendered, "the failing quote is shown"
+    assert len(answer.unverified_speech) == 1
+    assert invented in rendered, "the failing quote is shown"
     assert secret not in rendered, "the note is not"
