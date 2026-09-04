@@ -191,19 +191,50 @@ _TS_RE = re.compile(r"(?<![\d.:])(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})
 # Fallback when no ledger is available (unit tests, mostly). Shape only.
 _ID_SHAPE_RE = re.compile(r"[A-Za-z0-9_-]{11}")
 
-# The same shape, but only where it is a whole token.
+# A whole token that is *plainly meant to be* a video id, whatever its length.
 #
-# `_ID_SHAPE_RE` slides: given `single-scalar` it matches the first eleven
-# characters, `single-scal`, and reports it as an id naming no loaded video. The
-# all-lowercase guard below cannot catch that one, because the hyphen makes
-# `isalpha()` false. Measured on one 646-note answer: 2 of 3 `unresolved_ids`
-# were word fragments — the counter over-reporting by two in three.
+# **Two failures, and fixing only the first made the counter worse.**
+# `_ID_SHAPE_RE` slides, so `single-scalar` matched as its first eleven
+# characters and was reported as an id naming no loaded video. But the same
+# sliding caught `[2s0ixGRLo8QM — not in corpus]` — twelve characters, a
+# fabricated id the model itself flagged — by truncating it to eleven. A
+# whole-token rule pinned to exactly eleven removes two false positives and
+# loses that one true positive, which is backwards: an over-reporting counter is
+# visible noise, and an under-reporting one lets a fabricated citation pass
+# silently. Rule 8's invisible error, arriving through a counter cleanup.
+#
+# So the length is a window rather than a constant, and what decides is
+# *character shape*: a real or invented video id carries a digit or a case
+# change. That is what separates the three measured cases by rule instead of by
+# luck — `single-scalar` (13 characters, lowercase, no digit) and
+# `memory-coupling` (15) are excluded, `2s0ixGRLo8QM` is not.
+#
+# A hyphen no longer counts as evidence of an id, which is the part that had to
+# change: English hyphenated compounds carry one, which is exactly how
+# `single-scal` survived the old guard.
+#
+# The window costs some precision — a bracketed `GPT-4o-mini` matches, as it
+# already did at eleven characters — and that is the direction to err in here.
 #
 # Used *only* by the unresolved-id scan. Citation parsing keeps the sliding
 # regex deliberately: there the id sits inside a bracket the model wrote, and
 # tightening it would turn a citation glued to its timestamp from parsed into
 # unparsed, which is a different counter and a change nobody asked for.
-_ID_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])")
+_ID_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{10,13}(?![A-Za-z0-9_-])")
+
+
+def _looks_like_an_id(token: str) -> bool:
+    """Does this token carry the marks of a video id rather than a word?
+
+    A digit, or both cases. Eleven-letter English words — `consolidate`,
+    `fabricating`, `contradicti` — all matched the old shape inside the model's
+    own prose, and so do hyphenated compounds. This drops them without inventing
+    a dictionary to check against.
+    """
+    return any(character.isdigit() for character in token) or (
+        any(character.isupper() for character in token)
+        and any(character.islower() for character in token)
+    )
 
 # Candidate tokens for prefix repair. Eight characters is the floor: shorter
 # than that and a prefix stops identifying one video and starts matching
@@ -411,12 +442,10 @@ def check_grounding(
         for candidate in _ID_TOKEN_RE.findall(group.group(1)):
             if candidate in known or candidate in unresolved:
                 continue
-            # An eleven-letter lowercase run is an English word, not an id:
-            # `consolidate`, `fabricating`, `contradicti` all matched the shape
-            # inside the model's own prose. A real id carries a digit, a case
-            # change, or `-`/`_` — this drops the words without inventing a
-            # dictionary to check against.
-            if candidate.isalpha() and candidate.islower():
+            # A run of letters is prose, not an id — `consolidate`,
+            # `fabricating`, `contradicti`, and hyphenated compounds like
+            # `single-scalar`. See `_looks_like_an_id`.
+            if not _looks_like_an_id(candidate):
                 continue
             # A case variant of a loaded id is the citation parser's `repaired`
             # outcome, not a missing video. Counting it here would report one

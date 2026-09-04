@@ -712,6 +712,98 @@ the difference called an effect. Running more samples of a bad instrument buys
 noise; the verdict-noise measurement is the shape to copy, where 60 pairs made a
 6% upper bound out of a question that one pair could not have answered.
 
+### Fabrication is a measured property, not a bug awaiting a fix
+
+**~2.3 sentence-length unverified quotes per thousand words.** That is what the
+answer layer does, and it is reported on every answer rather than waiting to be
+fixed.
+
+Measured across every answer that could be scored: **31 instances in 12 answers,
+13,313 words.** It is flat against everything about the configuration and moves
+only with the question:
+
+| variable | moves the speech rate? |
+|---|---|
+| library size, 422 → 646 notes | no — 4, 4, 5, 9 at 422; 5 at 646 |
+| drop rate / notes loaded, 259 → 171 | no — 3.8, 3.4 at ~257 loaded; 1.9, 4.0 at ~171; 3.4 at 252 |
+| question | **yes, ~3×** — 3.3 per 1k words for *what they get wrong*, 1.0 for the other three |
+| prompt version | not shown to move it; see below |
+
+So no amount of selector tuning reaches it. It is a property of the model and
+the question, which is why it belongs here beside the semantic-failure class
+rather than on a list of things to repair.
+
+**One counter used to hold two failures and over-reported by 3.7×.** A quoted
+sentence its cited note does not contain is a claim that somebody said it;
+`"an agent loop"` in the same position is the model quoting its own vocabulary.
+Split into `unverified_speech` and `unverified_phrases`, never summed: 31 against
+83 across the same twelve answers. The boundary is 40 characters and the corpus
+declines to improve on it — all 940 quoted spans were measured, the word-count
+histogram is a single smooth decay from a peak at two words with no trough, the
+share carrying a finite verb rises gradually (3% under 20 characters, then 16,
+32, 51, 72) rather than stepping, and every cut from 25 to 60 separates
+verb-bearing spans by 38–43 points. A convention the data does not contradict.
+It also does **not** separate a wrong class from a right one: the share of quoted
+spans their note actually contains is ~50% at every length band.
+
+**The number covers only what is inside quotation marks**, which is the limit on
+all of it. See the caveat below.
+
+**What made it measurable at all, and what it cost.** The counters are a pure
+function of the answer text and the notes loaded, and both are stored — so the
+history could be re-scored for free. Except it could not: **43 of 55 answers are
+unscoreable.** 17 ran selection without recording which ids survived; 26 loaded
+the whole library and recorded `all`, which names nothing about a library that
+grows. And for the August answers **646 of 646 notes on disk were written after
+the answer was**, so the drift is total rather than approximate — notes are
+overwritten in place, and an id does not pin the text behind it. That is why
+`- notes read:` now carries `id:digest` per loaded note: a later re-score can say
+"all 252 unchanged, this score is valid" instead of scoring against text that did
+not exist at the time. Rule 23 again, and the third time in this file that a
+measurement was limited by something nobody wrote down.
+
+### What the quoting rule does, and what it does not
+
+`answer` v4 adds one instruction — *quote only what is there; if you are
+paraphrasing, do not use quotation marks* — as the third of three rules beside
+*cite, or say you cannot* and *keep inference marked*. All three are the same
+principle: never let a reader mistake one kind of claim for another. A prompt
+that defines what a citation means and what `[note: ...]` means should also
+define what quotation marks mean, and that is true whether or not it moves a
+number. It is kept on that basis, not on the measurement below.
+
+Eight samples of the heavy quoter, five under v3 and three under v4, on the rate
+rather than the count — the counts (4, 4, 5, 9, 5) are unreadable where the rate
+is not:
+
+| prompt | loaded | words | quotes | speech | phrases | speech/1k w | phrases/1k w |
+|---|---|---|---|---|---|---|---|
+| v3 | 259 | 1,039 | 26 | 4 | 10 | 3.8 | 9.6 |
+| v3 | 256 | 1,191 | 23 | 4 | 7 | 3.4 | 5.9 |
+| v3 | 172 | 2,589 | 65 | 5 | 29 | 1.9 | 11.2 |
+| v3 | 171 | 2,241 | 55 | 9 | 13 | 4.0 | 5.8 |
+| v3 | 252 | 1,456 | 42 | 5 | 17 | 3.4 | 11.7 |
+| v4 | 252 | 1,651 | 35 | 8 | 14 | 4.8 | 8.5 |
+| v4 | 258 | 1,836 | 33 | 0 | 10 | 0.0 | 5.4 |
+| v4 | 252 | 1,569 | 33 | 3 | 7 | 1.9 | 4.5 |
+
+**It reduces quoting volume. It has not been shown to improve quoting fidelity.**
+Quotes per thousand words fall 24.8 → 20.0 and the phrase rate 8.84 → 6.13, with
+all three v4 samples at or below the v3 mean. The speech rate falls 3.32 → 2.25,
+but the range widens from 1.9–4.0 to **0.0–4.8** — one v4 sample is worse than
+every v3 sample, and the v4 range contains the whole v3 range. At that spread,
+separating a 1.0 difference needs roughly **40 samples per arm, about $9**. Nobody
+should re-run this at n=3 and read the mean.
+
+**And the caveat is the more important half: fewer quotes means less checkable
+surface.** The counters verify quoted spans and nothing else. v4 produced answers
+of similar length with fewer quotes, so those claims are still being made — in
+prose, where no counter can reach them. **A falling unverified count is therefore
+not straightforwardly an improvement, and may reflect fabrication moving out of
+view rather than down.** That limit sits beside every number these counters
+produce, including the 2.3 above: it is a rate over the part of an answer that is
+in quotation marks, and the rest of the answer is unmeasured.
+
 ### The verdict noise floor — measured, and it is not the problem
 
 `CPgp8MhmGVY` is stored as a stage-2 NO and then judged YES on three consecutive

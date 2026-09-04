@@ -1006,13 +1006,41 @@ def test_an_id_naming_no_loaded_video_is_counted(tmp_path):
 
 def test_an_eleven_letter_word_in_brackets_is_not_an_id(tmp_path):
     """`consolidate`, `fabricating` and `contradicti` all matched the id shape
-    inside the model's prose. A real id carries a digit, a case change or -/_."""
+    inside the model's prose. A real id carries a digit or a case change."""
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = "[a note about the contradiction and the fabricating of claims]"
 
     ids, _, _, _ = check_grounding(text, load_notes(library), [A])
 
     assert ids == []
+
+
+def test_a_hyphenated_compound_is_not_an_id(tmp_path):
+    """`_ID_SHAPE_RE` slides, so `single-scalar` matched as `single-scal` and
+    was reported as an id naming no loaded video. A hyphen is not evidence of an
+    id — English compounds carry one, which is how this survived the old
+    all-lowercase guard."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
+    text = f"[{A} results are single-scalar points with no memory-coupling shown]"
+
+    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
+
+    assert ids == []
+
+
+def test_a_fabricated_id_of_the_wrong_length_is_still_counted(tmp_path):
+    """The reason the length is a window rather than a constant.
+
+    `[2s0ixGRLo8QM — not in corpus]` is twelve characters, and pinning the scan
+    to exactly eleven removed two false positives while losing this one true
+    positive. That is backwards: an over-reporting counter is visible noise, an
+    under-reporting one lets a fabricated citation pass silently."""
+    config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
+    text = "the orchestration choice [2s0ixGRLo8QM — not in corpus] and the rest"
+
+    ids, _, _, _ = check_grounding(text, load_notes(library), [A])
+
+    assert ids == ["2s0ixGRLo8QM"], "caught by rule, where before it was caught by truncation"
 
 
 def test_a_mis_cased_id_is_a_citation_repair_not_a_missing_video(tmp_path):
