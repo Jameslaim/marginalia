@@ -26,6 +26,7 @@ change and these must keep telling the truth about it.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import time
@@ -125,6 +126,7 @@ __all__ = [
     "AskTooLarge",
     "SelectionFailed",
     "check_grounding",
+    "note_digest",
     "choose_notes",
     "estimate_tokens",
     "fill_to_budget",
@@ -188,6 +190,20 @@ _TS_RE = re.compile(r"(?<![\d.:])(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?:\.\d{1,3})
 
 # Fallback when no ledger is available (unit tests, mostly). Shape only.
 _ID_SHAPE_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+
+# The same shape, but only where it is a whole token.
+#
+# `_ID_SHAPE_RE` slides: given `single-scalar` it matches the first eleven
+# characters, `single-scal`, and reports it as an id naming no loaded video. The
+# all-lowercase guard below cannot catch that one, because the hyphen makes
+# `isalpha()` false. Measured on one 646-note answer: 2 of 3 `unresolved_ids`
+# were word fragments — the counter over-reporting by two in three.
+#
+# Used *only* by the unresolved-id scan. Citation parsing keeps the sliding
+# regex deliberately: there the id sits inside a bracket the model wrote, and
+# tightening it would turn a citation glued to its timestamp from parsed into
+# unparsed, which is a different counter and a change nobody asked for.
+_ID_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{11}(?![A-Za-z0-9_-])")
 
 # Candidate tokens for prefix repair. Eight characters is the floor: shorter
 # than that and a prefix stops identifying one video and starts matching
@@ -392,7 +408,7 @@ def check_grounding(
     # Brackets only. Scanning free prose would flag every eleven-character word.
     unresolved: list[str] = []
     for group in _GROUP_RE.finditer(text):
-        for candidate in _ID_SHAPE_RE.findall(group.group(1)):
+        for candidate in _ID_TOKEN_RE.findall(group.group(1)):
             if candidate in known or candidate in unresolved:
                 continue
             # An eleven-letter lowercase run is an English word, not an id:
@@ -546,6 +562,35 @@ def render_links(citations: Sequence[AnswerCitation], titles: dict[str, str]) ->
     return lines
 
 
+def note_digest(text: str) -> str:
+    """A short fingerprint of one note's text.
+
+    Eight hex characters of SHA-256. Not a security boundary and not a
+    deduplication key — just enough to answer "is this the note the answer
+    read?", where the alternative is assuming it and being wrong for 646 notes
+    out of 646. Whitespace is stripped so a trailing newline is not a rewrite.
+    """
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()[:8]
+
+
+def _read_marks(answer: Answer) -> list[str]:
+    """`id:digest` per loaded note, or a bare id where no digest was recorded.
+
+    The fallback covers `Answer`s built by hand — tests, and any future caller
+    that fills the ids without the text behind them. An answer file that says
+    `id` alone is saying "I do not know what this note contained", which is the
+    honest thing for it to say and exactly what the pre-digest history says by
+    omission.
+    """
+    ids = answer.selection.video_ids or sorted(answer.note_digests)
+    return [
+        f"{video_id}:{answer.note_digests[video_id]}"
+        if video_id in answer.note_digests
+        else video_id
+        for video_id in ids
+    ]
+
+
 def render_answer(answer: Answer, *, asked_at: str) -> str:
     """One answer as a file. Pure: no clock, no disk, no config.
 
@@ -584,13 +629,16 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
                 # answer. 263 ids is a few kilobytes and turns that question
                 # into a grep.
                 #
-                # **Ids only.** No titles, no summary lines, no note text — the
-                # lines handed to the selector are built from notes, and hard
-                # rule 1 does not stop at the answer file.
-                "- notes read: " + " ".join(answer.selection.video_ids),
+                # **Ids and digests only.** No titles, no summary lines, no note
+                # text — the lines handed to the selector are built from notes,
+                # and hard rule 1 does not stop at the answer file.
+                #
+                # `id:digest`, and always the full list — `all` used to stand in
+                # for a whole-library answer and it names nothing about a library
+                # that grows. See `Answer.note_digests` for why the digest is
+                # here at all.
+                "- notes read: " + " ".join(_read_marks(answer)),
             ]
-            if answer.selection.mode != SELECTION_ALL
-            else ["- notes read: all"]
         ),
         *(
             [
@@ -1097,6 +1145,9 @@ def answer_question(
     # for a note it was not given must still resolve to a real title if one
     # exists, or the reader cannot tell a hallucination from a selection miss.
     result.titles = {note.video_id: note.title for note in everything}
+    # The loaded notes only: this records what the answer was written from, not
+    # what the library happened to hold.
+    result.note_digests = {note.video_id: note_digest(note.text) for note in notes}
 
     # Before anything is sent. The whole-library approach is correct while it
     # fits, and the failure when it stops fitting is a cliff rather than a

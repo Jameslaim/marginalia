@@ -1626,6 +1626,21 @@ class Answer:
     # nobody sees.
     repaired: list[str] = field(default_factory=list)
     titles: dict[str, str] = field(default_factory=dict)
+    # video_id -> a short digest of the note text this answer actually read.
+    #
+    # A note is overwritten in place, so "which notes did this answer read?"
+    # decays into "which notes exist now?" the moment one is regenerated.
+    # Measured: 43 of 55 stored answers cannot be re-scored, and for the August
+    # ones **646 of 646 notes on disk were written after the answer was**. The
+    # ids alone did not save them, because the text behind an id changed.
+    #
+    # A digest makes a later re-score able to say "all 252 unchanged, this score
+    # is valid" or "14 rewritten, treat it with suspicion" instead of scoring
+    # against text that did not exist at the time and reporting a number.
+    # Cheap now and impossible retroactively, which is the whole argument.
+    #
+    # **A digest, not the text.** Hard rule 1 does not stop at the answer file.
+    note_digests: dict[str, str] = field(default_factory=dict)
     requests: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
