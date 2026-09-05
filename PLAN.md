@@ -889,6 +889,86 @@ view rather than down.** That limit sits beside every number these counters
 produce, including the 2.3 above: it is a rate over the part of an answer that is
 in quotation marks, and the rest of the answer is unmeasured.
 
+### The effect of a prompt change on quoting is not measurable at reasonable cost
+
+Checked *before* spending this time, which is the lesson v4 paid for: nobody
+asked whether the metric could detect the change, and the answer came back
+"inconclusive at n=3" for $0.33.
+
+`unspoken` per thousand words across the eight baseline answers of the heavy
+quoter — **3.0, 3.4, 3.8, 4.1, 5.8, 5.8, 7.1, 12.9** — mean 5.74, sd 3.23,
+**relative spread 56%**. `unverified_speech` is no better at 53%, so the larger
+signal in `unspoken` (101 instances against 42) buys nothing: required sample
+size for a proportional effect depends on relative spread and not on absolute
+size, and it lands at n≈20 against n≈18.
+
+**The binding constraint is the baseline, not the budget.** With those eight rows
+fixed, power against a v5 arm of N runs:
+
+| effect | N=3 | N=8 | N=20 | N=50 | N=∞ |
+|---|---|---|---|---|---|
+| 50% cut (to 2.9/1k w) | 26% | 43% | 57% | 65% | **71%** |
+| 40% cut (to 3.4/1k w) | 18% | 30% | 40% | 46% | **52%** |
+| 33% cut (to 3.8/1k w) | 14% | 22% | 29% | 34% | **38%** |
+| 25% cut (to 4.3/1k w) | 10% | 14% | 19% | 21% | **24%** |
+
+**No number of treatment runs reaches 80% power for any effect size.** Infinite
+runs cap at 71% for a halving. Reaching 80% on a 50% effect needs ~20 per arm —
+about twelve more baseline runs under the old prompt plus twenty under the new,
+roughly $3.50 and seventy minutes — and would still detect nothing subtler than a
+halving. The point is not that the experiment is expensive. It is that it is
+**underdetermined by the baseline**, and money does not fix that.
+
+**One row carries the result.** Dropping the 12.9 collapses the spread to CV 32%
+and would need only ~7 per arm. There is no principled reason to drop it — it is
+a real run — and that sensitivity is itself why n=8 cannot answer the question:
+at this size, "12.9 is an outlier" and "12.9 is the tail of a skewed
+distribution" are indistinguishable.
+
+**And a confound that cannot be separated here.** The three answers carrying note
+digests are *exactly* the three written under v4, so "the notes may have moved"
+and "a different prompt version" are the same split in this baseline. Neither can
+be read from these eight rows. (For what it is worth: v3 averages 6.4 and v4 4.6,
+overlapping heavily at n=5 and n=3, which is what you would expect since neither
+prompt said anything about note prose.)
+
+**So the v5 experiment is not run, and not on cost.** A ≥50% detection threshold
+is the wrong resolution for the decision it would inform. v5 is kept on
+correctness grounds regardless — it states something true about what `## Verbatim`
+is and what note prose is not — so the experiment could only report *how much* it
+helped, at a resolution of "halved or not", and neither answer changes anything.
+**Per-claim markers also retired the question the distribution was needed for**:
+the strongest argument for twelve more baseline runs was that a reader trusting
+an average deserves to know its shape, and a reader is no longer trusting an
+average. They see `[not spoken]` on their own answer, with the actual count.
+
+**One observation, recorded rather than chased.** Both runs in the 59% condition
+sit high — 5.8 and 12.9, against 3.0–7.1 for everything else. That is consistent
+with fewer loaded notes meaning less real speech available and more reaching into
+prose, which is a coherent mechanism. It is n=2 and the two disagree by 2.2×, so
+it establishes nothing. It is free to watch: if `unspoken` stays elevated whenever
+the loaded count falls, that is a real relationship, and answers accumulate
+anyway.
+
+### Where the fabrication thread ends
+
+The chain is long and its conclusion is not obvious from any single entry above,
+so: what exists now is
+
+* three grounding counters with honest names, split by rule 14 — found in
+  `## Verbatim`, found in the note outside it, found nowhere;
+* per-claim markers, so a reader weighs specific sentences rather than an
+  aggregate;
+* a prompt that says true things about its own inputs;
+* a measured baseline, recorded with its own limits;
+* and the number that summarises it: **103 of 360 quoted spans across 17 answers —
+  29% — are things someone actually said.**
+
+The fabrication picture is now as complete as it can be made without a
+measurement instrument that does not exist. What remains is not a gap in the
+work; it is a property of measuring a stochastic answer layer, and it is recorded
+as one.
+
 ### The verdict noise floor — measured, and it is not the problem
 
 `CPgp8MhmGVY` is stored as a stage-2 NO and then judged YES on three consecutive
