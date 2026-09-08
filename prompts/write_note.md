@@ -1,8 +1,14 @@
 ---
 name: write_note
-version: "6"
+version: "7"
 stage: note
-note: "v5 adds the `How current is it` section. Measured need: of 24 LangChain
+note: "v7 passes TODAY. A model with a 2024 cutoff read a 2026-04 video,
+  decided the model name in it was a hallucination, called the video
+  speculative, and marked its real pricing wrong on that basis. `How current
+  is it` is mandatory, so every note makes an era judgement and a model that
+  cannot place itself in time gets it wrong systematically. Same reasoning as
+  rule 16 passing `today` into the territory validator.
+  v5 adds the `How current is it` section. Measured need: of 24 LangChain
   videos kept in run 7da933b180fd, only 11 notes carried any era marker, and
   those only because the video happened to discuss its own version. A 2023
   pre-0.1 tutorial sat in the library described as current. The date was already
@@ -25,6 +31,7 @@ VIDEO: {{ title }}
 CHANNEL: {{ channel }}
 DURATION: {{ duration }}
 PUBLISHED: {{ upload_date }}
+TODAY: {{ today }}
 CAPTIONS: {{ caption_kind }}
 {{ chapters }}
 
@@ -141,6 +148,25 @@ established from the video"* is a complete and useful answer.
 Where content is plainly time-bound — pricing, model names, library APIs, rate
 limits — say so and say what a reader would need to re-check before relying on
 it.
+
+**`TODAY` is the present. Content published after your training data is expected,
+not suspicious.** A video may name products, versions and prices you have never
+heard of, and when it does, the thing that is out of date is your knowledge — not
+the video. You are reading a real transcript of a real video published on
+`PUBLISHED`, which may be long after anything you were trained on.
+
+So where a video names something you do not recognise, the honest note says the
+claim **could not be verified against your own knowledge**, and marks that as
+outside knowledge like any other: *"[note: the model name given here postdates my
+training data; I cannot confirm it, and a reader should check it against the
+provider's current documentation]"*. That is a useful sentence and exactly what
+this section is for.
+
+**Do not call it a hallucination, a transcription error, speculative, fictional,
+or from a future or alternate timeline.** Those are claims about the world that
+you are not positioned to make from a training cutoff, and a note that makes them
+tells a reader a real product does not exist. Not recognising a name is a fact
+about you. It is never evidence about the video.
 
 If nothing in the video is version-sensitive, write one line saying so. A
 tutorial on a stable idea does not need a caveat invented for it.

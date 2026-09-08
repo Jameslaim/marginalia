@@ -28,6 +28,7 @@ changes with the prompt, and the drain loop does not.
 from __future__ import annotations
 
 import logging
+from datetime import date
 import time
 from typing import Any, Sequence
 
@@ -400,6 +401,14 @@ def _one(
                 channel=(meta or {}).get("channel") or "unknown",
                 duration=format_duration((meta or {}).get("duration_s")),
                 upload_date=(meta or {}).get("upload_date") or "unknown",
+                # **Passed in, not left to the model to infer.** A model with a
+                # 2024 cutoff read a 2026-04 video, concluded the model name in
+                # it was a hallucination, called the source speculative and
+                # marked its real pricing wrong. `How current is it` is
+                # mandatory, so a model that cannot place itself in time gets
+                # every era judgement wrong, confidently. Rule 16 passes `today`
+                # into the territory validator for the same reason.
+                today=date.today().isoformat(),
                 # Automatic captions mangle exactly the technical terms a note
                 # is most interested in. The reader must be told which errors
                 # are the speaker's and which are the transcriber's.
