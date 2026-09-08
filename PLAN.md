@@ -950,6 +950,60 @@ it establishes nothing. It is free to watch: if `unspoken` stays elevated whenev
 the loaded count falls, that is a real relationship, and answers accumulate
 anyway.
 
+### The alphabet decided which notes got read
+
+Notes load in case-insensitive video-id order, which is arbitrary with respect
+to content, relevance and the question. Citations do not fall evenly across it:
+
+| | first third | middle | last third | mean position |
+|---|---|---|---|---|
+| null | 33.3% | 33.3% | 33.3% | 0.500 |
+| DeepSeek, 17 answers, 289 cited notes | **43.9%** | 27.3% | 28.7% | 0.436 |
+| Nemotron, 1 answer, 41 cited notes | **41.5%** | 24.4% | 34.1% | 0.470 |
+
+A first-decile note is roughly **twice as likely to be cited** as a last-decile
+one (12.2% against 5.2%). And it is **primacy, not the "lost in the middle"
+U-shape** — the final decile is the lowest of all ten, so the tail is not
+favoured either.
+
+**Both providers show it at about the same strength**, which makes it a property
+of long-context attention rather than of a model. The measurement is worth
+keeping for that reason alone: it was taken on DeepSeek before the Nemotron swap
+precisely so a later reading could tell the two apart, and it turned out there
+was nothing to tell apart.
+
+The consequence is the part that matters: because the order is alphabetical, **a
+note's chance of being read depends on where its video id sorts.** `-0czfBICp74`
+is favoured over a note beginning with `z`, permanently, on every question ever
+asked. No counter sees it and nothing reaches the logs — the same shape as every
+other finding in this section.
+
+**The fix is to shuffle, per question, unseeded.** Reproducibility already comes
+from the record: `- notes read:` stores the order with a digest per note, so a
+seed would buy nothing and would preserve the systematic part for any question
+asked twice. It happens *after* selection and the budget fill, both of which walk
+the list in order — shuffling earlier would change which notes survive rather
+than only where they sit.
+
+**Primacy does not go away, and that is not the fix failing.** The model will
+still favour early positions; re-measuring the bias afterwards will still find it
+near 43%. What changes is that no *particular* note is disadvantaged, because
+position is no longer tied to identity. **The fix converts a systematic bias into
+noise.** Measuring the bias will not show it — measuring the correlation with
+video id will, and that needs answers to accumulate. **The check to run later:**
+across enough answers, a video's citation rate should stop correlating with its
+id's alphabetical rank. It is free whenever someone chooses to run it.
+
+**The better fix is ordering by relevance, and it is not available today.**
+Putting the most useful notes first would make primacy work *for* the answer
+instead of arbitrarily — the bias becomes a feature rather than a lottery. What
+it needs is a ranking, and the selector does not produce one: it returns a
+*drop list*, so what survives is a set with no internal order. Getting there
+means changing what the selector is asked for, which is a change to the one call
+that has already been through four prompt revisions and whose failure mode is
+silent exclusion. Shuffling is the honest fix available now; ranking is the one
+worth building when the selector is next opened.
+
 ### Where the fabrication thread ends
 
 The chain is long and its conclusion is not obvious from any single entry above,

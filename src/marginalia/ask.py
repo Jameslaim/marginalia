@@ -29,6 +29,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import logging
+import random
 import re
 import time
 from dataclasses import replace
@@ -142,6 +143,7 @@ __all__ = [
     "scan_citations",
     "parse_escalations",
     "render_answer",
+    "shuffle_for_reading",
     "mark_unverified",
     "render_links",
 ]
@@ -725,6 +727,41 @@ def mark_unverified(answer: Answer) -> str:
         at = match.end()
     out.append(answer.text[at:])
     return "".join(out)
+
+
+def shuffle_for_reading(notes: Sequence[LoadedNote]) -> list[LoadedNote]:
+    """Break the tie between a note's position and its identity.
+
+    **The measured problem.** Notes load in case-insensitive video-id order,
+    which is arbitrary with respect to content, relevance and the question. But
+    citations do not fall evenly across that order — pooled over 17 answers, the
+    first third of the loaded list takes 43.9% of cited notes against a 33.3%
+    null, and a first-decile note is roughly twice as likely to be cited as a
+    last-decile one. Nemotron shows the same shape at the same strength (41.5%),
+    so this is a property of long-context attention rather than of one provider.
+
+    Because the order is alphabetical, that makes a note's chance of being read
+    depend on **where its video id sorts**. `-0czfBICp74` is favoured over a note
+    beginning with `z`, permanently, on every question ever asked. No counter
+    sees it and nothing reaches the logs.
+
+    **What this fixes and what it does not.** Primacy does not go away — the
+    model will still favour early positions, and measuring the bias afterwards
+    will still find it near 43%. That is the model, not the ordering. What
+    changes is that no *particular* note is disadvantaged, because position is no
+    longer tied to identity. **The fix converts a systematic bias into noise.**
+    Anyone re-measuring primacy and concluding it failed has measured the wrong
+    thing; the check is whether a video's citation rate still correlates with its
+    id's alphabetical rank, and that needs answers to accumulate.
+
+    **Unseeded, deliberately.** Reproducibility comes from the record — the
+    answer file stores the order it read, with a digest per note — so a seed buys
+    nothing and would keep the systematic part of the problem for any question
+    asked twice.
+    """
+    order = list(notes)
+    random.shuffle(order)
+    return order
 
 
 def note_digest(text: str) -> str:
@@ -1322,6 +1359,16 @@ def answer_question(
         Selector(client, prompts_directory=prompts_directory),
         question,
         everything,
+    )
+    # After selection, never before: the selector and the budget fill both walk
+    # the list in order, so shuffling earlier would change *which* notes survive
+    # rather than only where they sit. Same notes, same budget, same counts.
+    notes = shuffle_for_reading(notes)
+    # The record follows the shuffle, or `- notes read:` would name an order the
+    # model was never shown — and that line is what the positional measurement
+    # is computed from.
+    result.selection = replace(
+        result.selection, video_ids=[note.video_id for note in notes]
     )
     result.notes_considered = len(everything)
     result.notes_loaded = len(notes)

@@ -837,6 +837,60 @@ def test_the_requested_and_allowed_drops_are_recorded(tmp_path):
     assert "re-included" in rendered
 
 
+def test_the_load_order_differs_between_two_runs_and_both_are_recorded(tmp_path):
+    """Notes loaded in video-id order tie a note's chance of being read to where
+    its id sorts: pooled over 17 answers the first third took 43.9% of citations
+    against a 33.3% null, on both providers. Shuffling per question converts a
+    systematic bias into noise — it does not remove primacy, and re-measuring
+    primacy afterwards is measuring the wrong thing."""
+    notes = {f"vid{n:07d}xyz"[:11]: f"note {n}" for n in range(40)}
+    config, library = build(tmp_path, notes)
+    config = replace(config, ask=make_ask_config(max_input_tokens=1_000_000))
+
+    first = answer_question(config, library, client(["An answer."]), "q")
+    second = answer_question(config, library, client(["An answer."]), "q")
+
+    a = first.selection.video_ids
+    b = second.selection.video_ids
+    assert a and b, "both runs record the order they read"
+    assert a != b, "and the order is not the same twice"
+    assert sorted(a) == sorted(b) == sorted(notes), "same notes, only reordered"
+
+
+def test_shuffling_changes_nothing_but_the_order(tmp_path):
+    """The gate. Shuffling happens after selection and the budget fill, both of
+    which walk the list in order — earlier would change *which* notes survive."""
+    notes = {f"vid{n:07d}xyz"[:11]: f"note {n}" for n in range(40)}
+    config, library = build(tmp_path, notes)
+    config = replace(config, ask=make_ask_config(max_input_tokens=1_000_000))
+
+    runs = [answer_question(config, library, client(["An answer."]), "q") for _ in range(3)]
+
+    assert len({r.notes_loaded for r in runs}) == 1
+    assert len({r.notes_considered for r in runs}) == 1
+    assert len({tuple(sorted(r.note_digests)) for r in runs}) == 1, "same notes every time"
+    assert len({tuple(r.selection.video_ids) for r in runs}) > 1, "in different orders"
+
+
+def test_the_recorded_order_is_the_order_the_model_was_shown(tmp_path):
+    """`- notes read:` is what the positional measurement is computed from, so
+    it has to follow the shuffle rather than the alphabet."""
+    # Markers no one of which is a prefix of another, or `find` locates the
+    # wrong one: "note 2" matches inside "note 23".
+    ids = [f"vid{n:07d}xyz"[:11] for n in range(30)]
+    config, library = build(tmp_path, {v: f"body<{v}>end" for v in ids})
+    config = replace(config, ask=make_ask_config(max_input_tokens=1_000_000))
+
+    made = client(["An answer."])
+    answer = answer_question(config, library, made, "q")
+    shown = made.sent[0]["messages"][1]["content"]
+
+    positions = {v: shown.find(f"body<{v}>end") for v in ids}
+    assert all(p >= 0 for p in positions.values()), "every note reached the prompt"
+    by_prompt = sorted(ids, key=lambda v: positions[v])
+    assert by_prompt == answer.selection.video_ids
+
+
 def test_a_whole_library_run_names_the_notes_it_read(tmp_path):
     """`all` used to stand in here, and it names nothing about a library that
     grows: 26 stored answers say `all` or nothing and cannot be re-scored,
