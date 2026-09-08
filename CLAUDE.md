@@ -561,6 +561,33 @@ not drift.
     there is nothing left to degrade to. Recorded so it is not re-litigated from the
     same video.
 
+25. **A guard added to one caller must be traced to every caller that shares the
+    failure.** Fixing the caller where a failure was *observed* is half the work; the
+    other half is asking what else calls the same thing in the same way, and it is
+    the half that gets skipped. Twice now, twelve days apart, and both times the
+    sibling was found by accident rather than by anyone asking.
+
+    **The 402 went into the note drain.** Rule 24's refusal handling was written
+    where the billing error surfaced, and `judge_metadata`, `judge_full` and
+    `judge_opening` were only hardened when someone asked what else caught a failed
+    call and kept the video. All three implement rule 8 correctly for a *blip* —
+    keeping on an error is caution — and a refusal breaks that arithmetic, because
+    every later call fails identically. Untraced, a 402 mid-run would have walked the
+    whole candidate set through as MAYBE, fetched it, and stored a library on
+    judgements that never happened.
+
+    **The context guard went into `ask.py`.** M7 gave the answering path an
+    estimator, an 80% warning and a hard refusal, on the argument that running out of
+    context is a cliff rather than a slope. `_assess_library` loads *the same notes*
+    into *the same ceiling* and got none of it. It failed silently on the first
+    discovery run after the library crossed the line — 1.75× over, failing open, the
+    planner re-searching ground already on disk.
+
+    The two are the same shape: a correct fix, applied where the symptom appeared,
+    stopping there. What makes this a rule rather than an observation is that both
+    siblings were reachable by one question — *what else calls this, and does it
+    share the failure?* — asked at the time, of a diff that was already open.
+
 ## Structure
 
 ```
