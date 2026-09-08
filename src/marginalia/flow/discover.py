@@ -86,7 +86,7 @@ from ..core.ledger import (
     Ledger,
     normalise_topic,
 )
-from ..ask import load_notes, render_notes
+from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
 from ..core.library import Library, format_timestamp
 from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
@@ -398,9 +398,64 @@ def _assess_library(
         log.info("discover: the library holds no notes; nothing to assess")
         return LibraryCoverage()
 
+    # **Summary lines, not whole notes.** This used to send the library entire,
+    # with no budget check of any kind, and at 646 notes it asked for 1,833,240
+    # tokens against a 1,048,576 ceiling — 1.75x over. It failed *open*
+    # ("assuming nothing is covered"), so nothing crashed and the planner simply
+    # worked as though the library held nothing, re-searching ground already on
+    # disk. That is why nobody noticed.
+    #
+    # The question here is coarse — *which brief items does the library already
+    # cover?* — and a coarse question does not need whole notes. One line per
+    # note is what the selector's stage 1 already builds, and 646 of them is
+    # about 20k tokens against 1.87M.
+    #
+    # **Not the M7 selector**, which was the obvious repair and the wrong one:
+    # selection would eventually hit this same ceiling again, and this is the
+    # second caller to hit it already. Summary lines scale indefinitely — 5,000
+    # notes is still ~150k tokens — cost nothing against a selection pass, and
+    # when they are too thin to decide they err toward "not covered", which
+    # means more searching rather than less. Rule 8's direction.
+    summaries = [summarise(note) for note in notes]
+    rendered = "\n".join(summary.line for summary in summaries)
+
+    # The guard the original never had, using the estimator that would have
+    # caught this: `estimate_tokens` puts 646 notes at 1,873,146, within 2% of
+    # what the provider counted. With summary lines it should never fire, and
+    # that is the point — a guard that never fires is cheap, and its absence
+    # cost a silent failure on every discovery run since the library crossed the
+    # ceiling.
+    #
+    # `[ask] max_input_tokens` is the one place the provider's context ceiling
+    # is recorded, and rule 7 says not to guess a provider fact — so when it is
+    # unset there is no ceiling to check against and the guard says so rather
+    # than inventing one.
+    ceiling = config.ask.max_input_tokens
+    estimate = int(len(rendered) / _CHARS_PER_TOKEN)
+    if ceiling and estimate > ceiling:
+        # Fails open exactly as the 400 did, but *reported* rather than
+        # discovered from a provider rejection several seconds later.
+        log.warning(
+            "discover: the library baseline would send ~%d tokens against a "
+            "%d-token ceiling — skipping it, and the planner will assume "
+            "nothing is covered",
+            estimate,
+            ceiling,
+        )
+        return LibraryCoverage(
+            parsed=False,
+            problem=(
+                f"{len(notes)} summary lines estimate ~{estimate:,} tokens, "
+                f"over the {ceiling:,}-token ceiling"
+            ),
+        )
+    log.info(
+        "discover: assessing %d notes as summary lines, ~%d tokens", len(notes), estimate
+    )
+
     baseline = planner.assess_library(
         run.brief,
-        render_notes(notes),
+        rendered,
         notes_read=len(notes),
         max_tokens=config.discover.baseline_max_tokens,
     )

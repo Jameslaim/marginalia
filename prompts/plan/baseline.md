@@ -1,7 +1,11 @@
 ---
 name: plan/baseline
-version: "1"
+version: "2"
 stage: plan
+note: "v2 is fed one summary line per note instead of whole notes. v1 sent the
+  library entire with no budget check and at 646 notes asked for 1,833,240
+  tokens against a 1,048,576 ceiling; it failed open, so the planner silently
+  assumed nothing was covered and re-searched ground already held."
 ---
 
 You are checking what a library of video notes **already** covers, before any
@@ -80,6 +84,13 @@ BRIEF:
 
 ---
 
-NOTES IN THE LIBRARY ({{ count }}):
+NOTES IN THE LIBRARY ({{ count }}), one line each:
+
+    <video id> | <published> | <title> | <the note's opening claim>
+
+These are index lines, not the notes. They are enough to say whether the library
+*has something* on a brief item and never enough to judge how well it is
+covered. So when a line is too thin to decide, answer **NO** — a wrong NO costs
+one more search, and a wrong YES means a brief item is never searched for again.
 
 {{ notes }}

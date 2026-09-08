@@ -18,7 +18,7 @@ from pathlib import Path
 
 import json
 import pytest
-from conftest import make_config
+from conftest import make_config, make_ask_config
 
 from marginalia.contracts import (
     STATUS_HAS_TRANSCRIPT,
@@ -1649,6 +1649,7 @@ class FakePlanner:
         self.assessed = 0
         self.baseline_seen: list[list] = []
         self.assess_max_tokens_seen = None
+        self.notes_sent = None
         self.calls: list[int] = []
         self.seen: list[RoundReport] = []
         self.quota_seen: list[object] = []
@@ -1662,6 +1663,7 @@ class FakePlanner:
     def assess_library(self, brief, notes, *, notes_read=0, max_tokens=None):
         self.assessed += 1
         self.assess_max_tokens_seen = max_tokens
+        self.notes_sent = notes
         return LibraryCoverage(items=list(self._baseline), notes_read=notes_read)
 
     def plan(self, brief, territory, report, **kwargs):
@@ -2474,6 +2476,52 @@ def test_the_baseline_reaches_the_planner(
         max_rounds=2, mapper=FakeMapper(), planner=planner)
 
     assert [i.part for i in planner.baseline_seen[0]] == ["retrieval scoring"]
+
+
+def test_the_baseline_is_sent_summary_lines_not_whole_notes(
+    config, ledger, library, client, searches
+) -> None:
+    """v1 sent the library entire with no budget check. At 646 notes that asked
+    for 1,833,240 tokens against a 1,048,576 ceiling and failed *open*, so the
+    planner assumed nothing was covered and re-searched ground already held.
+
+    Not the M7 selector, which was the obvious repair: selection would hit the
+    same ceiling again eventually, and this is the second caller to hit it.
+    Summary lines scale — 720 notes is ~48k tokens, 22x under the ceiling."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    body = "# A note\n\nIt covers the mechanism in code.\n" + ("filler line\n" * 400)
+    library.write_note("bbbbbbbbbbb", body)
+    planner = FakePlanner(baseline=[CoverageItem("shows code", True, "the old note")])
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+        max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    sent = planner.notes_sent
+    assert "filler line" not in sent, "the note body never reaches the assessment"
+    assert "bbbbbbbbbbb" in sent, "but the id does"
+    assert len(sent.splitlines()) == 1, "one line per note"
+    assert len(sent) < len(body), "and it is smaller than the note it stands for"
+
+
+def test_an_oversized_baseline_is_refused_rather_than_sent(
+    config, ledger, library, client, searches
+) -> None:
+    """The guard the original never had. It fails open exactly as the provider's
+    400 did — the planner still assumes nothing is covered — but it says so
+    before spending the call, instead of being discovered from a rejection."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    for n in range(6):
+        library.write_note(f"ccccccccc{n:02d}"[:11], f"# Note {n}\n\nA claim about things.\n")
+    config = replace(config, ask=make_ask_config(max_input_tokens=1))
+    planner = FakePlanner(baseline=[CoverageItem("shows code", True, "the old note")])
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
+                  max_rounds=2, mapper=FakeMapper(), planner=planner)
+
+    assert planner.assessed == 0, "no call was made"
+    assert outcome.baseline.parsed is False
+    assert "over the" in (outcome.baseline.problem or "")
+    assert outcome.baseline.items == [], "and the planner sees nothing covered"
 
 
 def test_an_empty_library_is_not_assessed_at_all(
