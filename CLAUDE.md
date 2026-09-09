@@ -74,12 +74,35 @@ not drift.
    *not* go through `load_config()` for this reason: it reads `[library]` alone, so
    an incomplete `[llm]` block cannot switch off hard rule 2 through the fail-open path.
 
-   **`_send` may name only `model`, `messages`, `max_tokens` and `extra`.** Everything
-   else a provider wants comes from `[llm] extra` or `[llm.tasks.<name>] extra`, merged
-   in and passed through without `llm.py` knowing what any of it means. This is not
-   theoretical: a hardcoded `temperature=0` was the single thing that broke the first
-   real provider swap, because `kimi-k3` refuses any temperature but its own default.
-   A test reads `_send`'s source to keep it honest.
+   **`_send` may name only `model`, `messages`, `max_tokens`, `user` and `extra`.**
+   Everything else a provider wants comes from `[llm] extra` or `[llm.tasks.<name>]
+   extra`, merged in and passed through without `llm.py` knowing what any of it means.
+   This is not theoretical: a hardcoded `temperature=0` was the single thing that broke
+   the first real provider swap, because `kimi-k3` refuses any temperature but its own
+   default. A test reads `_send`'s source to keep it honest.
+
+   **`user` was added to that list on 2026-09-09, and the test that it is not a
+   provider-specific parameter is that it is in the OpenAI Chat Completions baseline** —
+   every compatible endpoint accepts it, so naming it binds this project to nobody. That
+   is the whole standard for widening this list, and nothing else has met it.
+
+   It could not come from `extra`, and that is the argument for the widening rather than
+   a convenience: **config is static and this value must not be.** xKiro replays
+   byte-identical blocking requests within a short window — their words, *"automatic
+   replay of byte-identical blocking requests"* — and publishes no opt-out header.
+   Measured: five identical calls returned **one** distinct answer, four of them in under
+   0.4 seconds. The window is under 60 seconds, so the damage is bounded to one thing,
+   and that one thing is the thing that matters: **an in-run retry gets the failure
+   replayed instead of a fresh sample.** Three notes recovered on retry in the week
+   before the swap and would not have here. A unique `user` per call makes every request
+   distinct at the byte level; it was measured as the cleanest buster (`probe-1` and
+   `probe-2` both returned fresh, different responses) and costs nothing on a provider
+   that does not cache.
+
+   **It is a cache-buster, not an identity**, and `_call_id` returns random hex for that
+   reason. Sending a real user would put an identifier on every request for no benefit
+   and could become a tracking key by accident. Recorded here because the next reader
+   will otherwise see a pointless unique string on every request and delete it.
 
 8. **Anything a judge cannot parse becomes MAYBE, never NO.** Keeping a useless video
    costs one download and is visible in the library. Rejecting a good one costs a

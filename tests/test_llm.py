@@ -517,11 +517,11 @@ def test_batch_size_one_yields_singletons() -> None:
 
 
 def test_no_provider_shaped_field_is_hardcoded() -> None:
-    """A hardcoded `temperature=0` broke the first real provider swap: kimi-k3
-    accepts only its own default and returned HTTP 400. Temperature looks like
-    part of the OpenAI baseline and is not — reasoning models routinely refuse
-    it. Only the four fields every endpoint requires are named in code;
-    everything else comes from config via `extra`."""
+    """A hardcoded `temperature=0` can break a provider swap: reasoning-oriented
+    providers may accept only their own default and return HTTP 400. Temperature
+    looks like part of the OpenAI baseline and is not — reasoning models
+    routinely refuse it. Only the four fields every endpoint requires are named
+    in code; everything else comes from config via `extra`."""
     import inspect
 
     from marginalia.llm import LlmClient
@@ -535,6 +535,36 @@ def test_no_provider_shaped_field_is_hardcoded() -> None:
     )
     for field in ("temperature", "top_p", "response_format", "tools", "reasoning_effort"):
         assert f"{field}=" not in body, f"{field} must come from config, not code"
+
+
+def test_every_request_carries_a_distinct_user_value() -> None:
+    """xKiro replays byte-identical blocking requests within a short window and
+    offers no opt-out header: five identical calls returned one distinct answer,
+    four of them in under 0.4s. An in-run retry of a failed note would then be
+    handed the same failure back instead of a fresh sample. A unique `user` per
+    call is what makes two otherwise identical requests differ in their bytes.
+
+    `user` is named in code rather than coming from `extra` because config is
+    static and this value must not be — which is the whole reason CLAUDE.md
+    rule 7 was widened to allow it rather than quietly broken."""
+    from marginalia.llm import _call_id
+
+    values = {_call_id() for _ in range(64)}
+    assert len(values) == 64
+
+
+def test_the_user_value_is_not_an_identity() -> None:
+    """It exists to bust a cache, not to name anyone. Sending a real identifier
+    would put one on every request for no benefit and could become a tracking
+    key by accident."""
+    import getpass
+    import os
+
+    from marginalia.llm import _call_id
+
+    value = _call_id()
+    for secret in (getpass.getuser(), os.environ.get("USERNAME") or "no-such-name"):
+        assert secret.lower() not in value.lower()
 
 
 def test_a_global_extra_applies_to_every_request() -> None:

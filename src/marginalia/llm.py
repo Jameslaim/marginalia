@@ -29,6 +29,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -383,8 +384,19 @@ class LlmClient:
         # not: reasoning models frequently accept only their own default, and
         # a hardcoded `temperature=0` broke the very first provider swap this
         # design was built for. Anything a provider wants set goes through
-        # `extra`, where config owns it. This module names no request field
-        # beyond the four that every OpenAI-compatible endpoint requires.
+        # `extra`, where config owns it.
+        #
+        # `user` is the one addition, and it is in the baseline rather than
+        # provider-specific — every OpenAI-compatible endpoint accepts it, so
+        # naming it here binds this project to nobody. It is sent because the
+        # xKiro endpoint replays byte-identical blocking requests within a short
+        # window with no opt-out header: five identical calls returned one
+        # distinct answer, four of them in under 0.4s. A retry of a failed note
+        # would then be handed the same failure back instead of a fresh sample,
+        # and three notes recovered on retry in one week. A unique value per
+        # call makes every request distinct at the byte level, which is the
+        # cheapest possible cache-buster and costs nothing on a provider that
+        # does not cache.
         #
         # extra_body is the SDK's pass-through for fields it does not model.
         # Sending it only when non-empty keeps the no-extras request exactly
@@ -393,6 +405,7 @@ class LlmClient:
             model=self.config.model,
             messages=messages,
             max_tokens=max_tokens,
+            user=_call_id(),
             **({"extra_body": dict(extra)} if extra else {}),
         )
 
@@ -557,6 +570,18 @@ def _request_id(exc: Exception) -> str:
     # attribute, not a parsed body.
     value = getattr(exc, "request_id", None)
     return " ".join(str(value).split())[:120] if value else ""
+
+
+def _call_id() -> str:
+    """A value unique to one request, for the `user` field.
+
+    Its only job is to make two otherwise identical requests differ in their
+    bytes. It is not an identity: nothing here has a user to name, and sending
+    a real one would put an identifier on every request for no benefit. A
+    random hex string carries no information about the caller and cannot become
+    a tracking key by accident.
+    """
+    return f"marginalia-{uuid.uuid4().hex}"
 
 
 def _brief(exc: Exception) -> str:
