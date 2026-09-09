@@ -2,12 +2,13 @@
 name: write_note
 version: "7"
 stage: note
-note: "v7 passes TODAY. A model with a 2024 cutoff read a 2026-04 video,
-  decided the model name in it was a hallucination, called the video
-  speculative, and marked its real pricing wrong on that basis. `How current
-  is it` is mandatory, so every note makes an era judgement and a model that
-  cannot place itself in time gets it wrong systematically. Same reasoning as
-  rule 16 passing `today` into the territory validator.
+note: "v7 passes TODAY. A model applied its training cutoff to a video's
+  publication date and recorded as fact that content it had never heard of did
+  not exist — calling it `not a real model` or `appears to be a hallucination`
+  — and called the source `speculative or from a future/alternate timeline`.
+  `How current is it` is mandatory, so every note makes an era judgement and a
+  model that cannot place itself in time gets it wrong systematically. Same
+  reasoning as rule 16 passing `today` into the territory validator.
   v5 adds the `How current is it` section. Measured need: of 24 LangChain
   videos kept in run 7da933b180fd, only 11 notes carried any era marker, and
   those only because the video happened to discuss its own version. A 2023

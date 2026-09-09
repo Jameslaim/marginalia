@@ -43,7 +43,7 @@ DEFAULT_DAILY_UNITS = 10_000
 API_KEY_ENV = "YOUTUBE_API_KEY"
 
 # Deliberately provider-neutral. The model provider is temporary — naming the
-# variable NVIDIA_API_KEY would bake today's vendor into tomorrow's setup.
+# variable after one provider would bake today's choice into tomorrow's setup.
 LLM_API_KEY_ENV = "MARGINALIA_LLM_API_KEY"
 
 # `base_url` and `model` deliberately have no default. There was one, and it
@@ -55,8 +55,8 @@ LLM_API_KEY_ENV = "MARGINALIA_LLM_API_KEY"
 # the only place a model is named — is literally true.
 DEFAULT_REQUESTS_PER_MINUTE = 40
 DEFAULT_JUDGE_BATCH_SIZE = 10
-# Generous on purpose: a free tier queues, and an request that waits four
-# minutes is still cheaper than a failed run. Measured at ~235s on NVIDIA NIM.
+# Generous on purpose: a hosted free tier can queue, and a request that waits
+# four minutes is still cheaper than a failed run.
 DEFAULT_LLM_TIMEOUT_S = 420.0
 DEFAULT_MAX_TOKENS = 4096
 

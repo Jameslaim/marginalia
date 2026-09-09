@@ -149,10 +149,9 @@ def test_the_created_config_names_the_keys_it_requires(tmp_path, monkeypatch) ->
     assert "model" in body
 
 def test_the_key_env_var_is_provider_neutral() -> None:
-    """Naming it NVIDIA_API_KEY would bake today's vendor into tomorrow's setup."""
+    """Naming the variable after one provider would bake today's choice into tomorrow's setup."""
     from marginalia.config import LLM_API_KEY_ENV
 
-    assert "NVIDIA" not in LLM_API_KEY_ENV.upper()
     assert LLM_API_KEY_ENV == "MARGINALIA_LLM_API_KEY"
 
 

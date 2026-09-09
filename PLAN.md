@@ -959,7 +959,7 @@ to content, relevance and the question. Citations do not fall evenly across it:
 |---|---|---|---|---|
 | null | 33.3% | 33.3% | 33.3% | 0.500 |
 | DeepSeek, 17 answers, 289 cited notes | **43.9%** | 27.3% | 28.7% | 0.436 |
-| Nemotron, 1 answer, 41 cited notes | **41.5%** | 24.4% | 34.1% | 0.470 |
+| Follow-up reading, 1 answer, 41 cited notes | **41.5%** | 24.4% | 34.1% | 0.470 |
 
 A first-decile note is roughly **twice as likely to be cited** as a last-decile
 one (12.2% against 5.2%). And it is **primacy, not the "lost in the middle"
@@ -968,9 +968,9 @@ favoured either.
 
 **Both providers show it at about the same strength**, which makes it a property
 of long-context attention rather than of a model. The measurement is worth
-keeping for that reason alone: it was taken on DeepSeek before the Nemotron swap
-precisely so a later reading could tell the two apart, and it turned out there
-was nothing to tell apart.
+keeping for that reason alone: it was taken before the provider change precisely
+so a later reading could tell the two apart, and it turned out there was nothing
+to tell apart.
 
 The consequence is the part that matters: because the order is alphabetical, **a
 note's chance of being read depends on where its video id sorts.** `-0czfBICp74`
@@ -1117,16 +1117,13 @@ diagnosis possible when the time comes.
 
 M2b judges with **Moonshot** (`https://api.moonshot.ai/v1`, model `kimi-k3`)
 through the `openai` SDK. It is the *second* provider: the design was built
-against NVIDIA NIM's free tier and swapped in anger, which is the only real
-test the abstraction was ever going to get.
+against a free-tier provider and swapped in anger, which is the only real test
+the abstraction was ever going to get.
 
-**What the first provider taught, and why it was abandoned.** NVIDIA NIM served
-`z-ai/glm-5.2` free, at 40 requests/minute, with credits billed per request.
-Latency turned out to be a *queue*, not generation: ~235–300s per request
-regardless of prompt size, against ~8s for `nemotron-3-super-120b-a12b` on the
-same key. It then degraded further — HTTP 504s, and single requests failing to
-return inside 500s — which is what forced the swap. A discovery run there took
-35–100 minutes.
+**What the first provider taught, and why it was abandoned.** A hosted provider
+can spend most of a request's latency in a *queue*, not generation, and repeated
+gateway timeouts can make a low-cost run impractical. Measure end-to-end
+completion and failure rate before treating a provider or model as viable.
 
 **Rate limiting blocks, it does not fail.** A token bucket in `llm.py`, sized
 from config. A discovery run legitimately needs more requests than any
@@ -1172,11 +1169,10 @@ local serving via Ollama or vLLM. All take the same three config values.
 
 ### What the real swap cost — one line of code
 
-Swapping NVIDIA NIM for Moonshot was three config values and **one code
-deletion**: `llm.py` had `temperature=0` hardcoded in the request, and
-`kimi-k3` returns HTTP 400 for any temperature but its own default. Temperature
-looks like part of the OpenAI baseline and is not — reasoning models routinely
-refuse it.
+The provider swap was three config values and **one code deletion**: `llm.py`
+had `temperature=0` hardcoded in the request, and a reasoning-oriented provider
+rejected an explicit temperature. Temperature looks like part of the OpenAI
+baseline and is not — reasoning models routinely refuse it.
 
 The abstraction was 95% right and the missing 5% was exactly the failure mode it
 was built to prevent: a provider-shaped parameter living in code. Removed and

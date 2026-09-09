@@ -737,8 +737,9 @@ def shuffle_for_reading(notes: Sequence[LoadedNote]) -> list[LoadedNote]:
     citations do not fall evenly across that order — pooled over 17 answers, the
     first third of the loaded list takes 43.9% of cited notes against a 33.3%
     null, and a first-decile note is roughly twice as likely to be cited as a
-    last-decile one. Nemotron shows the same shape at the same strength (41.5%),
-    so this is a property of long-context attention rather than of one provider.
+    last-decile one. A separate reading shows the same shape at the same strength
+    (41.5%), so this is a property of long-context attention rather than of one
+    provider.
 
     Because the order is alphabetical, that makes a note's chance of being read
     depend on **where its video id sorts**. `-0czfBICp74` is favoured over a note

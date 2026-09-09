@@ -28,10 +28,9 @@ search_order = ["youtube_api", "ytdlp_search"]
 # "Swapping the model provider" in README.md. Any OpenAI-compatible endpoint
 # works: Groq, OpenRouter, DeepSeek, Together, or local Ollama / vLLM.
 #
-# Three providers so far: NVIDIA NIM (z-ai/glm-5.2) -> Moonshot (kimi-k3) ->
-# DeepSeek. Only the second swap was genuinely config-only; the first also
-# required deleting a hardcoded `temperature=0` from llm.py, which is the
-# reason `_send` now names only model/messages/max_tokens/extra.
+# Several provider changes have exercised this boundary. One also required
+# deleting a hardcoded `temperature=0` from llm.py, which is the reason `_send`
+# now names only model/messages/max_tokens/extra.
 provider = "deepseek"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
@@ -116,9 +115,9 @@ output_per_million = 0.28
 # reasoning_effort throughout. `thinking.type` accepts `adaptive`, `enabled`,
 # `disabled`.
 #
-# DO NOT use `enable_thinking = false`. It returns HTTP 200 and is silently
-# ignored: reasoning stays fully on. It is the one shape here that fails without
-# saying so.
+# Do not rely on an undocumented provider-specific flag to disable thinking. A
+# server may return HTTP 200 while silently ignoring it, leaving reasoning fully
+# on. Use the documented shape for the target provider and verify the response.
 
 # Thinking off, low variance — NOT deterministic, and the difference matters.
 #
