@@ -331,10 +331,6 @@ def quota_day(now: datetime | None = None) -> str:
     return (moment + offset).strftime("%Y-%m-%d")
 
 
-def _utctoday() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-
 def normalise_topic(topic: str) -> str:
     """Lowercase and collapse whitespace.
 
@@ -1342,9 +1338,11 @@ class Ledger:
 
     # -- quota -------------------------------------------------------------
     #
-    # Keyed by UTC calendar date, so the rollover is the key changing rather
-    # than a reset anyone has to remember to run. Old rows are kept: they cost
-    # nothing and record what a day actually spent.
+    # Keyed by the API's own calendar date — Pacific, via `quota_day()`, because
+    # a UTC key here once reported an allowance Google had not yet granted — so
+    # the rollover is the key changing rather than a reset anyone has to
+    # remember to run. Old rows are kept: they cost nothing and record what a
+    # day actually spent.
 
     def quota_used(self, provider: str, *, date: str | None = None) -> int:
         row = self._conn.execute(
