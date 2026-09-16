@@ -1,8 +1,14 @@
 # marginalia — rules
 
-A Claude Code plugin that stores YouTube transcripts on disk and answers questions
-about them. `PLAN.md` holds the full design. This file holds the rules that must
-not drift.
+These are the rules that define how marginalia works. marginalia is a Python CLI
+that stores YouTube transcripts on disk and answers questions about them; `PLAN.md`
+holds the full design, and these rules are the part of it that must not drift.
+
+The rules belong to the agent. They do not depend on any particular tool, editor or
+chat harness, and every one of them was written from a failure that was measured on
+this system — the numbers, video ids and run ids beside each rule are the evidence it
+was built from. **Read them before changing anything in this repository.** Editing
+without them re-breaks bugs that have already been found, fixed and paid for.
 
 ## Hard rules
 
@@ -25,8 +31,7 @@ not drift.
 
 2. **Never write into the library directory directly — always go through the CLI.**
    No `Write`, no `Edit`, no shell redirection into the library path. The ledger and
-   the files must stay in agreement. Enforced, not merely stated: `hooks/hooks.json`
-   runs `marg guard-write` as a `PreToolUse` hook and blocks the tool call.
+   the files must stay in agreement.
 
 3. **Never modify a stored `transcript.txt`.** It is written once and is immutable.
    Acquisition is the fragile, blockable step; everything else in the system is
@@ -622,9 +627,7 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
   enrich/   note.py  timestamps.py               what happens after storage
 ```
 
-- `cli.py` is the only entry point. Skills are thin: they call `marg` and report the
-  line it returns. Logic never lives in a `SKILL.md` — the ingest skill routes on
-  whether the argument parses as a video ID, and does nothing else.
+- `cli.py` is the only entry point.
 - `core/library.py` builds every library path. No other module constructs one; `cli.py`
   reads `config.library_path` solely to hand it over. That now includes `answers/`,
   `exports/<run_id>/` and `logs/`, none of which is created until something writes into
