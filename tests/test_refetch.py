@@ -118,6 +118,20 @@ def test_a_recovered_video_holds_a_transcript_and_awaits_a_note(tmp_path):
     assert library.read_meta(A)["title"] == f"title {A}"
 
 
+def test_a_recovered_video_carries_the_hash_of_its_file(tmp_path):
+    """Rule 25: the retry path stores a transcript through its own `_store`,
+    and a hash written by `discover.py` alone would leave every recovered
+    video looking like the old unhashed normal to `marg doctor`."""
+    config, ledger, library = build(tmp_path, [A])
+    provider = FakeProvider({A: _result(A)})
+
+    run(config, ledger, library, provider)
+
+    row = ledger.get(A)
+    assert row.content_hash is not None
+    assert row.content_hash == library.transcript_digest(A)
+
+
 def test_a_throttle_stops_the_run_and_leaves_everything_retryable(
     tmp_path, caplog: pytest.LogCaptureFixture
 ):

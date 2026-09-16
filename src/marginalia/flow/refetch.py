@@ -164,6 +164,9 @@ def _store(library: Library, ledger: Ledger, config: Config, provider, video_id:
     from datetime import datetime, timezone
 
     count = library.write_transcript(video_id, result.lines)
+    # Read back from the file, as `discover.py` does, so the hash is of what
+    # is on disk rather than of what was about to be written.
+    digest = library.transcript_digest(video_id)
     library.write_meta(
         video_id,
         {
@@ -188,5 +191,6 @@ def _store(library: Library, ledger: Ledger, config: Config, provider, video_id:
         source=result.source,
         caption_kind=result.caption_kind,
         provider=config.transcript_order[0],
+        content_hash=digest,
         channel_id=result.channel_id or None,
     )

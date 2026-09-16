@@ -1021,6 +1021,13 @@ def _store(
     config: Config,
 ) -> None:
     count = library.write_transcript(candidate.video_id, result.lines)
+    # Hashed from the file, not from `result.lines`: the ledger should record
+    # what landed on disk, which is the only thing `marg doctor` can later
+    # compare against. File first, then the row that describes it — a crash
+    # between the two leaves `pending`, which is the state the next run
+    # expects; the other order would leave a row claiming bytes that are not
+    # there.
+    digest = library.transcript_digest(candidate.video_id)
     library.write_meta(
         candidate.video_id,
         {
@@ -1045,6 +1052,7 @@ def _store(
         source=result.source,
         caption_kind=result.caption_kind,
         provider=config.transcript_order[0],
+        content_hash=digest,
         # Free with the fetch, and one network call per video to backfill later.
         # `None` rather than `""` so the ledger's COALESCE preserves an earlier
         # value instead of overwriting it with an absence.

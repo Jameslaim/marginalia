@@ -105,8 +105,11 @@ _EVIDENCE = frozenset({EVIDENCE_CLEAR, EVIDENCE_DEGRADED})
 
 _VERDICTS = frozenset({VERDICT_YES, VERDICT_NO, VERDICT_MAYBE})
 
-# `content_hash` is unused until M3. It is created now on purpose: migrating
-# later is worse than one idle column.
+# `content_hash` is the SHA-256 of `transcript.txt` as it landed on disk,
+# written by every store path and read by `marg doctor` to check rule 3. It
+# sat idle from M1 until the doctor arrived — created early because migrating
+# later is worse than one idle column — and it is *not* a fingerprint: Gate 3
+# is rejected (PLAN.md §10), and nothing compares one video's hash to another's.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS videos (
   video_id       TEXT PRIMARY KEY,
@@ -747,6 +750,12 @@ class Ledger:
         question at the same granularity — how good is this transcript, and is
         it a candidate for replacement later? Both are also written to
         ``meta.json``; the ledger copy is the queryable one.
+
+        ``content_hash`` is ``Library.transcript_digest`` of the file *after*
+        it was written — every store path passes it, so ``marg doctor`` can
+        tell a transcript that changed from one that was never hashed. A
+        ``None`` keeps whatever an earlier store recorded (COALESCE), which is
+        what a restored-from-archive row looks like: unrecorded, not wrong.
         """
         self._update(
             video_id,

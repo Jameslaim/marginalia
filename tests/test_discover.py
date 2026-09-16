@@ -663,6 +663,25 @@ def test_a_maybe_that_survives_is_stored(config, ledger, library, client, search
     assert ledger.get("aaaaaaaaaaa").status == STATUS_HAS_TRANSCRIPT
 
 
+def test_a_stored_video_carries_the_hash_of_its_file(
+    config, ledger, library, client, searches
+) -> None:
+    """Rule 3 made checkable on the discovery path. The hash is of the file
+    as it landed, so it must equal `transcript_digest` read back afterwards —
+    that is the value `marg doctor` will compare against, and a hash computed
+    from the in-memory lines would record what was meant rather than what is.
+    Rule 25: one of three store paths, each tested on its own."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    row = ledger.get("aaaaaaaaaaa")
+    assert row.content_hash is not None
+    assert row.content_hash == library.transcript_digest("aaaaaaaaaaa")
+    assert len(row.content_hash) == 64  # sha256 hex, the one convention
+
+
 def test_the_configured_batch_size_is_used(config, ledger, library, client, searches) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
     config = replace(config, llm=replace(config.llm, judge_batch_size=1))

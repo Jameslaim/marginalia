@@ -221,12 +221,13 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             return EXIT_OK
 
         assert provider is not None
-        count = _store(library, video_id, result, provider, args.url)
+        count, digest = _store(library, video_id, result, provider, args.url)
         ledger.mark_has_transcript(
             video_id,
             source=result.source,
             caption_kind=result.caption_kind,
             provider=provider.name,
+            content_hash=digest,
             # Empty becomes None so the ledger's COALESCE keeps whatever a
             # previous store recorded: a provider that stopped reporting the
             # channel must not erase one that did.
@@ -1398,8 +1399,14 @@ def _store(
     result: TranscriptResult,
     provider: TranscriptProvider,
     original_url: str,
-) -> int:
+) -> tuple[int, str | None]:
+    """Write the transcript and its metadata; return the line count and the
+    file's digest. The digest is read back from the file rather than computed
+    from ``result.lines``, so it records what landed, not what was meant to —
+    a truncated write is exactly the failure worth catching, and only the
+    read-back sees it. Same ordering and reasoning as ``flow/discover.py``."""
     count = library.write_transcript(video_id, result.lines)
+    digest = library.transcript_digest(video_id)
     library.write_meta(
         video_id,
         {
@@ -1419,7 +1426,7 @@ def _store(
             "line_count": count,
         },
     )
-    return count
+    return count, digest
 
 
 def _metadata(provider: TranscriptProvider | None, video_id: str) -> dict[str, Any] | None:

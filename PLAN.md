@@ -367,9 +367,11 @@ so nobody later "fixes" `ids.py` to match.
 ### Gate 3 is rejected, not deferred
 
 Content fingerprinting was parked for M3 and is now **deliberately rejected** — see §10 for
-the argument, which is rule 8's asymmetry rather than a cost objection. `content_hash` and
-`duplicate_of` remain in the schema and Gate 1 still treats `duplicate` as known, so a
-future mechanism has somewhere to write; nothing writes them, and nothing is planned to.
+the argument, which is rule 8's asymmetry rather than a cost objection. `duplicate_of`
+remains in the schema and Gate 1 still treats `duplicate` as known, so a future mechanism
+has somewhere to write; nothing writes it, and nothing is planned to. `content_hash` is now
+written — by every store path, as the SHA-256 of `transcript.txt` as it landed — but for
+`marg doctor` to check rule 3 against, never to compare one video with another.
 
 ### Write ordering — makes crashes safe
 
