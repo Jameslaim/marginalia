@@ -1178,7 +1178,7 @@ def _cmd_snap_timestamps(args: argparse.Namespace) -> int:
 def _cmd_guard_write(args: argparse.Namespace) -> int:
     """PreToolUse hook: refuse Write/Edit aimed inside the library.
 
-    ``CLAUDE.md`` rule 2 — never write into the library directly, always go
+    Rule 2 — never write into the library directly, always go
     through the CLI — is the rule most likely to be broken *helpfully*, by an
     agent that decides editing a ``meta.json`` by hand is simpler than adding a
     flag. Instruction-following is not enforcement; this is.

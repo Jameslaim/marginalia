@@ -1,6 +1,6 @@
 """The structural rules, enforced rather than stated.
 
-Every rule in `CLAUDE.md` that has actually held in this project held because a
+Every rule in `RULES.md` that has actually held in this project held because a
 test enforced it. The ones written down and left unchecked drifted. So each rule
 that describes the *shape* of the package gets a test here, and the tests read
 the source with `ast` rather than importing it — an import-time check can only
@@ -152,7 +152,7 @@ def _code_only(source: str) -> str:
     """The file with every docstring and comment removed.
 
     Prose is not a dependency. `timestamps.py` records how two named models did
-    on the same prompt, and `ask.py` explains why it is not a Claude Code skill;
+    on the same prompt, and `ask.py` explains why it runs in Python rather than in a chat session;
     deleting either to satisfy a grep would delete the evidence and the reason.
     What rule 7 is actually about is a model name reaching the *request*, and
     that only happens in code. `ast.unparse` drops comments for free.

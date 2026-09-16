@@ -1,6 +1,6 @@
 # marginalia — Build Plan
 
-A Claude Code plugin that finds relevant YouTube videos, extracts their transcripts,
+A command-line agent that finds relevant YouTube videos, extracts their transcripts,
 understands them, and answers questions about them with timestamps.
 
 **Harness: Claude Code, not Cowork.** Cowork's shell is an isolated sandbox; this project
@@ -25,7 +25,7 @@ Two commands inside Claude Code:
 - `/marginalia:ingest <topic or url>` — finds videos, extracts transcripts, builds understanding
 - `/marginalia:ask <question>` — answers from the library, with citations and timestamps
 
-Everything heavy lives on disk. Claude only ever sees short reports and notes.
+Everything heavy lives on disk. The conversation only ever sees short reports and notes.
 
 ---
 
@@ -57,7 +57,7 @@ a lot. Discard candidates in that order.
 
 ## 3. How ingest works
 
-1. **Claude plans.** Turns the topic into 8–10 varied search queries — technical
+1. **The agent plans.** Turns the topic into 8–10 varied search queries — technical
    phrasing, plain phrasing, adjacent subtopics.
 2. **Search** via the official YouTube Data API. Collects candidate video IDs.
 3. **Gate 1 — known ID?** Drop anything already in the ledger.
@@ -69,8 +69,8 @@ a lot. Discard candidates in that order.
 8. **Normalise** — strip scraper UI artifacts, preserve timing gaps, capture
    YouTube chapter markers if present.
 9. **Store** transcript + metadata. Mark `needs_note`.
-10. **Report to Claude**: "23 found, 8 already had, 13 stored, 2 failed."
-11. **Claude decides what's next** — if something unexplored surfaced, search again.
+10. **Report to the conversation**: "23 found, 8 already had, 13 stored, 2 failed."
+11. **The agent decides what's next** — if something unexplored surfaced, search again.
 
 Step 11 looping back to step 1 is the intelligence. Everything else is plumbing.
 
@@ -1287,7 +1287,7 @@ yt-dlp search covers the same need with a dependency already in the project.
 **youtubei.js.** Capable, but JavaScript — a second runtime to reach the same InnerTube
 API yt-dlp already uses. Legitimate future provider if yt-dlp breaks; not worth it now.
 
-**Running the pipeline inside a Claude Code session.** Transcripts would accumulate in
+**Running the pipeline inside a chat session.** Transcripts would accumulate in
 context and be resent every turn — the exact quadratic cost curve that makes long sessions
 expensive. The brain belongs in the built agent, not in the conversation driving it.
 
@@ -1385,7 +1385,8 @@ When it is eventually built, the expected shape:
 marginalia/
 ├── .claude-plugin/
 │   └── plugin.json              name, description, version
-├── CLAUDE.md                    rules Claude always reads (anti-drift)
+├── CLAUDE.md                    Claude Code adapter; points at RULES.md
+├── RULES.md                     the rules (anti-drift)
 ├── PLAN.md                      this file
 ├── config.example.toml
 ├── pyproject.toml
@@ -2531,7 +2532,7 @@ asking through a throttle is exactly what produced the 108.
 - `cli.py` is the only entry point. Skills are thin — they call the CLI and read the
   report. Logic never lives in a SKILL.md.
 - `core/library.py` builds every library path. No other module constructs one.
-- `CLAUDE.md` states the non-negotiables: never print transcript contents into the
+- `RULES.md` states the non-negotiables: never print transcript contents into the
   conversation, never bypass the ledger, never modify a stored transcript, never
   lowercase a video ID, always write the ledger row before fetching.
 - `hooks/hooks.json` enforces those rules programmatically rather than relying on
@@ -2539,7 +2540,7 @@ asking through a throttle is exactly what produced the 108.
 
 ### Milestone 1 subset
 
-Only these exist after M1: `plugin.json`, `CLAUDE.md`, `config.example.toml`,
+Only these exist after M1: `plugin.json`, `RULES.md` (named `CLAUDE.md` at the time), `config.example.toml`,
 `skills/ingest/SKILL.md`, `bin/marg`, and `cli.py`, `config.py`, `ids.py`, `ledger.py`,
 `library.py`, `providers/{base,ytdlp}.py`, plus `tests/test_ids.py` and
 `tests/test_ledger.py`.

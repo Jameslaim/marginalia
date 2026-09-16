@@ -545,7 +545,7 @@ def test_every_request_carries_a_distinct_user_value() -> None:
     call is what makes two otherwise identical requests differ in their bytes.
 
     `user` is named in code rather than coming from `extra` because config is
-    static and this value must not be — which is the whole reason CLAUDE.md
+    static and this value must not be — which is the whole reason
     rule 7 was widened to allow it rather than quietly broken."""
     from marginalia.llm import _call_id
 

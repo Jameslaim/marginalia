@@ -1,6 +1,6 @@
 """The PreToolUse guard: no direct writes into the library.
 
-`CLAUDE.md` rule 2 was instruction-only until now, and it is the rule most
+Rule 2 was instruction-only until now, and it is the rule most
 likely to be broken *helpfully* — by an agent that decides editing a meta.json
 by hand is simpler than adding a CLI flag. The ledger and the files on disk
 would then disagree, silently, and `transcript.txt` is immutable.

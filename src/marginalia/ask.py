@@ -1,6 +1,6 @@
 """Answering, entirely inside Python.
 
-This is the payoff, and the reason it lives here rather than in a Claude Code
+This is the payoff, and the reason it lives here rather than in a chat
 session is the same reason the whole system is a CLI. Thirty-seven notes is
 roughly 55k tokens. Loading them into the conversation to answer one question
 rebuilds the exact cost curve the note layer was built to flatten, and

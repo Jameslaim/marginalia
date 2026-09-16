@@ -1,6 +1,6 @@
 # marginalia
 
-A Claude Code plugin that finds relevant YouTube videos, stores their transcripts on
+A command-line agent that finds relevant YouTube videos, stores their transcripts on
 disk, writes an understanding note for each, and answers questions from those notes
 with a timestamped link per claim.
 
@@ -9,7 +9,7 @@ subject, searches it, judges candidates in two stages and plans each round from 
 last one's results; `marg note` turns a stored transcript into a note; `marg ask`
 answers from every note at once. There is no ASR yet, so a video with no caption
 track is recorded as `needs_asr` and left. `PLAN.md` has the full design and the
-build order; `CLAUDE.md` has the rules that must not drift.
+build order; `RULES.md` has the rules that must not drift.
 
 ## The architectural rule
 
@@ -156,7 +156,7 @@ pytest -q
 ```
 
 `tests/test_boundaries.py` is the one to read first. The structural rules in
-`CLAUDE.md` are enforced there by scanning the source rather than stated and hoped
+`RULES.md` are enforced there by scanning the source rather than stated and hoped
 for — only `providers/` may import a YouTube library, only `llm.py` may name a model,
 only `core/library.py` may build a library path, `brain/` may touch no I/O at all,
 and `print` appears only in `cli.py`.
