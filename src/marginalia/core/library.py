@@ -28,6 +28,7 @@ the fragile, blockable step. Everything else is regenerable from it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -166,6 +167,46 @@ class Library:
 
     def has_note(self, video_id: str) -> bool:
         return self.note_path(video_id).is_file()
+
+    def video_ids_on_disk(self) -> list[str]:
+        """Every ``videos/<id>/`` directory whose name is a video id, sorted.
+
+        The disk's own claim about what is stored, for ``marg doctor`` to hold
+        against the ledger's. Anything under ``videos/`` that is not shaped like
+        an id is ignored rather than reported: it cannot be a video, and a
+        stray ``.tmp`` or editor backup is not the disagreement the doctor is
+        looking for.
+        """
+        if not self.videos_dir.is_dir():
+            return []
+        return sorted(
+            entry.name
+            for entry in self.videos_dir.iterdir()
+            if entry.is_dir() and is_video_id(entry.name)
+        )
+
+    def transcript_digest(self, video_id: str) -> str | None:
+        """SHA-256 of ``transcript.txt``'s bytes, or ``None`` if there is none.
+
+        The one convention for ``content_hash``: whatever writes that column
+        must write this, or the comparison ``marg doctor`` makes is meaningless.
+
+        **An integrity read is not an access**, and this deliberately does not
+        route through ``read_transcript`` with its ``touch_accessed`` contract.
+        ``last_accessed`` exists so a future deletion policy can tell which
+        transcripts anyone has *used*, and it cannot be reconstructed afterwards.
+        A doctor that stamped every video on every run would erase that signal
+        while checking the files were intact. Nothing here reads the text as
+        text; the bytes go into a hash and nowhere else.
+        """
+        path = self.transcript_path(video_id)
+        if not path.is_file():
+            return None
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     # -- writes ------------------------------------------------------------
 

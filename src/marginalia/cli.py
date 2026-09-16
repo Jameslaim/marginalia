@@ -7,6 +7,7 @@
     marg snap-timestamps    align cited timestamps in notes to the transcript
     marg ask "<question>"   answer a question from every note at once
     marg run export <id>    render one discovery run as a readable folder
+    marg doctor             compare the library on disk against the ledger
     marg llm-check          one request to the configured model provider
     marg status <url|id>    show ledger state for one video
     marg list               list stored videos
@@ -51,9 +52,18 @@ from .contracts import (
     REJECTED,
     SKIPPED,
     STATUS_HAS_TRANSCRIPT,
+    CHECK_NOTE_INVALID,
+    CHECK_NOTE_MISSING,
+    CHECK_NOTE_UNRECORDED,
+    CHECK_RUN_UNFINISHED,
+    CHECK_TRANSCRIPT_MISSING,
+    CHECK_TRANSCRIPT_MODIFIED,
+    CHECK_UNTRACKED_DIR,
+    DOCTOR_CHECKS,
     Answer,
     Candidate,
     DiscoverRun,
+    DoctorReport,
     RoundReport,
     SearchRun,
     TranscriptResult,
@@ -61,6 +71,7 @@ from .contracts import (
 )
 from .core.ids import extract_video_id, is_video_id
 from .flow.discover import discover
+from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
 from .llm import LlmClient, LlmConfigError, LlmError
@@ -1103,6 +1114,108 @@ def _cmd_run_export(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+# What each check means, in the words the report prints. Kept beside the
+# renderer rather than in contracts.py because it is prose for a reader, not a
+# value anything else consumes.
+_CHECK_MEANING = {
+    CHECK_UNTRACKED_DIR: "videos/<id>/ exists with no ledger row: written without the CLI",
+    CHECK_TRANSCRIPT_MISSING: "status claims a transcript that is not on disk",
+    CHECK_NOTE_MISSING: "noted_at is set and note.md is gone",
+    CHECK_NOTE_UNRECORDED: "note.md exists and noted_at is NULL: written without the CLI",
+    CHECK_NOTE_INVALID: "stored note fails validate_note",
+    CHECK_TRANSCRIPT_MODIFIED: "content_hash no longer matches transcript.txt (rule 3)",
+    CHECK_RUN_UNFINISHED: "run has no finished_at (rule 6's signal; reported, not an error)",
+}
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    """Compare the library on disk against the ledger. Read-only.
+
+    Nothing is created on the way in, either: no ``logs/`` (so ``_load`` is
+    asked not to attach the file log), no ``videos/`` (no ``ensure()``), and no
+    ``ledger.db`` — a library with no ledger is diagnosed against zero rows
+    rather than given one. A doctor that left footprints would be the first
+    thing it reported next time.
+
+    Exit 0 when clean, 1 when any of checks 1–6 found something. Check 7 — a
+    run with no ``finished_at`` — is reported and does not affect the exit code:
+    it is the trace rule 6 deliberately leaves, and a run in progress looks the
+    same.
+    """
+    config = _load(args, file_log=False)
+    library = Library(config.library_path)
+
+    rows: list[VideoRow] = []
+    runs: list[Any] = []
+    if library.ledger_path.is_file():
+        with Ledger(library.ledger_path) as ledger:
+            rows = ledger.list_by_status()
+            runs = ledger.list_runs()
+    else:
+        log.info("no ledger at %s; diagnosing against zero rows", library.ledger_path)
+
+    report = diagnose(library, rows, runs)
+
+    if args.json:
+        print(json.dumps(_doctor_json(report), indent=2))
+    else:
+        for line in _doctor_lines(report):
+            print(line)
+    return EXIT_OK if report.clean else EXIT_FAILED
+
+
+def _doctor_lines(report: DoctorReport) -> list[str]:
+    """Counts per check, then ids under each. Never content — rule 1."""
+    scope = (
+        f"{report.videos_checked} video(s), {report.dirs_checked} dir(s), "
+        f"{report.runs_checked} run(s)"
+    )
+    if not report.findings:
+        return [f"doctor:   clean — {scope}"]
+    unfinished = report.count(CHECK_RUN_UNFINISHED)
+    head = f"doctor:   {report.problems} problem(s) in {scope}"
+    if unfinished:
+        head += f"; {unfinished} unfinished run(s)"
+    lines = [head]
+    for check in DOCTOR_CHECKS:
+        count = report.count(check)
+        if not count:
+            continue
+        lines.append(f"{check:<20} {count:>4}   {_CHECK_MEANING[check]}")
+        for finding in report.findings:
+            if finding.check != check:
+                continue
+            suffix = f"  ({finding.detail})" if finding.detail else ""
+            lines.append(f"  {finding.subject}{suffix}")
+    lines.append(
+        f"hashes:   {report.hashes_verified} verified, {report.hashes_unrecorded} unrecorded"
+    )
+    return lines
+
+
+def _doctor_json(report: DoctorReport) -> dict[str, Any]:
+    return {
+        "clean": report.clean,
+        "problems": report.problems,
+        "videos_checked": report.videos_checked,
+        "dirs_checked": report.dirs_checked,
+        "runs_checked": report.runs_checked,
+        "hashes_verified": report.hashes_verified,
+        "hashes_unrecorded": report.hashes_unrecorded,
+        "checks": {
+            check: {
+                "count": report.count(check),
+                "findings": [
+                    {"subject": finding.subject, "detail": finding.detail}
+                    for finding in report.findings
+                    if finding.check == check
+                ],
+            }
+            for check in DOCTOR_CHECKS
+        },
+    }
+
+
 def _recent_runs(ledger: Ledger, limit: int = 10) -> list[str]:
     runs = ledger.list_runs()[-limit:]
     if not runs:
@@ -1388,11 +1501,15 @@ def _force_utf8_output() -> None:
 # -- plumbing --------------------------------------------------------------
 
 
-def _load(args: argparse.Namespace) -> Config:
+def _load(args: argparse.Namespace, *, file_log: bool = True) -> Config:
+    """``file_log=False`` is for the one command that must leave no footprint:
+    attaching the file log creates ``logs/`` under the library, and ``doctor``
+    would then be reporting on a directory it made."""
     config = load_config()
     if config.created:
         print(f"created config {config.path} (edit it to change the library path)", file=sys.stderr)
-    _configure_file_log(Library(config.library_path))
+    if file_log:
+        _configure_file_log(Library(config.library_path))
     log.info("library: %s", config.library_path)
     return config
 
@@ -1560,6 +1677,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_export.add_argument("run_id", help="the run ID, as `marg discover` reported it")
     run_export.set_defaults(handler=_cmd_run_export)
+
+    doctor = subparsers.add_parser(
+        "doctor", help="compare the library on disk against the ledger (read-only)"
+    )
+    doctor.add_argument("--json", action="store_true", help="machine-readable output")
+    doctor.set_defaults(handler=_cmd_doctor)
 
     snap = subparsers.add_parser(
         "snap-timestamps", help="align cited timestamps in notes to the transcript"

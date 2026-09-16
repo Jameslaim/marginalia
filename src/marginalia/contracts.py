@@ -138,6 +138,18 @@ __all__ = [
     "Usage",
     # run exports
     "ExportedRun",
+    # doctor: one check, one counter
+    "CHECK_UNTRACKED_DIR",
+    "CHECK_TRANSCRIPT_MISSING",
+    "CHECK_NOTE_MISSING",
+    "CHECK_NOTE_UNRECORDED",
+    "CHECK_NOTE_INVALID",
+    "CHECK_TRANSCRIPT_MODIFIED",
+    "CHECK_RUN_UNFINISHED",
+    "DOCTOR_CHECKS",
+    "DOCTOR_PROBLEMS",
+    "DoctorFinding",
+    "DoctorReport",
 ]
 
 
@@ -1814,3 +1826,82 @@ class ExportedRun:
     rounds: int
     queries: int
     decisions: int
+
+
+# -- doctor -----------------------------------------------------------------
+#
+# `marg doctor` compares the library on disk against the ledger. Rule 2 cannot
+# be enforced from inside a program — only the OS could stop another process
+# writing into the folder, and it does not — so what the rule gets instead is
+# detection after the fact. These are the seven disagreements it looks for, and
+# every one is its own counter (rule 14): a directory nobody recorded and a
+# note nobody recorded are both "something wrote without the CLI", and summing
+# them would hide which surface it came through.
+
+CHECK_UNTRACKED_DIR = "untracked_dir"  # videos/<id>/ exists, no `videos` row
+CHECK_TRANSCRIPT_MISSING = "transcript_missing"  # status claims one, disk has none
+CHECK_NOTE_MISSING = "note_missing"  # noted_at set, note.md gone
+CHECK_NOTE_UNRECORDED = "note_unrecorded"  # note.md present, noted_at NULL
+CHECK_NOTE_INVALID = "note_invalid"  # stored note fails validate_note
+CHECK_TRANSCRIPT_MODIFIED = "transcript_modified"  # content_hash disagrees: rule 3
+CHECK_RUN_UNFINISHED = "run_unfinished"  # a run with no finished_at: rule 6's signal
+
+DOCTOR_CHECKS: tuple[str, ...] = (
+    CHECK_UNTRACKED_DIR,
+    CHECK_TRANSCRIPT_MISSING,
+    CHECK_NOTE_MISSING,
+    CHECK_NOTE_UNRECORDED,
+    CHECK_NOTE_INVALID,
+    CHECK_TRANSCRIPT_MODIFIED,
+    CHECK_RUN_UNFINISHED,
+)
+
+# The checks that make the library *wrong*. An unfinished run is deliberately
+# not among them: it is the signal rule 6 writes the ledger row early in order
+# to leave, and a run that is still going looks exactly the same. Reported,
+# never an error, never a reason for a non-zero exit.
+DOCTOR_PROBLEMS: frozenset[str] = frozenset(DOCTOR_CHECKS) - {CHECK_RUN_UNFINISHED}
+
+
+@dataclass(frozen=True)
+class DoctorFinding:
+    """One disagreement between disk and ledger.
+
+    ``subject`` is a video id or a run id. ``detail`` is a short label — a
+    status, a section name, a byte count — and never content: rule 1 applies to
+    a diagnostic exactly as it applies to an answer, and a doctor that printed
+    "the offending section" would be the leak the rule exists to stop.
+    """
+
+    check: str
+    subject: str
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
+class DoctorReport:
+    """Everything ``marg doctor`` found, and how much it looked at.
+
+    ``hashes_unrecorded`` is its own number rather than folded into
+    ``hashes_verified``: a row with no ``content_hash`` to compare against is
+    neither verified nor a mismatch, and reporting it as either would be a
+    counter measuring something narrower than its name.
+    """
+
+    findings: tuple[DoctorFinding, ...]
+    videos_checked: int
+    dirs_checked: int
+    runs_checked: int
+    hashes_verified: int
+    hashes_unrecorded: int
+
+    def count(self, check: str) -> int:
+        return sum(1 for finding in self.findings if finding.check == check)
+
+    @property
+    def problems(self) -> int:
+        return sum(1 for finding in self.findings if finding.check in DOCTOR_PROBLEMS)
+
+    @property
+    def clean(self) -> bool:
+        return self.problems == 0

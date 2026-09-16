@@ -33,6 +33,24 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    No `Write`, no `Edit`, no shell redirection into the library path. The ledger and
    the files must stay in agreement.
 
+   **No program can enforce this from inside itself.** A process cannot stop another
+   process from writing to a folder; only the operating system can, and it does not.
+   The `guard-write` hook covers one editor's tool calls — `Write`, `Edit` and their
+   kin — and **not shell writes**, so a script writing into the library walks straight
+   through it. It is a convenience, not a boundary.
+
+   **This project broke the rule twice during cleanups**, deliberately, with the
+   reasoning recorded each time. That is the honest account of what backs it: the rule
+   holds because the agent follows it, not because anything makes it impossible to
+   break.
+
+   **Prevention is impossible; detection is not.** `marg doctor` compares the library on
+   disk against the ledger and reports every disagreement — a directory with no row, a
+   row whose status claims a transcript that is not there, a note the ledger never
+   recorded, a transcript whose hash has changed. It fixes nothing. Finding a violation
+   after the fact is the strongest guarantee available, and it is why the rule can stay
+   an absolute rather than a hope.
+
 3. **Never modify a stored `transcript.txt`.** It is written once and is immutable.
    Acquisition is the fragile, blockable step; everything else in the system is
    regenerable from the transcript. `note.md` is the opposite and deliberately so:
@@ -759,6 +777,7 @@ marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --d
 marg ask "<question>"              answer from every note; --deep <id>, --json,
                                    --no-save (saving to answers/ is the default)
 marg run export <run_id>           write exports/<run_id>/ from the ledger
+marg doctor                        compare disk against ledger; read-only; --json
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list [--status S]             list videos by asset state (default has_transcript)

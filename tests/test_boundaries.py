@@ -453,6 +453,18 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "Usage",
         # run exports
         "ExportedRun",
+        # doctor: seven checks, seven counters, and the report they land in
+        "CHECK_UNTRACKED_DIR",
+        "CHECK_TRANSCRIPT_MISSING",
+        "CHECK_NOTE_MISSING",
+        "CHECK_NOTE_UNRECORDED",
+        "CHECK_NOTE_INVALID",
+        "CHECK_TRANSCRIPT_MODIFIED",
+        "CHECK_RUN_UNFINISHED",
+        "DOCTOR_CHECKS",
+        "DOCTOR_PROBLEMS",
+        "DoctorFinding",
+        "DoctorReport",
     }
     assert set(contracts.__all__) == expected
     for name in expected:
