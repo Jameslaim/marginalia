@@ -206,7 +206,16 @@ def test_the_guard_still_allows_when_the_llm_section_is_incomplete(
 
 def test_hooks_json_is_valid_and_points_at_the_cli() -> None:
     root = Path(__file__).resolve().parents[1]
-    config = json.loads((root / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    hooks_json = root / "hooks" / "hooks.json"
+    # The adapter is optional by design. `skills/` and `hooks/` are how one
+    # editor is wired to this CLI; the agent never calls them and runs without
+    # them. A test that *failed* when they were absent would make the suite
+    # claim a dependency the code does not have — so this skips when the file
+    # is gone and asserts everything below when it is there, which in normal
+    # use is always. A broken adapter config still fails the suite.
+    if not hooks_json.is_file():
+        pytest.skip("hooks/hooks.json absent: the editor adapter is not installed")
+    config = json.loads(hooks_json.read_text(encoding="utf-8"))
 
     entries = config["hooks"]["PreToolUse"]
     assert entries, "no PreToolUse hook registered"
