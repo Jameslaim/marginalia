@@ -418,6 +418,13 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         # There is no stage 3. A MAYBE has nowhere to go, so it resolves the
         # way the asymmetry points.
         verdict = VERDICT_YES if spoken == VERDICT_MAYBE else spoken
+        if spoken == VERDICT_MAYBE:
+            # Flagged, not changed. The format allows YES or NO and nothing
+            # else, so a MAYBE is the reply breaking it — and until this line
+            # it was the one path to YES that left no trace: not counted in
+            # `unparsed`, and indistinguishable from a real YES in `decisions`.
+            # Rule 14. The verdict stays YES; only the count moves.
+            problems.append("VERDICT MAYBE is not allowed at stage 2; kept as YES")
 
     evidence = (
         EVIDENCE_DEGRADED

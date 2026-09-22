@@ -133,6 +133,18 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    refused batch, a network blip mid-judgement: all resolve toward keeping. The two
    mistakes are not symmetric and the code must not treat them as if they were.
 
+   **At stage 2 the costs are different, and have been since rule 12**
+   (recorded 2026-09-22). A stage-2 NO keeps the transcript, and the video still
+   gets a note — so it is not lost, it stays in the library, and questions are
+   still answered from it. What stage 2 decides is coverage for the topic: a NO
+   means the video does not count toward the brief and later searches on the topic
+   skip it. The error that hides at stage 2 is a wrong **YES**, because the planner
+   counts it as covered and may stop, and nothing records the gap it left — the
+   `EGNykTqFDBs` shape under rule 13. The stage-2 prompt now states both costs and
+   no longer calls a NO invisible and permanent. Stage 1 is unchanged: a metadata
+   NO still means never fetched, and everything above still holds there. The
+   parse-failure → YES handling in `parse_full` was **not** revisited.
+
 9. **`brain/` reasons and returns decisions; `flow/` executes them.** `brain/` performs
    no filesystem, database, network or provider access — it may call the LLM abstraction
    only. A reasoning layer is worth having because it can be tested without a machine,

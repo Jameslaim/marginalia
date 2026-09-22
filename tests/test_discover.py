@@ -2626,3 +2626,32 @@ def test_stage_two_stores_its_ranges_and_no_other_stage_does(
     assert stage_two[0].relevant == "00:12:30-00:18:45; 00:25:00-00:27:10"
     assert {row.stage for row in others} >= {STAGE_SEARCH, "metadata"}
     assert all(row.relevant is None for row in others)
+
+
+def test_a_stage_two_maybe_is_counted_as_unparsed_and_still_kept(
+    config, ledger, library, client, searches
+) -> None:
+    """The real parser, not a scripted verdict: a MAYBE reply is stored exactly
+    as a YES would be — same decision row, same keeper — and the round counts
+    it in `unparsed`, which is the whole of the change."""
+    from marginalia.brain.judge import parse_full
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    maybe = "\n".join([
+        "VERDICT: MAYBE",
+        "EVIDENCE: CLEAR",
+        "REASON: walks through pool_mode settings.",
+        "RELEVANT: 00:04:20-00:09:15",
+        "UNEXPLAINED: NONE",
+    ])
+    judge.judge_full = lambda brief, candidate, **_: parse_full(maybe, candidate.video_id)
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert outcome.rounds[0].unparsed == 1
+    assert outcome.stored_ids == ["aaaaaaaaaaa"]
+    stage_two = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_FULL][0]
+    assert (stage_two.verdict, stage_two.evidence) == ("yes", "CLEAR")
+    assert stage_two.reason == "walks through pool_mode settings."
+    assert stage_two.relevant == "00:04:20-00:09:15"

@@ -92,6 +92,37 @@ def test_maybe_resolves_to_keeping() -> None:
     assert parse_full(reply(VERDICT="MAYBE"), VIDEO).verdict == VERDICT_YES
 
 
+def test_maybe_is_flagged_as_breaking_the_format() -> None:
+    """The format allows YES or NO. A MAYBE is the reply breaking it, and it was
+    the one path to YES that left no trace — not counted, and identical to a
+    real YES in the decision log. Flagged now; the verdict is unchanged."""
+    verdict = parse_full(reply(VERDICT="MAYBE"), VIDEO)
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.parsed is False
+    assert "VERDICT MAYBE is not allowed at stage 2" in verdict.problem
+
+
+def test_flagging_a_maybe_changes_nothing_but_the_flag() -> None:
+    """Same verdict, evidence, reason, ranges and concepts as the YES it used to
+    be indistinguishable from — only `parsed` and `problem` differ."""
+    maybe = parse_full(reply(VERDICT="MAYBE"), VIDEO)
+    yes = parse_full(reply(VERDICT="YES"), VIDEO)
+
+    for field in ("verdict", "evidence", "reason", "relevant", "concepts",
+                  "relevant_text", "unmarked_currency"):
+        assert getattr(maybe, field) == getattr(yes, field), field
+    assert (yes.parsed, maybe.parsed) == (True, False)
+
+
+def test_a_maybe_keeps_its_other_problems() -> None:
+    """Problems combine; the MAYBE flag does not hide the consistency rules."""
+    verdict = parse_full(reply(VERDICT="MAYBE", RELEVANT="NONE"), VIDEO)
+
+    assert "VERDICT MAYBE" in verdict.problem
+    assert "named no relevant range" in verdict.problem
+
+
 def test_unavailable_is_not_the_same_absence_as_none() -> None:
     """NONE means nothing worth pointing at. UNAVAILABLE means there is, and the
     clock cannot be trusted. Collapsing them would make a video with unusable

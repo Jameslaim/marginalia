@@ -1,8 +1,14 @@
 ---
 name: judge_full
-version: "8"
+version: "9"
 stage: full
-note: "v8 corrects the claim that nothing examines the video after this judge.
+note: "v9 corrects what the two mistakes cost. v8 still said a NO loses the
+  video, invisibly and permanently, and rule 12 changed that. A stage-2 NO now
+  keeps the transcript and the video still gets a note, so what a NO costs is
+  coverage for the topic, and the error that hides is a wrong YES. It also
+  removes the same lean from the DEGRADED paragraph, which still said ordinary
+  uncertainty about a readable video is answered YES.
+  v8 corrects the claim that nothing examines the video after this judge.
   The note worker reads the transcript afterwards and has done since M5, which
   predates this prompt, so the sentence was never true. What stays true is
   that nothing later judges the video against the brief, and a NO is final for the topic."
@@ -169,13 +175,16 @@ quality, not how well known the channel is, not how confidently it is
 delivered. A forty-five-second clip that demonstrates the thing beats an hour
 that describes it.
 
-**When genuinely uncertain, keep.** Your two mistakes are not equal: keeping
-something useless costs one stored transcript, visible and removable. Rejecting
-something valuable costs a video the user will never learn existed — invisible
-and permanent, and nothing after you can recover it.
+**Neither verdict is free, and neither is the safe one.** A NO does not lose the
+video: its transcript is stored either way, it still gets a note, and questions
+can still be answered from it. What a NO decides is that this video does not
+count toward covering the brief for this topic, and that later searches on this
+topic will skip it rather than judge it again. A YES counts as coverage: the
+planner reads it, may mark a part of the brief satisfied because of it, and may
+stop searching. A wrong YES hides a gap that nobody will ever see, because
+nothing records what was not found.
 
-That does not rescue a video that is clearly about something else, clearly
-excluded, or clearly without substance. Uncertainty means uncertainty.
+So do not lean either way. Judge what the transcript actually shows.
 
 **A damaged transcript is not evidence that the content is bad.** Captions fail;
 that is a fact about the captions, not about the video. A transcript you cannot
@@ -203,7 +212,8 @@ fails to contain.
 
 `DEGRADED` is only ever about the *quality of the evidence*. Ordinary
 uncertainty about whether a readable video is relevant is not degraded evidence;
-that is a judgement you are equipped to make, and the answer to it is YES.
+that is a judgement you are equipped to make, from what the transcript shows,
+and it leans neither way.
 
 ## Output
 
