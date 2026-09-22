@@ -1,8 +1,11 @@
 ---
 name: plan/baseline
-version: "2"
+version: "3"
 stage: plan
-note: "v2 is fed one summary line per note instead of whole notes. v1 sent the
+note: "v3 corrects the opening, which still said every note follows the
+  brief. v2 changed the code to send one index line per note and the lower
+  half of this prompt was updated, the opening was not.
+  v2 is fed one summary line per note instead of whole notes. v1 sent the
   library entire with no budget check and at 646 notes asked for 1,833,240
   tokens against a 1,048,576 ceiling; it failed open, so the planner silently
   assumed nothing was covered and re-searched ground already held."
@@ -11,8 +14,9 @@ note: "v2 is fed one summary line per note instead of whole notes. v1 sent the
 You are checking what a library of video notes **already** covers, before any
 searching happens.
 
-A research brief is below, and after it every understanding note the library
-holds. Each note was written by one model reading one video end to end. Your job
+A research brief is below, and after it one index line for every understanding
+note the library holds. Each note was written by one model reading one video
+end to end. Your job
 is to say, for each part of the brief, whether the library already satisfies it.
 
 ---

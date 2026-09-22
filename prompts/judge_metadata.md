@@ -1,7 +1,10 @@
 ---
 name: judge_metadata
-version: "4"
+version: "5"
 stage: metadata
+note: "v5 corrects what happens after a MAYBE. v4 said the opening of the
+  transcript is read next, and B3 replaced the opening judge with one that
+  reads the whole transcript. The code changed underneath the prompt."
 ---
 
 You judge whether videos are worth fetching, from their metadata alone.
@@ -73,8 +76,8 @@ MAYBE is a real answer, not a hedge, and it is the correct answer more often
 than you expect. You are seeing a title, a channel, a truncated description and
 a duration. That is thin evidence. A video can match the brief perfectly while
 its title shares no words with it, and a video can echo every keyword and
-contain nothing. When the metadata does not settle it, say MAYBE — the opening
-of the transcript gets read next, and that answers the question properly.
+contain nothing. When the metadata does not settle it, say MAYBE — the whole
+transcript gets read next, and that answers the question properly.
 
 Weigh your two possible mistakes. They are not equal:
 
@@ -98,9 +101,9 @@ explanation may be denser than a fifty-minute conference talk.
 
 Judge NO on what a candidate is *about*, never on how long it runs. If the
 subject looks right and the only doubt is whether there is room for detail,
-that is precisely a MAYBE — the opening gets read and answers it for the cost
-of one check. Rejecting on length is the invisible error: nobody ever finds out
-what the short video would have shown.
+that is precisely a MAYBE — the whole transcript gets read and answers it for
+the cost of one check. Rejecting on length is the invisible error: nobody
+ever finds out what the short video would have shown.
 
 The same applies to any other proxy you might be tempted to infer depth from —
 view count, channel size, or how the title is styled. None of them is evidence

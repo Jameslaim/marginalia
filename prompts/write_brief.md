@@ -1,7 +1,12 @@
 ---
 name: write_brief
-version: "1"
+version: "2"
 stage: brief
+note: "v2 corrects who the brief is written for. v1 said a judge sees only
+  the brief and a video's metadata. That was never the whole pipeline, and the
+  code has since moved further from it, since B4 the metadata judge is also
+  shown the territory vocabulary, and since B3 a second judge reads the whole
+  transcript."
 ---
 
 You turn a bare topic into an explicit research brief for a video library.
@@ -36,7 +41,9 @@ Two to four bullet points. Judgement calls a reader could reasonably get wrong,
 each with the answer you want applied.
 
 Rules:
-- Write for a judge who will see only this brief and a video's metadata.
+- Write for a judge who will see only this brief, a list of the subject's
+  vocabulary and a video's metadata, and for a second one that then reads the
+  whole transcript.
 - Be specific enough to act on. "Good quality content" is not a criterion;
   "shows actual configuration or code, not just concepts" is.
 - Do not invent a narrower topic than the one given. Sharpen it, do not replace

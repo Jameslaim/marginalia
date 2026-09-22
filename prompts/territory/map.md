@@ -1,7 +1,10 @@
 ---
 name: map_territory
-version: "2"
+version: "3"
 stage: territory
+note: "v3 corrects the claim that a reasoned window goes on every main query.
+  A per-query waiver and a topic that asks for material of any age both keep
+  it off, and both exceptions were written in the same commit as the sentence."
 ---
 
 You map out the territory a subject occupies, so that it can be searched for
@@ -56,9 +59,11 @@ answer and the safer one: a date cutoff removes old material permanently and
 invisibly, and nothing later can tell that it did.
 
 **This answer is applied for you.** When you give a number of months, the code
-works out the date and puts `publishedAfter` on every main query below. You do
-not compute the date and you do not repeat it on each query — say how far back
-matters and why, once, here. That is the judgement; the subtraction is not.
+works out the date and puts `publishedAfter` on every main query below, except
+one that waives it (see Filters), and on none when the topic itself asks for
+material of any age. You do not compute the date and you do not repeat it on
+each query — say how far back matters and why, once, here. That is the
+judgement; the subtraction is not.
 
 **QUERIES** — {{ count }} searches, written from the concepts and vocabulary
 above rather than from the topic words.

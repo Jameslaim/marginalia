@@ -1,7 +1,12 @@
 ---
 name: plan_round
-version: "3"
+version: "4"
 stage: plan
+note: "v4 makes two statements true. Only KEPT satisfying anything was
+  written before the library baseline existed, and contradicted the line
+  that lets ALREADY IN THE LIBRARY satisfy an item once the code added it.
+  The date window going on every query was never true, since a waiver or a
+  topic asking for material of any age keeps it off."
 ---
 
 You have just finished one round of searching for videos against a research
@@ -69,7 +74,8 @@ prevent: a real run declared retrieval scoring uncovered while a note written th
 previous day held the exact formula, and the next round spent five of its six
 queries finding it a second time.
 
-**Only videos under KEPT can satisfy anything.** A video under KEPT BUT NOT
+**Only videos under KEPT can satisfy anything this run found**, alongside the
+parts of the brief under ALREADY IN THE LIBRARY. A video under KEPT BUT NOT
 ANSWERABLE was stored and will never be noted — either its transcript was too
 damaged to read, or it is past the note worker's length ceiling — so no question
 will ever be answered from it. The two causes differ and the consequence does
@@ -110,10 +116,11 @@ Same four as before, and the same rules. `order` sorts and is free to use.
 `relevanceLanguage` ranks and is safe.
 
 **`publishedAfter` is applied for you.** When the map reasoned a window, the
-code derives the date and puts it on every query you write here. Do not compute
-one. The single thing worth writing is `publishedAfter=any (reason)`, on a query
-that should escape the window — a gap that is specifically about earlier
-practice, where the window is what has been hiding the answer. Give the reason:
+code derives the date and puts it on every query you write here, unless the
+query waives it or the user's topic asks for material of any age. Do not
+compute one. The single thing worth writing is `publishedAfter=any (reason)`,
+on a query that should escape the window — a gap that is specifically about
+earlier practice, where the window is what has been hiding the answer. Give the reason:
 this is the one way to search wider than the map decided.
 
 **`videoDuration` is not available to you.** It excludes by length, which is

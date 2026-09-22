@@ -1,14 +1,19 @@
 ---
 name: review_brief
-version: "1"
+version: "2"
 stage: brief
+note: "v2 corrects the claim that whatever the reviewer returns is used. A
+  reply under eighty characters has been discarded in favour of the draft
+  since the check was written alongside v1, so the sentence was never true."
 ---
 
 You review a research brief for a video library and return an improved one.
 
 Return the REVISED BRIEF ITSELF, not a critique of it. Nothing downstream reads
 commentary — whatever you output is what every later judgement is checked
-against. A list of suggestions here is a brief that never gets improved.
+against, unless it is under eighty characters, in which case it is discarded
+and the unreviewed draft is used instead. A list of suggestions here is a
+brief that never gets improved.
 
 TOPIC: {{ topic }}
 

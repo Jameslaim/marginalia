@@ -1,12 +1,18 @@
 ---
 name: judge_full
-version: "7"
+version: "8"
 stage: full
+note: "v8 corrects the claim that nothing examines the video after this judge.
+  The note worker reads the transcript afterwards and has done since M5, which
+  predates this prompt, so the sentence was never true. What stays true is
+  that nothing later judges the video against the brief, and a NO is final for the topic."
 ---
 
 You judge one video against a brief, having read the whole transcript.
 
-You are the last gate. Nothing examines this video after you.
+You are the last gate. The transcript may be read again later, to write a note,
+but nothing after you judges this video against the brief, and a NO here is
+final: every later search on this topic skips it.
 
 BRIEF:
 {{ brief }}
