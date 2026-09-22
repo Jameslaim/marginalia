@@ -26,6 +26,7 @@ from typing import Sequence
 from ..contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
+    RELEVANT_NONE,
     RELEVANT_UNAVAILABLE,
     VERDICT_MAYBE,
     VERDICT_NO,
@@ -432,6 +433,7 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
     relevant, relevant_problem = _parse_relevant(found.get("RELEVANT", ""))
     if relevant_problem:
         problems.append(relevant_problem)
+    relevant_text = _relevant_text(found.get("RELEVANT"), relevant, relevant_problem)
     concepts = _parse_concepts(found.get("UNEXPLAINED", ""))[:_MAX_UNEXPLAINED]
 
     # -- the consistency rules ---------------------------------------------
@@ -486,6 +488,7 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
             concepts=concepts,
             parsed=True,
             unmarked_currency=unmarked_currency,
+            relevant_text=relevant_text,
         )
 
     problem = "; ".join(problems)
@@ -501,7 +504,34 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         parsed=False,
         problem=problem,
         unmarked_currency=unmarked_currency,
+        relevant_text=relevant_text,
     )
+
+
+# `NONE`, as the judge writes it when nothing in the video is worth pointing at.
+# One pattern for the parser and for what gets stored, so the two cannot disagree
+# about which replies said NONE.
+_RELEVANT_NONE_RE = re.compile(r"\**\s*NONE\s*\**\.?", re.IGNORECASE)
+
+
+def _relevant_text(body: str | None, ranges: list[str], problem: str) -> str | None:
+    """The RELEVANT line as stored on the decision row, or ``None``.
+
+    Built from what the parser matched, never from ``body`` itself: the ranges
+    are ``start-end`` strings `_RANGE_RE` extracted, so any prose the model wrote
+    beside them is dropped here and cannot reach the ledger. ``NONE`` is stored
+    only when the line said NONE — an empty list also results from a blank or
+    missing line, and storing NONE for those would record a claim nobody made.
+    """
+    if body is None or problem:
+        return None
+    if ranges == [RELEVANT_UNAVAILABLE]:
+        return RELEVANT_UNAVAILABLE
+    if ranges:
+        return "; ".join(ranges)
+    if _RELEVANT_NONE_RE.fullmatch(body.strip()):
+        return RELEVANT_NONE
+    return None
 
 
 def _parse_relevant(body: str) -> tuple[list[str], str]:
@@ -513,7 +543,7 @@ def _parse_relevant(body: str) -> tuple[list[str], str]:
     stripped = body.strip()
     if not stripped:
         return [], ""
-    if re.fullmatch(r"\**\s*NONE\s*\**\.?", stripped, re.IGNORECASE):
+    if _RELEVANT_NONE_RE.fullmatch(stripped):
         return [], ""
     if re.search(r"\bUNAVAILABLE\b", stripped, re.IGNORECASE):
         return [RELEVANT_UNAVAILABLE], ""

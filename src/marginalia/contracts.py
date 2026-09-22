@@ -1084,6 +1084,16 @@ class FullVerdict:
     # unmarked currency claim is outside knowledge that cannot be counted as
     # such, and counting it is the entire reason the marker exists.
     unmarked_currency: bool = False
+    # What the RELEVANT line said, reduced to what the parser read: the ranges
+    # joined with `; `, or the `NONE` / `UNAVAILABLE` sentinel. `None` when there
+    # was no usable line — missing, blank, unreadable, or no reply at all — so a
+    # stored NONE always means the judge said NONE. Only matched timestamps and
+    # the two sentinel words can reach it, never the model's own text.
+    #
+    # **Instrumentation, nothing more.** Stored on the stage-2 `decisions` row so
+    # a range can be checked against the transcript it claims to point at. Nothing
+    # reads it to decide anything; `relevant` above stays the working value.
+    relevant_text: str | None = None
 
     @property
     def timestamps_unavailable(self) -> bool:

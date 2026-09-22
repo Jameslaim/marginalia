@@ -367,7 +367,7 @@ def test_a_tab_inside_a_reason_cannot_shift_a_column(config, ledger, library) ->
     lines = read(library, "decisions.tsv").strip().split("\n")
     widths = {len(line.split("\t")) for line in lines}
 
-    assert widths == {8}
+    assert widths == {9}
     assert "vendor marketing with a stray tab" in read(library, "decisions.tsv")
 
 
@@ -618,3 +618,36 @@ def test_an_unreadable_baseline_does_not_fail_the_export(config, ledger, library
 
     assert "could not be read" in report
     assert "### Round 1" in report
+
+
+# -- the RELEVANT ranges -----------------------------------------------------
+
+
+def test_decisions_tsv_carries_the_relevant_ranges(config, ledger, library) -> None:
+    a_run(ledger)
+    ledger.log_decision(
+        A, "postgres connection pooling", stage=STAGE_FULL, verdict="yes",
+        reason="shows pool_mode", relevant="00:12:30-00:18:45; 00:25:00-00:27:10",
+        run_id=RUN,
+    )
+    export_run(config, ledger, library, RUN)
+
+    lines = read(library, "decisions.tsv").strip().split("\n")
+    header = lines[0].split("\t")
+    column = header.index("relevant")
+    cells = [line.split("\t")[column] for line in lines[1:]]
+
+    assert "00:12:30-00:18:45; 00:25:00-00:27:10" in cells
+    assert header[-1] == "reason", "the long free-text column stays last"
+
+
+def test_a_degraded_decision_shows_its_ranges_in_the_report(config, ledger, library) -> None:
+    a_run(ledger)
+    ledger.log_decision(
+        C, "postgres connection pooling", stage=STAGE_FULL, verdict="yes",
+        reason="the captions are garbled", evidence=EVIDENCE_DEGRADED,
+        relevant="UNAVAILABLE", run_id=RUN,
+    )
+    export_run(config, ledger, library, RUN)
+
+    assert "relevant: UNAVAILABLE" in read(library, "report.md")

@@ -2601,3 +2601,28 @@ def test_the_assessment_call_gets_its_own_ceiling(
         max_rounds=2, mapper=FakeMapper(), planner=planner)
 
     assert planner.assess_max_tokens_seen == config.discover.baseline_max_tokens
+
+
+# -- stage 2's RELEVANT ranges reach the ledger ---------------------------------
+
+
+def test_stage_two_stores_its_ranges_and_no_other_stage_does(
+    config, ledger, library, client, searches
+) -> None:
+    """Stored for inspection: a range can be checked against the transcript it
+    points at. Stage 1 and the search gates have no ranges and store NULL."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    scripted = judge.judge_full
+    judge.judge_full = lambda *a, **k: replace(
+        scripted(*a, **k), relevant_text="00:12:30-00:18:45; 00:25:00-00:27:10"
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    rows = ledger.decisions_for("aaaaaaaaaaa")
+    stage_two = [row for row in rows if row.stage == STAGE_FULL]
+    others = [row for row in rows if row.stage != STAGE_FULL]
+    assert stage_two[0].relevant == "00:12:30-00:18:45; 00:25:00-00:27:10"
+    assert {row.stage for row in others} >= {STAGE_SEARCH, "metadata"}
+    assert all(row.relevant is None for row in others)

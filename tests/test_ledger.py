@@ -1497,3 +1497,59 @@ def test_an_existing_note_still_overrides(tmp_path: Path) -> None:
     overturned = [_decision("t1", "metadata", "yes"), _decision("t1", "full", "no")]
 
     assert wanted_for_a_note(row, overturned)
+
+
+# -- decisions.relevant ---------------------------------------------------------
+
+
+def test_a_decision_stores_its_relevant_ranges(ledger: Ledger) -> None:
+    ledger.log_decision(
+        VIDEO_ID, "prompt caching", stage="full", verdict="yes",
+        relevant="00:12:30-00:18:45",
+    )
+
+    assert ledger.decisions_for(VIDEO_ID)[0].relevant == "00:12:30-00:18:45"
+
+
+def test_relevant_defaults_to_null(ledger: Ledger) -> None:
+    ledger.log_decision(VIDEO_ID, "prompt caching", stage="metadata", verdict="maybe")
+
+    assert ledger.decisions_for(VIDEO_ID)[0].relevant is None
+
+
+def test_an_existing_ledger_gains_the_relevant_column_and_keeps_every_row(
+    tmp_path: Path,
+) -> None:
+    """Additive, like every column before it: existing rows read NULL, and not
+    one row in any table is lost — the quota table included, which holds the
+    only record of what past days spent."""
+    path = tmp_path / "ledger.db"
+    _legacy_ledger(path)
+    conn = sqlite3.connect(str(path))
+    conn.executemany(
+        "INSERT INTO quota (provider, date, units_used) VALUES (?, ?, ?)",
+        [("youtube_api", f"2026-09-{day:02d}", day * 101) for day in range(1, 12)],
+    )
+    conn.commit()
+    tables = ("videos", "decisions", "quota", "runs")
+    before = {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
+    quota_before = conn.execute("SELECT * FROM quota ORDER BY date").fetchall()
+    conn.close()
+
+    with Ledger(path) as ledger:
+        columns = [r["name"] for r in ledger._conn.execute("PRAGMA table_info(decisions)")]
+        after = {
+            t: ledger._conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables
+        }
+        quota_after = [
+            tuple(r) for r in ledger._conn.execute(
+                "SELECT provider, date, units_used, exhausted_at FROM quota ORDER BY date"
+            )
+        ]
+        old = ledger.decisions_for("ccccccccccc")[0]
+
+    assert "relevant" in columns
+    assert after == before
+    assert before["quota"] == 11
+    assert quota_after == [(*row, None) for row in quota_before]
+    assert old.relevant is None

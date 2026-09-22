@@ -907,6 +907,7 @@ def _judge_round(
             judgement.reason,
             evidence=judgement.evidence,
             prompt_version=judge.prompt(FULL_PROMPT).version,
+            relevant=judgement.relevant_text,
         )
         concepts.extend(judgement.concepts)
         if not judgement.parsed:
@@ -1151,6 +1152,7 @@ def _log(
     *,
     evidence: str | None = None,
     prompt_version: str | None = None,
+    relevant: str | None = None,
 ) -> None:
     """Every verdict at every stage, unless this is a dry run.
 
@@ -1167,6 +1169,7 @@ def _log(
         reason=reason,
         evidence=evidence,
         prompt_version=prompt_version,
+        relevant=relevant,
         run_id=run.run_id,
         model=run.model,
     )

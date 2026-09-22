@@ -650,3 +650,71 @@ def test_a_short_reason_is_untouched() -> None:
     )
 
     assert verdict.reason == f"Teaches a pre-0.1 API. {marker}"
+
+
+# -- RELEVANT, as stored on the decision row -----------------------------------
+#
+# Stage 2 names where the relevant material is. The ranges were parsed and then
+# discarded; they are now stored so a verdict can be checked against the
+# transcript it points at. What is stored is what the parser matched — never
+# the model's own words.
+
+
+def test_the_ranges_are_stored_as_parsed() -> None:
+    verdict = parse_full(reply(RELEVANT="00:12:30-00:18:45; 00:25:00-00:27:10"), VIDEO)
+
+    assert verdict.relevant_text == "00:12:30-00:18:45; 00:25:00-00:27:10"
+
+
+def test_none_is_stored_as_the_sentinel() -> None:
+    from marginalia.contracts import RELEVANT_NONE
+
+    verdict = parse_full(reply(VERDICT="NO", RELEVANT="NONE"), VIDEO)
+
+    assert verdict.relevant_text == RELEVANT_NONE
+
+
+def test_unavailable_is_stored_as_the_sentinel() -> None:
+    verdict = parse_full(reply(RELEVANT="UNAVAILABLE"), VIDEO)
+
+    assert verdict.relevant_text == RELEVANT_UNAVAILABLE
+
+
+def test_prose_beside_the_ranges_never_reaches_the_stored_value() -> None:
+    """Hard rule 1. A model that quotes the video inside RELEVANT must not turn
+    the decision log into a place transcript text lives."""
+    phrase = "the sentinel phrase the speaker said aloud"
+    verdict = parse_full(
+        reply(RELEVANT=f"00:12:30-00:18:45 ({phrase}); 00:25:00-00:27:10 where {phrase}"),
+        VIDEO,
+    )
+
+    assert verdict.relevant_text == "00:12:30-00:18:45; 00:25:00-00:27:10"
+    assert "sentinel" not in (verdict.relevant_text or "")
+
+
+def test_a_missing_or_blank_line_is_not_recorded_as_none() -> None:
+    """An empty range list also comes from a line nobody wrote. Storing NONE
+    for that would record a claim the judge never made."""
+    lines = reply().splitlines()
+    missing = "\n".join(line for line in lines if not line.startswith("RELEVANT"))
+
+    assert parse_full(missing, VIDEO).relevant_text is None
+    assert parse_full(reply(RELEVANT=""), VIDEO).relevant_text is None
+
+
+def test_an_unreadable_line_stores_nothing() -> None:
+    verdict = parse_full(reply(RELEVANT="somewhere in the middle"), VIDEO)
+
+    assert verdict.parsed is False
+    assert verdict.relevant_text is None
+
+
+def test_storing_the_ranges_changes_no_verdict() -> None:
+    """Instrumentation only. The same reply yields the same verdict, evidence
+    and working `relevant` list it always did."""
+    verdict = parse_full(reply(RELEVANT="00:04:20-00:09:15"), VIDEO)
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_CLEAR
+    assert verdict.relevant == ["00:04:20-00:09:15"]

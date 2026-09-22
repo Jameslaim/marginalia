@@ -146,7 +146,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   run_id     TEXT,            -- the discovery run, and so the brief, behind it
   model      TEXT,            -- which model said so; the provider is temporary
   evidence   TEXT,            -- CLEAR | DEGRADED; B3 writes it, nothing reads it yet
-  prompt_version TEXT         -- which prompt produced this verdict
+  prompt_version TEXT,        -- which prompt produced this verdict
+  relevant   TEXT             -- stage 2's RELEVANT ranges or sentinel; read by nothing
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_topic ON decisions(topic, verdict);
 CREATE INDEX IF NOT EXISTS idx_decisions_video ON decisions(video_id);
@@ -259,6 +260,10 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("videos", "first_noted_at", "TEXT"),
     ("decisions", "evidence", "TEXT"),
     ("decisions", "prompt_version", "TEXT"),
+    # Stage 2's RELEVANT line: the ranges it parsed, or NONE / UNAVAILABLE. NULL
+    # on every earlier row and on every stage that is not stage 2 — the honest
+    # answer, since the ranges were produced and then discarded until now.
+    ("decisions", "relevant", "TEXT"),
     ("runs", "territory_map", "TEXT"),
     ("runs", "territory_version", "TEXT"),
     # What the library already satisfied before this run searched. NULL on
@@ -372,6 +377,9 @@ class DecisionRow:
     # different claims, and Gate 2 treats both as final.
     evidence: str | None = None
     prompt_version: str | None = None
+    # Stage 2 only: where the judge said the relevant material is. Stored so a
+    # verdict can be checked against the transcript; nothing decides on it.
+    relevant: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> DecisionRow:
@@ -1031,6 +1039,7 @@ class Ledger:
         model: str | None = None,
         evidence: str | None = None,
         prompt_version: str | None = None,
+        relevant: str | None = None,
     ) -> DecisionRow:
         """Record one verdict. ``topic`` is normalised on the way in.
 
@@ -1065,14 +1074,15 @@ class Ledger:
             model=model,
             evidence=evidence,
             prompt_version=prompt_version,
+            relevant=relevant,
         )
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO decisions
                     (video_id, topic, stage, verdict, reason, decided_at, run_id,
-                     model, evidence, prompt_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     model, evidence, prompt_version, relevant)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row.video_id,
@@ -1085,6 +1095,7 @@ class Ledger:
                     row.model,
                     row.evidence,
                     row.prompt_version,
+                    row.relevant,
                 ),
             )
         log.info("decision: %s %s/%s for %r", video_id, stage, verdict, row.topic)

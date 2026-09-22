@@ -187,6 +187,7 @@ def render_report(
         )
         lines.extend(
             f"- `{row.video_id}` [{row.stage}/{row.verdict}] {_flat(row.reason)}"
+            + (f" — relevant: {row.relevant}" if row.relevant else "")
             for row in degraded
         )
     lines.append("")
@@ -633,7 +634,10 @@ def _render_queries(queries: Sequence[QueryRow]) -> str:
 
 
 def _render_decisions(decisions: Sequence[DecisionRow]) -> str:
-    header = "video_id\tstage\tverdict\tevidence\tprompt_version\tdecided_at\ttopic\treason"
+    header = (
+        "video_id\tstage\tverdict\tevidence\tprompt_version\tdecided_at\ttopic"
+        "\trelevant\treason"
+    )
     rows = [
         "\t".join(
             [
@@ -644,6 +648,7 @@ def _render_decisions(decisions: Sequence[DecisionRow]) -> str:
                 _cell(row.prompt_version),
                 _cell(row.decided_at),
                 _cell(row.topic),
+                _cell(row.relevant),
                 _cell(row.reason),
             ]
         )
