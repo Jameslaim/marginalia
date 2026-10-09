@@ -444,6 +444,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "Selection",
         "Opened",
         "Answer",
+        "Grounding",
         # timestamp snapping
         "TranscriptIndex",
         "NoteCitation",

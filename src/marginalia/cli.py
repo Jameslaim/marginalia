@@ -83,6 +83,7 @@ from .ask import (
     SelectionFailed,
     answer_question,
     deep_link,
+    has_grounding,
     mark_unverified,
     render_answer,
     render_links,
@@ -947,6 +948,20 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                         }
                         for citation in answer.citations
                     ],
+                    # Counts and the answer's own failing strings, never the
+                    # sources — the same line `render_answer` holds.
+                    "grounding": {
+                        "quotes_checked": answer.quotes_checked,
+                        "quotes_verified": answer.quotes_verified,
+                        "quotes_unchecked": answer.quotes_unchecked,
+                        "unverified_speech": [q.text for q in answer.unverified_speech],
+                        "unverified_phrases": [q.text for q in answer.unverified_phrases],
+                        "unspoken": [q.text for q in answer.unspoken_quotes],
+                        "uncited": list(answer.uncited_quotes),
+                        "unresolved_ids": list(answer.unresolved_ids),
+                    },
+                    "failed": answer.failed,
+                    "truncated": answer.truncated,
                     "requests": answer.requests,
                     "cost_usd": round(answer.cost_usd, 6),
                     "elapsed_s": round(answer.elapsed_s, 1),
@@ -955,7 +970,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                 indent=2,
             )
         )
-        return EXIT_FAILED if not answer.text else EXIT_OK
+        return EXIT_FAILED if answer.failed or not answer.text else EXIT_OK
 
     if not answer.text:
         if saved is not None:
@@ -987,6 +1002,13 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         log.info("ask: %d citation-shaped strings were unreadable", len(answer.unparsed))
         for fragment in answer.unparsed:
             log.debug("ask: unreadable citation: %s", fragment)
+    if answer.failed:
+        # Printed above so the record and the terminal agree, and still a
+        # failure: an exit 0 here is what lets a wrapper relay an error message
+        # as though it were the library's answer.
+        return _error("the model call did not produce an answer", EXIT_FAILED)
+    if answer.truncated:
+        print("warning:  the answer hit the token ceiling; it is a fragment", file=sys.stderr)
     return EXIT_OK
 
 
@@ -1003,24 +1025,6 @@ def _ask_summary(answer: Answer) -> str:
         f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
         f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
     )
-    if (
-        answer.unresolved_ids
-        or answer.unverified_speech
-        or answer.unverified_phrases
-        or answer.unspoken_quotes
-    ):
-        # Its own line, never summed with the citation counters: those read
-        # syntax and this reads content, so a run where both are non-zero has
-        # two different problems. The two unverified counts are printed apart
-        # for the same reason one layer down — a quoted sentence the note does
-        # not contain and a quoted phrase it does not contain are different
-        # claims about the answer.
-        line += "\n          " + (
-            f"grounding: {len(answer.unverified_speech)} sentence(s) and "
-            f"{len(answer.unverified_phrases)} phrase(s) not in the note cited, "
-            f"{len(answer.unspoken_quotes)} in the note but not spoken, "
-            f"{len(answer.unresolved_ids)} id(s) name no loaded video"
-        )
     if answer.repaired:
         # The model got a video ID's casing wrong and the parser covered for it.
         # Worth seeing rather than inferring from a debug log.
@@ -1029,6 +1033,26 @@ def _ask_summary(answer: Answer) -> str:
         f"{answer.requests} requests, ${answer.cost_usd:.4f}, "
         f"{_elapsed(answer.elapsed_s)}, v{answer.version}"
     )
+    if has_grounding(answer):
+        # Its own line, never summed with the citation counters: those read
+        # syntax and this reads content, so a run where both are non-zero has
+        # two different problems. The denominator comes first because a count
+        # of failures cannot be read without it, and the two unverified counts
+        # stay apart — a quoted sentence nobody said and a quoted phrase are
+        # different claims about the answer.
+        against = (
+            f" ({answer.quotes_unchecked} against a note only)"
+            if answer.quotes_unchecked
+            else ""
+        )
+        line += "\n          " + (
+            f"grounding: {answer.quotes_verified} of {answer.quotes_checked} quote(s) "
+            f"found in the cited transcript{against}; "
+            f"{len(answer.unverified_speech)} sentence(s) and "
+            f"{len(answer.unverified_phrases)} phrase(s) not found, "
+            f"{len(answer.unspoken_quotes)} the note's words not the speaker's, "
+            f"{len(answer.unresolved_ids)} id(s) name no loaded video"
+        )
     # Printed every time, not only when it is close. The point of the number is
     # that the whole-library approach stays visible while it is still working —
     # a guard nobody sees until it fires is a cliff with a sign at the bottom.

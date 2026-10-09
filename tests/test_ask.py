@@ -96,6 +96,17 @@ def build(tmp_path, notes: dict[str, str], transcripts: dict[str, str] | None = 
     return config, library
 
 
+def _unpack(grounding):
+    """The five outcome lists, in the order the tuple used to return them."""
+    return (
+        list(grounding.unresolved_ids),
+        list(grounding.unverified_speech),
+        list(grounding.unverified_phrases),
+        list(grounding.unspoken_quotes),
+        list(grounding.uncited_quotes),
+    )
+
+
 # -- parsing -----------------------------------------------------------------
 
 
@@ -983,7 +994,7 @@ def test_a_quote_missing_from_the_cited_note_is_counted(tmp_path):
     text = f'The video claims "caching is free forever and always will be" [{A} 01:00].'
     notes = load_notes(library)
 
-    ids, speech, phrases, unspoken, uncited = check_grounding(text, notes, [A])
+    ids, speech, phrases, unspoken, uncited = _unpack(check_grounding(text, notes, [A]))
 
     assert ids == []
     assert len(speech) == 1 and A in speech[0].video_ids
@@ -999,7 +1010,7 @@ def test_a_short_unverified_phrase_is_not_counted_as_speech(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something else entirely\n"})
     text = f'It leans on "an agent loop" throughout [{A} 01:00].'
 
-    ids, speech, phrases, unspoken, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, unspoken, uncited = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert speech == [], "too short to be a claim about what somebody said"
     assert len(phrases) == 1 and A in phrases[0].video_ids
@@ -1015,7 +1026,7 @@ def test_the_two_unverified_counters_are_reported_apart(tmp_path):
         f'"the whole pipeline collapses under any real production load" [{A} 02:00].'
     )
 
-    _ids, speech, phrases, _unspoken, _uncited = check_grounding(text, load_notes(library), [A])
+    _ids, speech, phrases, _unspoken, _uncited = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert len(speech) == 1 and len(phrases) == 1
     rendered = render_answer(
@@ -1031,7 +1042,7 @@ def test_a_quote_present_in_verbatim_is_not_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Verbatim\n\n- caching is cheap\n"})
     text = f'The video says "caching is cheap" [{A} 01:00].'
 
-    assert check_grounding(text, load_notes(library), [A]) == ([], [], [], [], [])
+    assert _unpack(check_grounding(text, load_notes(library), [A])) == ([], [], [], [], [])
 
 
 def test_a_quote_found_only_in_note_prose_is_its_own_outcome(tmp_path):
@@ -1055,7 +1066,7 @@ def test_a_quote_found_only_in_note_prose_is_its_own_outcome(tmp_path):
     )
     text = f'The video says "the speaker says caching is cheap" [{A} 01:00].'
 
-    ids, speech, phrases, unspoken, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, unspoken, uncited = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert len(unspoken) == 1 and unspoken[0].video_ids == A
     assert (ids, speech, phrases, uncited) == ([], [], [], [])
@@ -1069,7 +1080,7 @@ def test_a_quote_with_no_citation_is_its_own_outcome(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = 'Somebody said "this is a completely unattributed claim" in one of them.'
 
-    ids, speech, phrases, unspoken, uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, unspoken, uncited = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert (speech, phrases) == ([], [])
     assert len(uncited) == 1
@@ -1082,7 +1093,7 @@ def test_an_id_naming_no_loaded_video_is_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = f"Some claim [EXLCnmcyLcQ — I might be making this up] and [{A} 01:00]."
 
-    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert ids == ["EXLCnmcyLcQ"]
 
@@ -1093,7 +1104,7 @@ def test_an_eleven_letter_word_in_brackets_is_not_an_id(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = "[a note about the contradiction and the fabricating of claims]"
 
-    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert ids == []
 
@@ -1106,7 +1117,7 @@ def test_a_hyphenated_compound_is_not_an_id(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = f"[{A} results are single-scalar points with no memory-coupling shown]"
 
-    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert ids == []
 
@@ -1121,7 +1132,7 @@ def test_a_fabricated_id_of_the_wrong_length_is_still_counted(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- something\n"})
     text = "the orchestration choice [2s0ixGRLo8QM — not in corpus] and the rest"
 
-    ids, _, _, _, _ = check_grounding(text, load_notes(library), [A])
+    ids, _, _, _, _ = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert ids == ["2s0ixGRLo8QM"], "caught by rule, where before it was caught by truncation"
 
@@ -1131,7 +1142,7 @@ def test_a_mis_cased_id_is_a_citation_repair_not_a_missing_video(tmp_path):
     config, library = build(tmp_path, {A: "## Claims\n\n- caching is cheap\n"})
     text = f'It says "caching is cheap" [{A.upper()} 01:00].'
 
-    ids, speech, phrases, _unspoken, _uncited = check_grounding(text, load_notes(library), [A])
+    ids, speech, phrases, _unspoken, _uncited = _unpack(check_grounding(text, load_notes(library), [A]))
 
     assert ids == []
     assert (speech, phrases) == ([], []), "and the quote still resolves against the note"
@@ -1221,3 +1232,197 @@ def test_the_grounding_section_never_prints_the_note(tmp_path):
     assert len(answer.unverified_speech) == 1
     assert invented in rendered, "the failing quote is shown"
     assert secret not in rendered, "the note is not"
+
+
+# -- grounding against the transcript, which is the record -------------------
+#
+# The note is one model's reading of a transcript, and its `## Verbatim` is
+# that model's choice of quotes. Measured on the archived library: 571 of
+# 5,733 Verbatim quotes have no close match in their own transcript, and of
+# 102 answer quotes the note-only check marked `[not spoken]`, 62 are in the
+# cited transcript word for word.
+
+
+def _cue(text: str, at: int = 0) -> str:
+    return f"[00:00:{at:02d}.000 --> 00:00:{at + 4:02d}.000] {text}\n"
+
+
+def test_a_quote_the_transcript_holds_is_verified_wherever_the_note_put_it(tmp_path):
+    """The 62 of 102. The note-writer copied the speaker into `## Claims`, the
+    answer quoted it, and the old check called it the note-writer's words —
+    a false accusation, printed beside the quote as `[not spoken]`."""
+    config, library = build(
+        tmp_path,
+        {A: "## Claims\n\n- the minimum is one thousand tokens\n\n## Verbatim\n\n- unrelated\n"},
+        {A: _cue("the minimum is one thousand tokens") + _cue("below that nothing is cached", 4)},
+    )
+    text = f'It says "the minimum is one thousand tokens" [{A} 00:00].'
+
+    grounding = check_grounding(
+        text, load_notes(library), [A], transcripts={A: library.read_transcript(A)}
+    )
+
+    assert _unpack(grounding) == ([], [], [], [], [])
+    assert (grounding.quotes_checked, grounding.quotes_verified) == (1, 1)
+    assert grounding.quotes_unchecked == 0
+
+
+def test_a_verbatim_quote_the_transcript_lacks_is_the_notes_words(tmp_path):
+    """The other direction: `## Verbatim` is not verbatim when the note-writer
+    invented or tidied the quote, and an answer repeating it was verified."""
+    invented = "caching is always free on every provider"
+    config, library = build(
+        tmp_path,
+        {A: f'## Verbatim\n\n- "{invented}" (00:00:04)\n'},
+        {A: _cue("the minimum is one thousand tokens") + _cue("below that nothing is cached", 4)},
+    )
+    text = f'He says "{invented}" [{A} 00:04].'
+
+    grounding = check_grounding(
+        text, load_notes(library), [A], transcripts={A: library.read_transcript(A)}
+    )
+
+    assert len(grounding.unspoken_quotes) == 1
+    assert grounding.unspoken_quotes[0].in_verbatim is True
+    assert grounding.quotes_verified == 0
+    marked = mark_unverified(
+        Answer(question="q", text=text, unspoken_quotes=list(grounding.unspoken_quotes))
+    )
+    assert f'"{invented}" [not spoken]' in marked
+
+
+def test_a_near_rendering_of_the_transcript_is_loosely_quoted(tmp_path):
+    config, library = build(
+        tmp_path,
+        {A: "## Claims\n\n- something\n"},
+        {A: _cue("you delivered one hundred thousand tokens worth of value here")},
+    )
+    text = f'He says "you delivered one hundred thousand tokens of value here" [{A} 00:00].'
+
+    grounding = check_grounding(
+        text, load_notes(library), [A], transcripts={A: library.read_transcript(A)}
+    )
+
+    assert [q.loose for q in grounding.unverified_speech] == [True]
+
+
+def test_without_a_transcript_the_verbatim_check_stands_in_and_is_counted(tmp_path):
+    """The weaker instrument is used only when the stronger one is missing, and
+    the answer says how many quotes it was used for."""
+    config, library = build(tmp_path, {A: "## Verbatim\n\n- caching is cheap\n"})
+    text = f'The video says "caching is cheap" [{A} 01:00].'
+
+    grounding = check_grounding(text, load_notes(library), [A], transcripts={})
+
+    assert _unpack(grounding) == ([], [], [], [], [])
+    assert (grounding.quotes_checked, grounding.quotes_verified) == (1, 1)
+    assert grounding.quotes_unchecked == 1
+
+
+def test_a_citation_with_a_unicode_dash_still_attributes_its_quote(tmp_path):
+    """The citation parser normalises dashes; the grounding check did not, so a
+    quote beside a citation written with U+2011 resolved as a citation and was
+    counted as attributed to nothing."""
+    video = "-YTupW6YG1k"
+    config, library = build(
+        tmp_path,
+        {video: "## Claims\n\n- x\n"},
+        {video: _cue("below that nothing is cached at all")},
+    )
+    text = 'It says "below that nothing is cached at all" [‑YTupW6YG1k 01:00].'
+
+    grounding = check_grounding(
+        text, load_notes(library), [video], transcripts={video: library.read_transcript(video)}
+    )
+
+    assert grounding.uncited_quotes == ()
+    assert grounding.quotes_verified == 1
+
+
+def test_a_quote_from_an_opened_transcript_is_verified(tmp_path):
+    """Escalation exists to get exact wording. The words it got used to be
+    marked `[unverified]`, because only the notes were consulted."""
+    config, library = build(
+        tmp_path,
+        {A: "## Verbatim\n\n- nothing like it\n"},
+        {A: _cue("the minimum is one thousand tokens") + _cue("below that nothing is cached", 4)},
+    )
+    spoken = client([
+        f"ESCALATE: {A}: the exact threshold wording",
+        f'He says "below that nothing is cached" [{A} 00:04].',
+    ])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert answer.opened and answer.opened[0][0] == A
+    assert (answer.quotes_checked, answer.quotes_verified) == (1, 1)
+    assert "[unverified]" not in mark_unverified(answer)
+
+
+def test_the_transcript_never_reaches_a_stored_answer(tmp_path):
+    """Rule 1. The check reads the transcript; the record says found or not."""
+    secret = "an entirely private sentence from the transcript itself"
+    config, library = build(tmp_path, {A: "## Claims\n\n- x\n"}, {A: _cue(secret)})
+    spoken = client([f'It claims "here is a quotation nobody ever said aloud" [{A} 00:00].'])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    assert answer.quotes_checked == 1 and len(answer.unverified_speech) == 1
+    assert secret not in rendered
+    assert "1 cited quote(s) checked, 0 found word for word" in rendered
+
+
+# -- an answer that is not an answer -----------------------------------------
+
+
+def test_a_failed_call_is_marked_failed_not_returned_as_an_answer(tmp_path):
+    config, library = build(tmp_path, {A: "## Claims\n\n- x\n"})
+
+    def transport(**_):
+        raise ConnectionError("unreachable")
+
+    failing = LlmClient(make_config(Path(".")).llm, transport=transport, sleep=lambda _: None)
+
+    answer = answer_question(config, library, failing, "q")
+
+    assert answer.failed is True
+    assert answer.text.startswith("The model call failed")
+    assert "the failure, not an answer" in render_answer(answer, asked_at="2026-01-01")
+
+
+def test_truncated_means_the_ceiling_was_hit_not_that_the_text_was_empty(tmp_path):
+    config, library = build(tmp_path, {A: "## Claims\n\n- x\n"})
+
+    def cut_off(**_):
+        response = FakeResponse(f"The answer begins and then [{A} 00:00] stops mid")
+        response.choices[0].finish_reason = "length"
+        return response
+
+    answer = answer_question(
+        config,
+        library,
+        LlmClient(make_config(Path(".")).llm, transport=cut_off, sleep=lambda _: None),
+        "q",
+    )
+
+    assert answer.truncated is True
+    assert answer.failed is False
+    assert "what follows is a fragment" in render_answer(answer, asked_at="2026-01-01")
+
+
+def test_a_second_escalation_is_a_failure_not_an_answer(tmp_path):
+    config, library = build(
+        tmp_path, {A: "## Claims\n\n- x\n"}, {A: _cue("some words that were said")}
+    )
+    spoken = client([f"ESCALATE: {A}: wording", f"ESCALATE: {A}: still more wording"])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert answer.failed is True
+
+
+def test_no_transcript_is_opened_past_the_ceiling_left_by_deep():
+    """`--deep` can spend the whole `[ask] max_transcripts`. With nothing left
+    the loop still took one, because it checked the limit after appending."""
+    assert parse_escalations(f"ESCALATE: {A}: wording", known=[A], limit=0) == []

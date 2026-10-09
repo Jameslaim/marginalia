@@ -129,6 +129,7 @@ __all__ = [
     "LoadedNote",
     "Opened",
     "Answer",
+    "Grounding",
     # timestamp snapping
     "TranscriptIndex",
     "NoteCitation",
@@ -1645,9 +1646,47 @@ class UnverifiedQuote:
     # held the string, so naming one would misreport what was tested.
     video_ids: str
     loose: bool = False
+    # For a quote the note holds and the transcript does not: whether the note
+    # held it inside `## Verbatim`. That section is meant to be speech, so this
+    # is the note-writer's quotation failing, not the answer promoting prose —
+    # two failures with two different fixes (rule 14).
+    in_verbatim: bool = False
 
     def render(self) -> str:
         return f"{self.video_ids}: {self.text}"
+
+
+@dataclass(frozen=True)
+class Grounding:
+    """What an answer's quotes and cited ids were checked against, and what failed.
+
+    **Checked against the transcript, which is the record.** The note is one
+    model's reading of it, and its `## Verbatim` section is that model's choice
+    of quotes — measured on the archived library, 571 of 5,733 Verbatim quotes
+    (10%) have no close match in their own transcript. A check that trusted
+    Verbatim as speech passed those, and marked as `[not spoken]` quotes the
+    transcript holds word for word: 62 of 102 in the stored answers that could
+    be re-scored.
+
+    The note's Verbatim is used only when no cited video has a transcript on
+    disk, and those quotes are counted in ``quotes_unchecked`` so the weaker
+    instrument never passes for the stronger one.
+
+    The denominators exist because a failure count alone cannot be read: "3
+    unverified" means one thing out of 4 quotes and another out of 60.
+    """
+
+    unresolved_ids: tuple[str, ...] = ()
+    unverified_speech: tuple[UnverifiedQuote, ...] = ()
+    unverified_phrases: tuple[UnverifiedQuote, ...] = ()
+    unspoken_quotes: tuple[UnverifiedQuote, ...] = ()
+    uncited_quotes: tuple[str, ...] = ()
+    # Cited quotes long enough to check, how many of those a cited transcript
+    # holds exactly, and how many could only be held against a note because no
+    # cited video had a transcript on disk.
+    quotes_checked: int = 0
+    quotes_verified: int = 0
+    quotes_unchecked: int = 0
 
 
 @dataclass
@@ -1704,11 +1743,20 @@ class Answer:
     output_tokens: int = 0
     cost_usd: float = 0.0
     elapsed_s: float = 0.0
+    # The reply stopped on the token ceiling (`finish_reason == "length"`), so
+    # what was printed is a fragment. This used to be set from an *empty* text
+    # and named for truncation, which a reply cut off mid-sentence never was.
     truncated: bool = False
-    # What the answer asserts that its own sources do not support. Three
-    # outcomes, three lists, per rule 14: an id naming no video, a quote
-    # attributed to a video whose note does not contain it, and a quote
-    # attributed to nothing are three failures with three fixes.
+    # The model call failed and `text` is the failure, not an answer. Set so
+    # the CLI can exit non-zero: a skill reading exit 0 would otherwise report
+    # an error message to the user as though it were the library's answer.
+    failed: bool = False
+    # What the answer asserts that its own sources do not support, checked
+    # against the transcript of each cited video (see `Grounding`). Separate
+    # outcomes, separate lists, per rule 14: an id naming no video, a quote its
+    # cited transcript does not hold, a quote the note holds and the transcript
+    # does not, and a quote attributed to nothing are different failures with
+    # different fixes.
     #
     # **Reported, never used to suppress.** The answer is written whether or
     # not a quote verifies — same discipline as `unparsed` and
@@ -1722,14 +1770,18 @@ class Answer:
     unresolved_ids: list[str] = field(default_factory=list)
     unverified_speech: list[UnverifiedQuote] = field(default_factory=list)
     unverified_phrases: list[UnverifiedQuote] = field(default_factory=list)
-    # Quotes the cited note contains **outside** its `## Verbatim` section: the
-    # note-writer's words presented as a speaker's. Its own outcome rather than
-    # part of `unverified`, because a legitimate quote can sit inline in
-    # `## Claims` and a Verbatim-only test would call that a failure. Until this
-    # existed these verified silently, so "verified" meant "somewhere in eleven
-    # thousand characters of note", most of which nobody said.
+    # Quotes the cited note contains and the cited transcript does not: the
+    # note's words presented as a speaker's. Measured against the transcript
+    # since the grounding check started reading it; before that "outside
+    # `## Verbatim`" stood in for "not said", and 62 of 102 quotes it marked
+    # this way were in the transcript word for word. `in_verbatim` on each
+    # says whether the note held it in its own Verbatim section.
     unspoken_quotes: list[UnverifiedQuote] = field(default_factory=list)
     uncited_quotes: list[str] = field(default_factory=list)
+    # The denominators for everything above. See `Grounding`.
+    quotes_checked: int = 0
+    quotes_verified: int = 0
+    quotes_unchecked: int = 0
 
     @property
     def escalated(self) -> bool:

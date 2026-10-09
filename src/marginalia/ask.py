@@ -8,12 +8,12 @@ escalating from there would put transcript text into the conversation, which
 rule 1 forbids outright. So ``marg ask`` does the whole job — load, answer,
 escalate, answer again — and returns finished prose. The skill prints it.
 
-No selection, ranking or retrieval step. Every note, every question. Under a
-hundred videos the honest answer to "which notes are relevant?" is *all of
-them*, and at this provider's rates the whole library costs about a cent a
-question. Ranking would add a component that can be wrong in a way nobody
-notices — a video silently dropped before the model ever saw it — to save
-money that is not being spent.
+Every note, every question, while the library fits the context budget —
+measured, 182 notes answered better than 87. Past the budget, M7's selector
+drops whole notes (never fragments) and the answer records which it read.
+
+What an answer quotes is checked against the transcripts of the videos it
+cites, after it is written, and marked where it was not found.
 
 Escalation is the model's decision, not a flag. A question about what videos
 cover is answerable from notes; a question about someone's exact words is not,
@@ -33,7 +33,7 @@ import random
 import re
 import time
 from dataclasses import replace
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .config import Config
 from .brain.selector import Selector
@@ -43,6 +43,7 @@ from .contracts import (
     Answer,
     AnswerCitation,
     CitationScan,
+    Grounding,
     LoadedNote,
     NoteSummary,
     Opened,
@@ -137,12 +138,13 @@ __all__ = [
     "deep_link",
     "load_notes",
     "render_notes",
-    "render_notes",
+    "spoken_text",
     "normalise_dashes",
     "parse_citations",
     "scan_citations",
     "parse_escalations",
     "render_answer",
+    "has_grounding",
     "shuffle_for_reading",
     "mark_unverified",
     "render_links",
@@ -398,25 +400,41 @@ _CITE_WINDOW = 200
 # boundary separates is two kinds of claim, not two error rates.
 _SPEECH_CHARS = 40
 
-# Above this, a failing quote is a *loose* rendering of something the cited
-# note's `## Verbatim` section holds rather than an invention.
+# Above this, a failing quote is a *loose* rendering of the passage rather than
+# an invention. Two numbers, because there are two instruments, each measured
+# against its own corpus.
 #
-# **Measured, and the threshold is hard rather than chosen.** All 42
-# sentence-length failures were scored against the Verbatim section of the note
-# they cite, best-matching window, word sequences. The distribution has an empty
-# band from 0.30 to 0.50 — nothing lands near the line — and the count is
-# identical at every cut from 0.40 to 0.50. That is the opposite of
-# `_SPEECH_CHARS`, where the corpus offered no break and 40 is a convention.
-#
-# The five above it are quotes drawn *from* Verbatim and rendered imprecisely,
-# which is why the model cannot be said to be ignoring that section.
+# **Against a transcript: 0.6.** Every cited quote in the archived answers that
+# its transcript does not hold exactly — 570 of 1,078 — was scored against the
+# transcript it cites and, as a null, against a random transcript it does not.
+# At 0.6 the cited transcripts match 121 and chance matches none; at 0.5 chance
+# starts to reach in (6 of 570). The line sits where chance stops.
+_TRANSCRIPT_LOOSE_RATIO = 0.6
+
+# **Against a note's `## Verbatim`: 0.5,** used only when no cited video has a
+# transcript on disk. All 42 sentence-length failures of an earlier measurement
+# were scored against the Verbatim section of the note they cite; the
+# distribution has an empty band from 0.30 to 0.50, so nothing sits near the
+# line.
 _LOOSE_RATIO = 0.5
 
-# The one section of a note that is speech. Everything else is the note-writer's
-# account of what the video said, and 13 of the 42 failures are that prose
-# rendered inside quotation marks.
+# The one section of a note that is meant to be speech. Everything else is the
+# note-writer's account of what the video said.
 _VERBATIM_RE = re.compile(r"^## Verbatim\s*$", re.MULTILINE)
 _SECTION_RE = re.compile(r"^#{1,4}\s", re.MULTILINE)
+
+# A stored cue's timing prefix, `[00:01:33.500 --> 00:01:36.000] `, or the
+# shorter `[00:01:33.500] ` stage 2 reads. Stripped so a quote is matched
+# against the words that were said and never against the clock.
+_CUE_PREFIX_RE = re.compile(r"^\[[^\]\n]*\]\s?", re.MULTILINE)
+
+_WORD_RE = re.compile(r"[a-z0-9]+")
+
+# Candidate alignments scored per quote. The best window is the one sharing the
+# most words with the quote, so it is always near the top of the vote; twenty is
+# headroom, and it is what lets a whole transcript be searched in milliseconds
+# where scoring every window took minutes.
+_ALIGNMENTS = 20
 
 
 def _verbatim_of(note_text: str) -> str:
@@ -429,26 +447,43 @@ def _verbatim_of(note_text: str) -> str:
     return (rest[: following.start()] if following else rest).strip()
 
 
-def _closeness(quote: str, hay: str) -> float:
+def spoken_text(transcript: str) -> str:
+    """A transcript's words with every cue's timing prefix removed."""
+    return _CUE_PREFIX_RE.sub(" ", transcript)
+
+
+class _Words:
+    """One text as a word sequence, indexed for the loose match."""
+
+    def __init__(self, text: str) -> None:
+        self.words = _WORD_RE.findall(text.lower())
+        self.positions: dict[str, list[int]] = {}
+        for index, word in enumerate(self.words):
+            self.positions.setdefault(word, []).append(index)
+
+
+def _closeness(quote: str, hay: _Words) -> float:
     """Best word-sequence similarity of `quote` against any window of `hay`.
 
-    Cheap enough to run per failing quote and no cheaper than it needs to be: a
-    Verbatim section is ~150 words and a quote ~14, so this is a few hundred
-    `SequenceMatcher` calls on short sequences, only for spans that already
-    failed the exact check. `difflib` is stdlib, so it adds no dependency.
+    Only windows that line up with the quote's own words are scored: each word
+    the two share votes for the alignment it implies, and the best-voted few
+    are compared with `SequenceMatcher`. Exhaustive scoring gives the same
+    answer on a 150-word Verbatim section and takes minutes on a transcript.
+    `difflib` is stdlib, so this adds no dependency.
     """
     needle = _WORD_RE.findall(quote.lower())
-    field = _WORD_RE.findall(hay.lower())
-    if not needle or not field:
+    if not needle or not hay.words:
         return 0.0
+    votes: dict[int, int] = {}
+    for offset, word in enumerate(needle):
+        for position in hay.positions.get(word, ()):
+            start = max(0, position - offset)
+            votes[start] = votes.get(start, 0) + 1
     best = 0.0
-    for start in range(max(1, len(field) - len(needle) + 1)):
-        window = field[start : start + len(needle) + 4]
+    for start in sorted(votes, key=lambda key: (-votes[key], key))[:_ALIGNMENTS]:
+        window = hay.words[start : start + len(needle) + 4]
         best = max(best, difflib.SequenceMatcher(None, needle, window).ratio())
     return best
-
-
-_WORD_RE = re.compile(r"[a-z0-9]+")
 
 
 def _flatten(text: str) -> str:
@@ -462,55 +497,79 @@ def _flatten(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower())
 
 
+def _cited_near(window: str, folded: dict[str, str]) -> list[str]:
+    """Loaded video ids cited in a bracket inside ``window``, in order, once each.
+
+    Matched against the ids the library holds rather than by sliding an id
+    pattern, for the reason `_find_id` gives: an id may begin with a hyphen,
+    so `[--_0uiiJfsBPI 15:48]` slides to `--_0uiiJfsB` and resolves to
+    nothing. Case-folded because the citation parser repairs case.
+    """
+    found: list[str] = []
+    for group in _GROUP_RE.finditer(window):
+        inside = group.group(1).lower()
+        for lowered, video_id in folded.items():
+            if lowered in inside and video_id not in found:
+                found.append(video_id)
+    return found
+
+
 def check_grounding(
-    text: str, notes: Sequence[LoadedNote], loaded: Sequence[str]
-) -> tuple[list[str], list[str], list[str]]:
-    """Count what the answer asserts that its own sources do not support.
+    text: str,
+    notes: Sequence[LoadedNote],
+    loaded: Sequence[str],
+    *,
+    transcripts: Mapping[str, str] | None = None,
+) -> Grounding:
+    """Check what the answer quotes and cites against the record it came from.
 
-    Returns `(unresolved_ids, unverified_speech, unverified_phrases,
-    unspoken_quotes, uncited_quotes)`.
+    **A quote is checked against the transcript of the video it cites.** The
+    transcript is what was said; a note is one reading of it, and its
+    `## Verbatim` section is that reader's choice of quotes, which is not
+    always verbatim. Outcomes, per rule 14:
 
-    **A quote is checked against the note's speech, not against the note.**
-    Three outcomes, per rule 14: found in ``## Verbatim`` is real speech and is
-    not reported; found elsewhere in the note is the note-writer's words
-    presented as a speaker's, which used to verify silently; found nowhere is
-    what ``unverified`` has always meant.
+    * in a cited transcript, word for word — verified, not reported;
+    * close to a passage of a cited transcript — `loose`: rendered imprecisely;
+    * not in the transcript but in the cited note — `unspoken`: the note's
+      words, not the speaker's (`in_verbatim` says which part of the note);
+    * nowhere — unverified, split by length into speech and phrases.
 
-    The middle one is deliberately not folded into ``unverified``. A legitimate
-    quote can sit inline in ``## Claims`` -- the note-writer quoting a phrase in
-    passing -- so a Verbatim-only test would flag it as a failure. Its own
-    counter keeps that ambiguity visible instead of miscounting it.
+    When no cited video has a transcript on disk, the note's `## Verbatim`
+    section stands in for it, as it did before transcripts were consulted, and
+    the quote is counted in ``quotes_unchecked``.
 
     **The two unverified lists are never summed.** A sentence attributed to a
-    video its note does not contain is a claim about what somebody said; a
+    video that its sources do not contain is a claim about what somebody said; a
     quoted phrase in the same position is usually the model quoting its own
-    vocabulary. See `_SPEECH_CHARS` for where the line sits and why the corpus
-    could not place it better.
-
-    **Renamed rather than narrowed.** `unverified_quotes` used to mean both, so
-    keeping the name for the smaller half would leave a count that fell ~3x
-    without saying so — the mistake `note_counts` made with `unwanted` and had
-    to be renamed out of.
+    vocabulary. See `_SPEECH_CHARS` for where the line sits.
 
     **Hard rule 1 governs the return value.** A failing quote may travel — it
-    came from the answer, which the reader is already holding. The *note* may
-    not: not the passage searched, not the nearest match, not "the note says X
-    instead". This reports whether a string was found and never what stood in
-    its place, and the trap is that the note text is sitting right there in the
-    same function — the same shape as the size-warning that wanted to name the
-    largest note.
+    came from the answer, which the reader is already holding. The transcript
+    and the note may not: not the passage searched, not the nearest match, not
+    "the video says X instead". This reports whether a string was found and
+    never what stood in its place.
     """
+    text = normalise_dashes(text)
     known = set(loaded)
     folded = {video_id.lower(): video_id for video_id in known}
     flat = {note.video_id: _flatten(note.text) for note in notes}
-    # Built once per answer rather than per failing quote: a Verbatim section is
-    # extracted with two regexes and there may be nine failures over 250 notes.
     verbatim = {note.video_id: _verbatim_of(note.text) for note in notes}
-    # The speech half of a note, flattened for the same substring test the whole
-    # note gets. Note prose is roughly twelve times the size of Verbatim -- a
-    # median 11,400 characters against 916 -- so matching against the whole note
-    # verifies a quote against a great deal of text nobody ever said.
-    spoken = {video_id: _flatten(text) for video_id, text in verbatim.items()}
+    spoken_note = {video_id: _flatten(part) for video_id, part in verbatim.items()}
+    heard_text = {
+        video_id: spoken_text(body)
+        for video_id, body in (transcripts or {}).items()
+        if body and video_id in known
+    }
+    said = {video_id: _flatten(body) for video_id, body in heard_text.items()}
+    # Built lazily: only a quote that failed the exact test needs one.
+    indexed: dict[tuple[str, str], _Words] = {}
+
+    def words_of(kind: str, video_id: str) -> _Words:
+        key = (kind, video_id)
+        if key not in indexed:
+            body = heard_text[video_id] if kind == "transcript" else verbatim.get(video_id, "")
+            indexed[key] = _Words(body)
+        return indexed[key]
 
     # Brackets only. Scanning free prose would flag every eleven-character word.
     unresolved: list[str] = []
@@ -534,48 +593,73 @@ def check_grounding(
     phrases: list[UnverifiedQuote] = []
     unspoken: list[UnverifiedQuote] = []
     uncited: list[str] = []
+    checked = verified = unchecked = 0
     for quote in _QUOTE_RE.finditer(text):
         body = quote.group(1).strip()
-        if len(_flatten(body)) < 8:
+        needle = _flatten(body)
+        if len(needle) < 8:
             continue
         window = text[max(0, quote.start() - _CITE_WINDOW) : quote.end() + _CITE_WINDOW]
-        # Case-folded, matching what the citation parser already repairs: an
-        # id the model mis-cased still names a real video, and treating the
-        # quote as unattributed would report a *citation* problem as an
-        # *attribution* one.
-        ids = [
-            folded[found.lower()]
-            for group in _GROUP_RE.finditer(window)
-            for found in _ID_SHAPE_RE.findall(group.group(1))
-            if found.lower() in folded
-        ]
+        ids = _cited_near(window, folded)
         if not ids:
             uncited.append(body)
             continue
-        needle = _flatten(body)
+        checked += 1
         # Every nearby id, not the first: the check passes if *any* of them
         # held the string, so naming one would misreport what was tested.
-        cited = "/".join(dict.fromkeys(ids))
-        if any(needle in spoken[video_id] for video_id in ids):
-            continue  # real speech, correctly quoted
-        if any(needle in flat[video_id] for video_id in ids):
-            # **The words are in the note; nobody said them.** Its own outcome
-            # rather than folded into `unverified`, because a legitimate quote
-            # can sit inline in `## Claims` — the note-writer quoting a phrase
-            # in passing — and a Verbatim-only test would call that a failure.
-            # Keeping it separate makes the ambiguity visible instead of
-            # miscounting it, which is what rule 14 is for.
-            unspoken.append(UnverifiedQuote(text=body, video_ids=cited))
-            continue
-        # Loose against *any* note it cited, for the same reason the
-        # membership test above is: the quote passes if one of them holds it.
-        loose = any(_closeness(body, verbatim[video_id]) >= _LOOSE_RATIO for video_id in ids)
+        cited = "/".join(ids)
+        heard = [video_id for video_id in ids if video_id in said]
+
+        if heard:
+            if any(needle in said[video_id] for video_id in heard):
+                verified += 1
+                continue
+            loose = any(
+                _closeness(body, words_of("transcript", video_id)) >= _TRANSCRIPT_LOOSE_RATIO
+                for video_id in heard
+            )
+            if not loose and any(needle in flat.get(video_id, "") for video_id in ids):
+                # **The words are in the note; the video does not say them.**
+                unspoken.append(
+                    UnverifiedQuote(
+                        text=body,
+                        video_ids=cited,
+                        in_verbatim=any(needle in spoken_note.get(v, "") for v in ids),
+                    )
+                )
+                continue
+        else:
+            # No transcript on disk for anything cited here: the note's Verbatim
+            # is the best record available, and the quote is counted as checked
+            # only against it.
+            unchecked += 1
+            if any(needle in spoken_note.get(video_id, "") for video_id in ids):
+                verified += 1
+                continue
+            if any(needle in flat.get(video_id, "") for video_id in ids):
+                unspoken.append(UnverifiedQuote(text=body, video_ids=cited))
+                continue
+            loose = any(
+                _closeness(body, words_of("verbatim", video_id)) >= _LOOSE_RATIO
+                for video_id in ids
+            )
+
         entry = UnverifiedQuote(text=body, video_ids=cited, loose=loose)
         # Measured on the raw span, not the flattened one: the boundary was
         # placed against quoted text as a reader sees it, and flattening
         # strips the spaces that make a sentence long.
         (speech if len(body) >= _SPEECH_CHARS else phrases).append(entry)
-    return unresolved, speech, phrases, unspoken, uncited
+
+    return Grounding(
+        unresolved_ids=tuple(unresolved),
+        unverified_speech=tuple(speech),
+        unverified_phrases=tuple(phrases),
+        unspoken_quotes=tuple(unspoken),
+        uncited_quotes=tuple(uncited),
+        quotes_checked=checked,
+        quotes_verified=verified,
+        quotes_unchecked=unchecked,
+    )
 
 
 def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationScan:
@@ -638,7 +722,9 @@ def parse_escalations(text: str, *, known: Sequence[str], limit: int) -> list[tu
     already written.
     """
     matches = list(_ESCALATE_RE.finditer(text))
-    if not matches:
+    if not matches or limit <= 0:
+        # `limit` is what is left of `[ask] max_transcripts` after `--deep`.
+        # At zero the loop below would still take one before checking it.
         return []
 
     remainder = _ESCALATE_RE.sub("", text).strip()
@@ -660,6 +746,16 @@ def parse_escalations(text: str, *, known: Sequence[str], limit: int) -> list[tu
         if len(out) >= limit:
             break
     return out
+
+
+def _only_escalates(text: str) -> bool:
+    """Is this reply a transcript request rather than an answer?
+
+    The same test `parse_escalations` applies before acting on a marker, and
+    deliberately independent of whether the ids named are in the library: a
+    request for an unknown video is still not an answer.
+    """
+    return bool(_ESCALATE_RE.search(text)) and len(_ESCALATE_RE.sub("", text).strip()) <= 400
 
 
 def deep_link(video_id: str, seconds: int) -> str:
@@ -684,7 +780,7 @@ def render_links(citations: Sequence[AnswerCitation], titles: dict[str, str]) ->
 
 MARK_UNVERIFIED = "[unverified]"
 MARK_LOOSE = "[loosely quoted]"
-# The words are in the note. Nobody spoke them.
+# The words are in the note. The transcript does not have them.
 MARK_UNSPOKEN = "[not spoken]"
 
 
@@ -695,11 +791,11 @@ def mark_unverified(answer: Answer) -> str:
     reader to distrust the whole answer; a marker on five sentences tells them
     which five, and leaves the rest readable.
 
-    Two markers rather than one, because the failures are two: `[loosely quoted]`
-    is a passage the cited note's `## Verbatim` section holds in almost these
-    words, and `[unverified]` is a span with no near match there. Measured, 5 of
-    42 against 24 with no source anywhere — marking those identically would
-    accuse the first group of something it did not do.
+    Three markers, because the failures are three: `[loosely quoted]` is a
+    passage the cited transcript holds in almost these words, `[not spoken]` is
+    a string the cited note holds and the transcript does not, and
+    `[unverified]` is a span with no near match in either. Marking them
+    identically would accuse the first of what the last did.
 
     **The marker is marginalia's, not the model's**, and it says only that a
     string was not found. It never carries what the note held instead. Applied
@@ -711,8 +807,8 @@ def mark_unverified(answer: Answer) -> str:
         quote.text: MARK_LOOSE if quote.loose else MARK_UNVERIFIED
         for quote in (*answer.unverified_speech, *answer.unverified_phrases)
     }
-    # Last, so an entry here wins: a span the note holds outside `## Verbatim`
-    # is a different claim from one it does not hold at all.
+    # Last, so an entry here wins: a span the note holds and the transcript
+    # does not is a different claim from one neither holds.
     failing.update({quote.text: MARK_UNSPOKEN for quote in answer.unspoken_quotes})
     if not failing:
         return answer.text
@@ -794,6 +890,18 @@ def _read_marks(answer: Answer) -> list[str]:
     ]
 
 
+def has_grounding(answer: Answer) -> bool:
+    """Was anything checked, or did anything fail? Either earns the section."""
+    return bool(
+        answer.quotes_checked
+        or answer.unresolved_ids
+        or answer.unverified_speech
+        or answer.unverified_phrases
+        or answer.unspoken_quotes
+        or answer.uncited_quotes
+    )
+
+
 def render_answer(answer: Answer, *, asked_at: str) -> str:
     """One answer as a file. Pure: no clock, no disk, no config.
 
@@ -868,6 +976,16 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         "",
         "## Answer",
         "",
+        *(
+            ["**The model call failed — this is the failure, not an answer.**", ""]
+            if answer.failed
+            else []
+        ),
+        *(
+            ["**The reply hit the token ceiling — what follows is a fragment.**", ""]
+            if answer.truncated
+            else []
+        ),
         mark_unverified(answer).strip() or "(the model returned nothing)",
         "",
         "## Citations",
@@ -882,31 +1000,36 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         lines.extend(["", "Citation-shaped but unreadable:"])
         lines.extend(f"  {fragment}" for fragment in answer.unparsed)
 
-    if (
-        answer.unresolved_ids
-        or answer.unverified_speech
-        or answer.unverified_phrases
-        or answer.unspoken_quotes
-        or answer.uncited_quotes
-    ):
-        # **The failing strings, and never the notes.** A quote may be printed:
-        # it came from the answer, which the reader is already holding. What the
-        # note contained instead may not — this section reports whether a string
-        # was found, never what stood in its place.
+    if has_grounding(answer):
+        # **The failing strings, and never the sources.** A quote may be
+        # printed: it came from the answer, which the reader is already holding.
+        # What a transcript or note contained instead may not — this section
+        # reports whether a string was found, never what stood in its place.
         lines.extend(["", "## Grounding", ""])
+        # The denominator first. "3 unverified" is unreadable without it.
+        lines.append(
+            f"- {answer.quotes_checked} cited quote(s) checked, "
+            f"{answer.quotes_verified} found word for word"
+            + (
+                f"; {answer.quotes_unchecked} of them against the note's Verbatim"
+                f" only, because no cited video had a transcript on disk"
+                if answer.quotes_unchecked
+                else " in the transcript of a video they cite"
+            )
+        )
         # Two lines, because the reader's question is "did the model quote a
         # video, or quote itself?" and neither number answers it alone. Speech
         # first: it is the one that asserts somebody said something.
         lines.append(
             f"- {len(answer.unverified_speech)} sentence(s) attributed to a video"
-            f" whose note does not contain them"
+            f" whose transcript does not contain them"
             f", {len(answer.unverified_phrases)} shorter quoted phrase(s) likewise"
         )
-        spoken_long = sum(1 for q in answer.unspoken_quotes if len(q.text) >= _SPEECH_CHARS)
+        from_verbatim = sum(1 for q in answer.unspoken_quotes if q.in_verbatim)
         lines.append(
             f"- {len(answer.unspoken_quotes)} quoted string(s) are in the cited note"
-            f" but outside its Verbatim section — the note-writer's words rather than"
-            f" a speaker's ({spoken_long} of them sentence-length)"
+            f" but not in the transcript — the note's words rather than a"
+            f" speaker's ({from_verbatim} of them from the note's own Verbatim section)"
         )
         lines.append(
             f"- {len(answer.unresolved_ids)} cited id(s) name no loaded video"
@@ -917,7 +1040,7 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         )
         lines.append(
             f"- of those, {loose} are marked {MARK_LOOSE} in the answer above — the"
-            f" cited note holds the passage in almost these words; the rest are"
+            f" source holds the passage in almost these words; the rest are"
             f" marked {MARK_UNVERIFIED}, with no near match there"
         )
         lines.append(
@@ -928,13 +1051,14 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         for video_id in answer.unresolved_ids:
             lines.append(f"- no such loaded video: {video_id}")
         for item in answer.unverified_speech:
-            mark = "loosely quoted sentence" if item.loose else "sentence not in the cited note"
+            mark = "loosely quoted sentence" if item.loose else "sentence not in the source"
             lines.append(f"- {mark}: {item.render()}")
         for item in answer.unverified_phrases:
-            mark = "loosely quoted phrase" if item.loose else "phrase not in the cited note"
+            mark = "loosely quoted phrase" if item.loose else "phrase not in the source"
             lines.append(f"- {mark}: {item.render()}")
         for item in answer.unspoken_quotes:
-            lines.append(f"- in the note, outside Verbatim: {item.render()}")
+            where = "its Verbatim section" if item.in_verbatim else "its prose"
+            lines.append(f"- in the note ({where}), not the transcript: {item.render()}")
         for item in answer.uncited_quotes:
             lines.append(f"- quoted, uncited: {item}")
 
@@ -995,127 +1119,65 @@ def load_notes(library: Library, ledger: Ledger | None = None) -> list[LoadedNot
 
 
 # The first claim is where a note says what the video actually asserts, and it
-
 # is the closest thing a note has to a description of itself. Truncated, because
-
 # the selector needs a hint rather than the note — that is the next stage's job.
-
 _GIST_CHARS = 200
-
 _CLAIMS_RE = re.compile(r"^##\s*Claims\s*$(.*?)(?=^##\s|\Z)", re.MULTILINE | re.DOTALL)
-
 _BULLET_RE = re.compile(r"^\s*[-*]\s+(.+?)$", re.MULTILINE)
-
 _DATE_RE = re.compile(r"\b(\d{8})\b")
 
 
-
-
-
 def summarise(note: LoadedNote) -> NoteSummary:
-
     """One line about one note, for the selector.
 
-
-
     **Built from the note, and it never leaves this process except to the
-
     model.** Hard rule 1 does not stop at whole notes: `gist` is note text, so
-
     nothing here may be printed, logged or written into an answer file. What is
-
     reported is the *counts* these produce.
 
-
-
     The date comes from the note's own second line rather than from `meta.json`,
-
     so a summary needs no second read of the disk.
-
     """
-
     published = ""
-
     head = note.text.split("\n", 2)[:2]
-
     if len(head) > 1:
-
         found = _DATE_RE.search(head[1])
-
         published = found.group(1) if found else ""
 
-
-
     gist = ""
-
     claims = _CLAIMS_RE.search(note.text)
-
     if claims:
-
         bullet = _BULLET_RE.search(claims.group(1))
-
         if bullet:
-
             gist = " ".join(bullet.group(1).split())[:_GIST_CHARS]
-
     return NoteSummary(
-
         video_id=note.video_id,
-
         title=" ".join(note.title.split())[:120],
-
         published=published,
-
         gist=gist or "(the note names no claim)",
-
     )
 
 
-
-
-
 def fill_to_budget(
-
     notes: Sequence[LoadedNote], budget_tokens: int
-
 ) -> tuple[list[LoadedNote], int]:
-
     """As many notes as fit, in the order given, plus how many did not.
 
-
-
-    Used twice, and the second use is the important one. It packs a selection
-
-    that came back larger than the budget, and it is also what a *failed*
-
-    selection falls through to — rule 8, because filling the budget with an
-
-    arbitrary but as-complete-as-possible set beats answering from a handful
-
-    the selector never actually chose.
-
+    Used twice: to size the room the selector is asked to fill, and to pack a
+    selection that came back larger than the budget. It is no longer what a
+    *failed* selection falls through to — `choose_notes` refuses instead,
+    because a positional fill is exclusion by an order unrelated to the
+    question.
     """
-
     kept: list[LoadedNote] = []
-
     spent = _PROMPT_OVERHEAD_TOKENS
-
     for note in notes:
-
         cost = int((len(note.text) + len(note.title)) / _CHARS_PER_TOKEN)
-
         if kept and spent + cost > budget_tokens:
-
             break
-
         spent += cost
-
         kept.append(note)
-
     return kept, len(notes) - len(kept)
-
-
-
 
 
 def choose_notes(
@@ -1418,32 +1480,57 @@ def answer_question(
             # user an ESCALATE line instead of prose.
             reply = _call(config, client, prompt, question, notes, opened, allow=False)
     except LlmError as exc:
+        # Marked as a failure, not passed off as an answer. The text is still
+        # recorded — a failed answer is the one you most want a record of — but
+        # `failed` is what lets the CLI exit non-zero, so a skill reading the
+        # exit code does not relay an error message as the library's answer.
         result.text = f"The model call failed: {exc}"
+        result.failed = True
+        result.opened = [(item.video_id, item.why) for item in opened]
         result.elapsed_s = time.monotonic() - started
         _account(result, client, config)
         return result
 
     result.text = reply.text.strip()
     result.opened = [(item.video_id, item.why) for item in opened]
-    (
-        result.unresolved_ids,
-        result.unverified_speech,
-        result.unverified_phrases,
-        result.unspoken_quotes,
-        result.uncited_quotes,
-    ) = check_grounding(result.text, notes, [note.video_id for note in notes])
+    # Measured from why the model stopped, not from whether text came back: a
+    # reply cut off mid-sentence is truncated and not empty, and an empty
+    # reply that terminated is empty and not truncated.
+    result.truncated = reply.finish_reason == "length"
+    if result.truncated:
+        log.warning("ask: the answer hit the token ceiling and is a fragment")
+    if _only_escalates(result.text):
+        # A request for transcripts where an answer was due: after the second
+        # call, or for videos that could not be opened. What would be printed
+        # is a list of ESCALATE lines, so it is recorded as the failure it is.
+        log.warning("ask: the model asked for transcripts instead of answering")
+        result.failed = True
+
+    grounding = check_grounding(
+        result.text,
+        notes,
+        known,
+        transcripts=_transcripts_for(library, ledger, result.text, known),
+    )
+    result.unresolved_ids = list(grounding.unresolved_ids)
+    result.unverified_speech = list(grounding.unverified_speech)
+    result.unverified_phrases = list(grounding.unverified_phrases)
+    result.unspoken_quotes = list(grounding.unspoken_quotes)
+    result.uncited_quotes = list(grounding.uncited_quotes)
+    result.quotes_checked = grounding.quotes_checked
+    result.quotes_verified = grounding.quotes_verified
+    result.quotes_unchecked = grounding.quotes_unchecked
     if result.unspoken_quotes:
         log.warning(
-            "ask: %d quoted string(s) are in the cited note but outside its "
-            "Verbatim section — the note-writer's words, not a speaker's",
+            "ask: %d quoted string(s) are in the cited note and not in the "
+            "transcript — the note's words, not a speaker's",
             len(result.unspoken_quotes),
         )
     if result.unverified_speech or result.unverified_phrases or result.unresolved_ids:
-        # Counts only. Naming the note that failed to contain a string is
-        # one step from printing what it held instead, which is the line
-        # hard rule 1 draws at every other surface.
+        # Counts only. Naming what a source held instead is one step from
+        # printing it, which is the line hard rule 1 draws at every surface.
         log.warning(
-            "ask: %d sentence(s) and %d shorter phrase(s) are not in the notes "
+            "ask: %d sentence(s) and %d shorter phrase(s) are not in the sources "
             "they cite, %d cited id(s) name no loaded video",
             len(result.unverified_speech),
             len(result.unverified_phrases),
@@ -1453,10 +1540,35 @@ def answer_question(
     result.citations = scan.citations
     result.unparsed = scan.unparsed
     result.repaired = scan.repaired
-    result.truncated = not result.text
     _account(result, client, config)
     result.elapsed_s = time.monotonic() - started
     return result
+
+
+def _transcripts_for(
+    library: Library, ledger: Ledger | None, text: str, known: Sequence[str]
+) -> dict[str, str]:
+    """The stored transcript of every loaded video the answer names.
+
+    Read whole from disk, not taken from what was opened mid-answer: an opened
+    transcript is cut at `[ask] max_transcript_chars`, and a quote from past
+    the cut would fail a check the full record passes. Read only to compare —
+    nothing here is sent anywhere or printed — and recorded with
+    `touch_accessed`, because a video cited in an answer is a video that was
+    used.
+    """
+    lowered = normalise_dashes(text).lower()
+    found: dict[str, str] = {}
+    for video_id in known:
+        if video_id.lower() not in lowered or not library.has_transcript(video_id):
+            continue
+        try:
+            found[video_id] = library.read_transcript(video_id)
+        except OSError as exc:
+            log.warning("ask: could not read the transcript of %s to check quotes (%s)", video_id, exc)
+            continue
+        _touch(ledger, video_id)
+    return found
 
 
 def _call(
