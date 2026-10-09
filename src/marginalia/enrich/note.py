@@ -275,7 +275,6 @@ def select(
     *,
     version: str,
     video_ids: Sequence[str] = (),
-    limit: int | None = None,
     regenerate: bool = False,
     every: bool = False,
     missing_only: bool = False,
@@ -353,7 +352,6 @@ def write_notes(
         ledger,
         version=prompt.version,
         video_ids=video_ids,
-        limit=limit,
         regenerate=regenerate,
         every=every,
         missing_only=missing_only,
@@ -374,6 +372,8 @@ def write_notes(
                 run.stopped_because = STOP_MAX_COST
                 break
 
+            # Each video's overflow is its own (see `forget_overflows`).
+            client.forget_overflows()
             try:
                 result = _one(config, ledger, library, client, prompt, row)
             except LlmConfigError as exc:

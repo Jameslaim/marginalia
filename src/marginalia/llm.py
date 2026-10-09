@@ -299,6 +299,17 @@ class LlmClient:
     def model(self) -> str:
         return self.config.model
 
+    def forget_overflows(self) -> None:
+        """Start the overflow count again, for a caller whose requests are
+        independent of each other.
+
+        The note drain is one: each video is its own request, a skipped one
+        costs nothing, and its queue is ordered by `first_seen`, so three
+        oversized transcripts at its head would otherwise stop every drain on
+        the same three videos — the jam `LlmRequestTooLarge` exists to prevent.
+        """
+        self._too_large = 0
+
     def complete(
         self,
         system: str,

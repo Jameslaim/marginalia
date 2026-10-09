@@ -820,3 +820,19 @@ def test_a_transcript_over_the_context_window_does_not_stop_the_drain(tmp_path):
     ]
     assert "context window" in run.results[0].detail
     assert run.stopped_because != STOP_REFUSED
+
+
+def test_oversized_transcripts_at_the_head_of_the_queue_do_not_stop_the_drain(tmp_path):
+    """Three overflows in a row are a config error to the client — right for
+    discovery, where an unread keep is the damage. In the drain each video is
+    its own request and its skip is free, and the queue is ordered by
+    `first_seen`, so three oversized transcripts at its head would stop every
+    drain on the same three videos."""
+    ids = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"]
+    config, library, ledger = library_with(tmp_path, *ids)
+    replies = client(lambda index: _ContextOverflow() if index < 3 else GOOD_NOTE)
+
+    run = write_notes(config, ledger, library, replies, prompts_directory=prompts(tmp_path))
+
+    assert [r.outcome for r in run.results] == [SKIPPED, SKIPPED, SKIPPED, NOTED]
+    assert run.stopped_because != STOP_REFUSED

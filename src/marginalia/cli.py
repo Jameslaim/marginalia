@@ -1622,7 +1622,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--limit",
         type=int,
         default=None,
-        help="stop after N notes — use this first, and read them before running the batch",
+        help="stop after N attempts (notes written or failed; skips are free) — "
+        "use this first, and read them before running the batch",
     )
     note.add_argument(
         "--regenerate",
