@@ -210,6 +210,17 @@ def test_an_unreadable_reply_never_stops_the_loop() -> None:
     assert not plan.queries
 
 
+def test_a_stop_at_the_end_of_an_unreadable_reply_does_not_stop_the_loop() -> None:
+    """The case the test above did not cover: a reply that broke the format
+    everywhere but its last line. It used to end the run as
+    `coverage_satisfied`, with no coverage assessment behind it."""
+    plan = parse_plan("some prose the planner wrote\nRECOMMENDATION: STOP - looks fine", round_number=1)
+
+    assert not plan.parsed
+    assert plan.recommendation == RECOMMEND_STOP
+    assert not plan.wants_to_stop
+
+
 def test_too_many_queries_are_capped(caplog: pytest.LogCaptureFixture) -> None:
     blocks = "\n".join(f"QUERY: query number {n}\nFROM: gap\n" for n in range(30))
     with caplog.at_level(logging.WARNING, logger="marginalia.brain.planner"):

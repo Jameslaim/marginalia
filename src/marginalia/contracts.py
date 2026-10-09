@@ -858,7 +858,17 @@ class RoundPlan:
 
     @property
     def wants_to_stop(self) -> bool:
-        return self.recommendation == RECOMMEND_STOP
+        """A STOP the run may act on: from a plan that parsed, with a coverage
+        assessment behind it.
+
+        The recommendation alone used to be enough, so a reply that broke the
+        format everywhere except its last line — "garbage, then RECOMMENDATION:
+        STOP" — ended the run as `coverage_satisfied` with no assessment at all.
+        That records a library as covered that nothing checked, which is rule
+        8's invisible error and rule 20's confusion at once. An unreadable plan
+        continues, as an unreadable verdict keeps.
+        """
+        return self.recommendation == RECOMMEND_STOP and self.parsed and bool(self.coverage)
 
     def as_dict(self) -> dict:
         """What `--json` carries and what the report reads."""

@@ -63,6 +63,7 @@ from ..contracts import (
     NEW,
     ORIGIN_BRIEF,
     ORIGIN_THREAD,
+    RECOMMEND_STOP,
     REJECTED,
     STORED_THIS_RUN,
     VERDICT_MAYBE,
@@ -373,6 +374,12 @@ def _loop(
             log.info("discover: planner recommends stopping — %s", plan.reason)
             run.stopped_because = STOP_COVERAGE_SATISFIED
             return
+        if plan.recommendation == RECOMMEND_STOP:
+            # Said, and not acted on: the plan behind it did not parse.
+            log.warning(
+                "discover: the planner said STOP in a reply that did not parse (%s) — continuing",
+                plan.problem or "no coverage assessment",
+            )
 
     run.stopped_because = STOP_MAX_ROUNDS
 
