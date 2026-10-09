@@ -200,30 +200,55 @@ _FULL_LINES = ("VERDICT", "EVIDENCE", "REASON", "RELEVANT", "UNEXPLAINED")
 # about content that happens to name its source. What matters is not whether
 # the reason mentions the transcript but whether it says the transcript could
 # not be read.
+#
+# **It over-fired a second time, the other way round.** Bare `quality`, `noise`,
+# `empty`, `blank`, `truncated` and `corrupt` describe subjects as readily as
+# evidence — "a code quality tutorial", "data corruption recovery", "an empty
+# sales pitch", "truncated backpropagation" — and each turned an ordinary content
+# rejection into a DEGRADED keeper, which `wanted_for_a_note` then refuses a note
+# for every topic. So the words split in two. These are damage on their own:
 _DAMAGE_WORDS = (
     "garbled",
     "unintelligible",
     "illegible",
     "unreadable",
-    "corrupt",
-    "truncated",
     "gibberish",
-    "nonsens",
-    "incomprehensib",
     "mistranscri",
     "machine transl",
     "machine-transl",
     "auto-transl",
     "auto transl",
-    "quality",
-    "noise",
     "not legible",
     "could not be read",
     "cannot be read",
     "could not read",
-    "no usable",
-    "empty",
-    "blank",
+)
+
+# These are damage only when the reason says them *of the evidence*: the
+# transcript, the captions, the subtitles, the audio, the text. Predicated of it
+# ("the transcript is largely empty"), attached to it ("noisy auto captions",
+# "no usable transcript") or as its quality ("transcript quality too poor").
+# Merely appearing in a reason that also names the transcript is not enough —
+# "the transcript covers data corruption recovery" is a NO about content.
+_EVIDENCE_NOUN = r"(?:transcripts?|transcription|captions?|captioning|subtitles?|audio|text)"
+_AMBIGUOUS_DAMAGE = (
+    r"(?:empty|blank|truncated|truncation|corrupt\w*|noise|noisy|nonsens\w*"
+    r"|incomprehensib\w*|quality|no usable)"
+)
+_COPULA = r"(?:is|are|was|were|seems?|seemed|appears?|appeared|looks?|looked|becomes?|became|gets?|got)"
+# Adverbs only between the verb and the damage word, so "the transcript is about
+# truncated backpropagation" stays a statement about subject matter.
+_ADVERBS = r"(?:(?:\w+ly|too|so|very|just|almost|all|basically|essentially)\s+){0,2}"
+_DAMAGE_OF_EVIDENCE_RE = re.compile(
+    # predicated: "the transcript is largely empty", "the text is truncated"
+    rf"\b{_EVIDENCE_NOUN}\s+{_COPULA}\s+{_ADVERBS}(?:of\s+)?(?:(?:poor|low|bad)[\s-]+)?"
+    rf"{_AMBIGUOUS_DAMAGE}\b"
+    # attached: "empty transcript", "noisy auto captions", "no usable transcript"
+    rf"|\b{_AMBIGUOUS_DAMAGE}[\s-]+(?:(?:auto(?:matic)?|machine|auto-generated)[\s-]+)?"
+    rf"{_EVIDENCE_NOUN}\b"
+    # its quality: "transcript quality", "audio quality"
+    rf"|\b{_EVIDENCE_NOUN}\s+quality\b",
+    re.IGNORECASE,
 )
 
 _MAX_UNEXPLAINED = 5
@@ -264,12 +289,14 @@ def _blames_damaged_evidence(reason: str) -> bool:
       CLEAR. Catching only the honest version would enforce nothing, because
       the honest version is not the one that costs a video.
 
-    A false positive costs a log line, a counter increment and one kept video.
-    A false negative costs a video permanently, on evidence nobody could read.
-    The proxy is tuned toward the first.
+    A false positive is not free: on a NO it sets DEGRADED, and DEGRADED denies
+    the video a note for every topic. So a word counts only when the reason says
+    it of the evidence — see `_DAMAGE_OF_EVIDENCE_RE`.
     """
     lowered = reason.lower()
-    return any(word in lowered for word in _DAMAGE_WORDS)
+    return any(word in lowered for word in _DAMAGE_WORDS) or bool(
+        _DAMAGE_OF_EVIDENCE_RE.search(reason)
+    )
 
 
 # -- the outside-knowledge marker, checked rather than requested ---------------

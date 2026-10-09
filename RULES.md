@@ -295,6 +295,13 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     is garbled and contains no substantive content"* with verdict NO and evidence CLEAR,
     and only the code caught it.
 
+    **The damage-word proxy over-fired a second time, on subject matter.** Bare
+    `quality`, `noise`, `empty`, `truncated` and `corrupt` matched what a video was
+    *about* — "a code quality tutorial", "data corruption recovery", `TRUNCATE` — so a
+    content rejection became a DEGRADED keeper, and DEGRADED denies a note for every
+    topic: the one path that took a video out of the library. A damage word now counts
+    only when the reason says it of the transcript, captions, subtitles or audio.
+
     **`EVIDENCE: DEGRADED` suppresses the note**, and that is its point. A note written
     from unreadable text is worse than no note, because `/ask` loads it and cannot tell.
     It overrides even `noted_at` — regenerating a note from a transcript now known to be

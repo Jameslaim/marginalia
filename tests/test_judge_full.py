@@ -207,6 +207,70 @@ def test_a_real_evidence_problem_passes(reason: str) -> None:
     assert verdict.evidence == EVIDENCE_DEGRADED
 
 
+# -- the damage proxy reads the evidence, not the subject -------------------
+#
+# Its second over-fire. Bare `quality`, `noise`, `empty`, `truncated` and
+# `corrupt` matched subject matter, so a content NO became a DEGRADED keeper —
+# and DEGRADED denies the video a note for every topic. On a Postgres topic
+# `TRUNCATE` and data corruption are the subject.
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        # the measured case from rule 13
+        "the transcript is garbled and contains no substantive content",
+        "the captions are machine-translated noise",
+        "transcript quality too poor to verify any claim",
+        "the transcript is empty after the first minute",
+    ],
+)
+def test_a_no_that_says_the_transcript_is_damaged_is_still_kept_degraded(reason: str) -> None:
+    verdict = parse_full(reply(VERDICT="NO", REASON=reason, RELEVANT="NONE"), VIDEO)
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_DEGRADED
+    assert "rejected while calling the transcript unreadable" in verdict.problem
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "covers TRUNCATE and VACUUM, not connection pooling",
+        "discusses data corruption recovery, unrelated to pooling",
+        "a code quality and linting tutorial",
+        "covers data quality checks in dbt pipelines",
+        "discusses truncated backpropagation through time",
+        "an empty sales pitch with no technical content",
+        "mostly background noise about cloud pricing, nothing on pooling",
+        # naming the transcript does not make a subject word into damage
+        "the transcript covers data corruption recovery, not pooling",
+        "the transcript is about truncated backpropagation, not retrieval",
+    ],
+)
+def test_a_no_about_subject_matter_stays_a_no(reason: str) -> None:
+    verdict = parse_full(reply(VERDICT="NO", REASON=reason, RELEVANT="NONE"), VIDEO)
+
+    assert verdict.verdict == VERDICT_NO
+    assert verdict.evidence == EVIDENCE_CLEAR
+    assert verdict.parsed is True, verdict.problem
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Mostly about data quality, hard to say whether it matches.",
+        "An empty sales pitch, unclear whether it fits the brief.",
+    ],
+)
+def test_degraded_on_a_subject_word_still_names_no_evidence_problem(reason: str) -> None:
+    """The proxy's other caller. DEGRADED resting on a subject word is still
+    DEGRADED standing in for "I am not sure"."""
+    verdict = parse_full(reply(EVIDENCE="DEGRADED", REASON=reason, RELEVANT="UNAVAILABLE"), VIDEO)
+
+    assert "degraded without naming an evidence problem" in verdict.problem
+
+
 # -- rule: CLEAR + YES must name where the value is -------------------------
 
 
