@@ -1323,7 +1323,7 @@ toward keeping — and building a threshold-based deletion mechanism to fix a pr
 symptoms are already visible is that rule backwards.
 
 **The objection is the owner's**, and the half that makes it a rule 8 problem rather than an
-engineering one is his: a content gate risks eating legitimate topical overlap, which is two
+engineering one is clear: a content gate risks eating legitimate topical overlap, which is two
 good talks on the same subject — exactly what a library built by searching one topic
 repeatedly is *supposed* to accumulate.
 

@@ -1,0 +1,10 @@
+# One line ending for the repository. Several files had drifted to CRLF or
+# to a mix of both, and an editor flipping a whole file made a three-test
+# change show as a 2,274-line diff (17e8637 exists only to undo one).
+* text=auto eol=lf
+
+# cmd.exe misreads labels in an LF-only batch file.
+*.cmd text eol=crlf
+
+# SQLite files are never committed, but if one ever is it must not be mangled.
+*.db binary
