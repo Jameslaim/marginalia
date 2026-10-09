@@ -517,7 +517,17 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
 
     problem = "; ".join(problems)
     log.warning("judge: stage-2 reply for %s broke the contract (%s) — kept", video_id, problem)
-    log.debug("judge: unparsed stage-2 reply for %s:\n%s", video_id, text)
+    # The reply's shape, never the reply. It was logged whole here, and the
+    # replies that land on this line are the ones that broke the five-line
+    # contract — the likeliest to have echoed the transcript they were given.
+    # Rule 1 holds `logs/` to the same line as stdout.
+    log.debug(
+        "judge: unparsed stage-2 reply for %s: %d line(s), %d character(s), labels %s",
+        video_id,
+        len(text.splitlines()),
+        len(text),
+        sorted(found) or "none",
+    )
     return FullVerdict(
         video_id=video_id,
         verdict=verdict,

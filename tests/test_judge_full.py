@@ -453,23 +453,22 @@ def test_a_violation_is_logged_with_the_reason(caplog) -> None:
     assert any(VIDEO in record.getMessage() for record in caplog.records)
 
 
-def test_the_raw_reply_goes_to_debug_and_not_higher(caplog) -> None:
-    """The raw text is the only way to diagnose a format the parser cannot read,
-    and it may contain transcript fragments the model quoted back. DEBUG is
-    where it belongs: available on request, never in the report."""
+def test_the_raw_reply_reaches_no_log_at_any_level(caplog) -> None:
+    """This used to send the raw reply to DEBUG as "available on request". It
+    is not: the CLI attaches a DEBUG file handler on every command, so DEBUG is
+    `logs/`, and the replies that land here are the ones that broke the format
+    — the likeliest to have quoted the transcript back. What is logged is the
+    reply's shape, which is enough to see that it broke and how."""
     broken = "VERDICT: YES\nand then some free text nobody asked for"
 
     with caplog.at_level(logging.DEBUG, logger="marginalia.brain.judge"):
         parse_full(broken, VIDEO)
-    assert any(record.levelno == logging.DEBUG for record in caplog.records)
 
-    caplog.clear()
-    with caplog.at_level(logging.INFO, logger="marginalia.brain.judge"):
-        parse_full(broken, VIDEO)
-    assert all(
-        "free text nobody asked for" not in (record.getMessage())
+    assert any(
+        record.levelno == logging.DEBUG and "2 line(s)" in record.getMessage()
         for record in caplog.records
     )
+    assert all("free text nobody asked for" not in r.getMessage() for r in caplog.records)
 
 
 # -- B4: the map reaches the judge, and only as a word list -----------------
