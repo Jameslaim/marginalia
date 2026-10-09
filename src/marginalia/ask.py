@@ -54,6 +54,7 @@ from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
 from .core.library import Library
 from .llm import LlmClient, LlmError, Prompt, load_prompt
+from .quotes import QUOTE_RE, Words, closeness, flatten, spoken_text, verbatim_of
 
 log = logging.getLogger(__name__)
 
@@ -138,7 +139,6 @@ __all__ = [
     "deep_link",
     "load_notes",
     "render_notes",
-    "spoken_text",
     "normalise_dashes",
     "parse_citations",
     "scan_citations",
@@ -361,9 +361,6 @@ def _find_id(entry: str, known: Sequence[str] | None) -> tuple[str | None, bool]
 # failures with four different fixes, and summing them would report a number
 # nobody can act on.
 
-# Quoted spans the checker will look at. Four characters minimum, because "a"
-# and "AI" in quotes are punctuation rather than attribution.
-_QUOTE_RE = re.compile(r"[\"\u201c]([^\"\u201c\u201d]{4,300})[\"\u201d]")
 
 # How far from a quote a citation may sit and still be its attribution. Two
 # hundred characters is about a sentence either side.
@@ -417,85 +414,6 @@ _TRANSCRIPT_LOOSE_RATIO = 0.6
 # distribution has an empty band from 0.30 to 0.50, so nothing sits near the
 # line.
 _LOOSE_RATIO = 0.5
-
-# The one section of a note that is meant to be speech. Everything else is the
-# note-writer's account of what the video said.
-_VERBATIM_RE = re.compile(r"^## Verbatim\s*$", re.MULTILINE)
-_SECTION_RE = re.compile(r"^#{1,4}\s", re.MULTILINE)
-
-# A stored cue's timing prefix, `[00:01:33.500 --> 00:01:36.000] `, or the
-# shorter `[00:01:33.500] ` stage 2 reads. Stripped so a quote is matched
-# against the words that were said and never against the clock.
-_CUE_PREFIX_RE = re.compile(r"^\[[^\]\n]*\]\s?", re.MULTILINE)
-
-_WORD_RE = re.compile(r"[a-z0-9]+")
-
-# Candidate alignments scored per quote. The best window is the one sharing the
-# most words with the quote, so it is always near the top of the vote; twenty is
-# headroom, and it is what lets a whole transcript be searched in milliseconds
-# where scoring every window took minutes.
-_ALIGNMENTS = 20
-
-
-def _verbatim_of(note_text: str) -> str:
-    """The note's `## Verbatim` section, or empty if it has none."""
-    heading = _VERBATIM_RE.search(note_text)
-    if not heading:
-        return ""
-    rest = note_text[heading.end() :]
-    following = _SECTION_RE.search(rest)
-    return (rest[: following.start()] if following else rest).strip()
-
-
-def spoken_text(transcript: str) -> str:
-    """A transcript's words with every cue's timing prefix removed."""
-    return _CUE_PREFIX_RE.sub(" ", transcript)
-
-
-class _Words:
-    """One text as a word sequence, indexed for the loose match."""
-
-    def __init__(self, text: str) -> None:
-        self.words = _WORD_RE.findall(text.lower())
-        self.positions: dict[str, list[int]] = {}
-        for index, word in enumerate(self.words):
-            self.positions.setdefault(word, []).append(index)
-
-
-def _closeness(quote: str, hay: _Words) -> float:
-    """Best word-sequence similarity of `quote` against any window of `hay`.
-
-    Only windows that line up with the quote's own words are scored: each word
-    the two share votes for the alignment it implies, and the best-voted few
-    are compared with `SequenceMatcher`. Exhaustive scoring gives the same
-    answer on a 150-word Verbatim section and takes minutes on a transcript.
-    `difflib` is stdlib, so this adds no dependency.
-    """
-    needle = _WORD_RE.findall(quote.lower())
-    if not needle or not hay.words:
-        return 0.0
-    votes: dict[int, int] = {}
-    for offset, word in enumerate(needle):
-        for position in hay.positions.get(word, ()):
-            start = max(0, position - offset)
-            votes[start] = votes.get(start, 0) + 1
-    best = 0.0
-    for start in sorted(votes, key=lambda key: (-votes[key], key))[:_ALIGNMENTS]:
-        window = hay.words[start : start + len(needle) + 4]
-        best = max(best, difflib.SequenceMatcher(None, needle, window).ratio())
-    return best
-
-
-def _flatten(text: str) -> str:
-    """Case, whitespace and punctuation removed, for substring matching.
-
-    **Deliberately blunt.** A cleverer matcher is a second thing that can be
-    wrong, and this counter's job is to raise a flag rather than to adjudicate.
-    False positives are expected and acceptable: the output is a number a
-    reader weighs, not a gate that suppresses anything.
-    """
-    return re.sub(r"[^a-z0-9]+", "", text.lower())
-
 
 def _cited_near(window: str, folded: dict[str, str]) -> list[str]:
     """Loaded video ids cited in a bracket inside ``window``, in order, once each.
@@ -552,23 +470,23 @@ def check_grounding(
     text = normalise_dashes(text)
     known = set(loaded)
     folded = {video_id.lower(): video_id for video_id in known}
-    flat = {note.video_id: _flatten(note.text) for note in notes}
-    verbatim = {note.video_id: _verbatim_of(note.text) for note in notes}
-    spoken_note = {video_id: _flatten(part) for video_id, part in verbatim.items()}
+    flat = {note.video_id: flatten(note.text) for note in notes}
+    verbatim = {note.video_id: verbatim_of(note.text) for note in notes}
+    spoken_note = {video_id: flatten(part) for video_id, part in verbatim.items()}
     heard_text = {
         video_id: spoken_text(body)
         for video_id, body in (transcripts or {}).items()
         if body and video_id in known
     }
-    said = {video_id: _flatten(body) for video_id, body in heard_text.items()}
+    said = {video_id: flatten(body) for video_id, body in heard_text.items()}
     # Built lazily: only a quote that failed the exact test needs one.
-    indexed: dict[tuple[str, str], _Words] = {}
+    indexed: dict[tuple[str, str], Words] = {}
 
-    def words_of(kind: str, video_id: str) -> _Words:
+    def words_of(kind: str, video_id: str) -> Words:
         key = (kind, video_id)
         if key not in indexed:
             body = heard_text[video_id] if kind == "transcript" else verbatim.get(video_id, "")
-            indexed[key] = _Words(body)
+            indexed[key] = Words(body)
         return indexed[key]
 
     # Brackets only. Scanning free prose would flag every eleven-character word.
@@ -594,9 +512,9 @@ def check_grounding(
     unspoken: list[UnverifiedQuote] = []
     uncited: list[str] = []
     checked = verified = unchecked = 0
-    for quote in _QUOTE_RE.finditer(text):
+    for quote in QUOTE_RE.finditer(text):
         body = quote.group(1).strip()
-        needle = _flatten(body)
+        needle = flatten(body)
         if len(needle) < 8:
             continue
         window = text[max(0, quote.start() - _CITE_WINDOW) : quote.end() + _CITE_WINDOW]
@@ -615,7 +533,7 @@ def check_grounding(
                 verified += 1
                 continue
             loose = any(
-                _closeness(body, words_of("transcript", video_id)) >= _TRANSCRIPT_LOOSE_RATIO
+                closeness(body, words_of("transcript", video_id)) >= _TRANSCRIPT_LOOSE_RATIO
                 for video_id in heard
             )
             if not loose and any(needle in flat.get(video_id, "") for video_id in ids):
@@ -640,7 +558,7 @@ def check_grounding(
                 unspoken.append(UnverifiedQuote(text=body, video_ids=cited))
                 continue
             loose = any(
-                _closeness(body, words_of("verbatim", video_id)) >= _LOOSE_RATIO
+                closeness(body, words_of("verbatim", video_id)) >= _LOOSE_RATIO
                 for video_id in ids
             )
 
@@ -814,7 +732,7 @@ def mark_unverified(answer: Answer) -> str:
         return answer.text
     out: list[str] = []
     at = 0
-    for match in _QUOTE_RE.finditer(answer.text):
+    for match in QUOTE_RE.finditer(answer.text):
         marker = failing.get(match.group(1).strip())
         if marker is None:
             continue

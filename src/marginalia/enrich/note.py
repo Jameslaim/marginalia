@@ -28,6 +28,7 @@ changes with the prompt, and the drain loop does not.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 import time
 from typing import Any, Sequence
@@ -49,6 +50,8 @@ from ..contracts import (
 from ..core.ledger import Ledger
 from ..core.library import Library, format_duration
 from ..llm import LlmClient, LlmConfigError, LlmError, Prompt, load_prompt
+from ..quotes import Words, closeness, flatten, quoted_spans, spoken_text
+from .timestamps import build_index, snap_note
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +63,8 @@ __all__ = [
     "note_header",
     "note_version",
     "select",
+    "check_verbatim",
+    "VERBATIM_UNFOUND",
     "write_notes",
 ]
 
@@ -190,7 +195,76 @@ def _stamp(start_ms: object) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
-# -- results ----------------------------------------------------------------
+# -- is Verbatim verbatim? ----------------------------------------------------
+#
+# `## Verbatim` is the one section a note presents as the speaker's own words,
+# and the answer prompt sends a model there for anything it puts in quotation
+# marks. Nothing checked it. Measured on the archived library: 571 of 5,733
+# Verbatim quotes (10%, in 153 of 719 notes) have no close match in the
+# transcript the note was written from.
+#
+# So the worker checks, and a line it cannot find carries the note format's own
+# marker for "this did not come from the transcript". The convention already
+# means exactly that, the answer prompt already says to keep it, and it puts
+# the finding where the next reader is — inside the note — rather than in a
+# counter they would have to know to look up.
+
+VERBATIM_UNFOUND = "[note: not found in the transcript as worded]"
+
+# Found means word for word once case and punctuation are set aside, or close
+# enough to be the same sentence with a caption error fixed — "cash control"
+# written as "cache control". Below that it is a paraphrase, and a paraphrase
+# is not what this section promises.
+_VERBATIM_TOLERANCE = 0.8
+
+# The note-writer's own inference marker, bracket to bracket.
+_NOTE_MARKER_RE = re.compile(r"\[note:[^\]]*\]?", re.IGNORECASE)
+
+
+def check_verbatim(body: str, transcript: str) -> tuple[str, int, int]:
+    """Mark the ``## Verbatim`` lines whose quotes the transcript does not hold.
+
+    Returns ``(body, checked, unfound)``. Pure: strings in, string out.
+
+    Only quoted spans are checked. An unquoted Verbatim line is usually a
+    command or a configuration line, which is often on screen rather than
+    spoken, and holding it to the transcript would flag it for being correct.
+    Text *inside* a ``[note: ...]`` marker is not checked either — a translation
+    of the quote beside it belongs there — but the quote outside it still is,
+    or a note-writer's own marker would exempt the line it sits on.
+    """
+    said_text = spoken_text(transcript)
+    said = flatten(said_text)
+    words: Words | None = None
+    out: list[str] = []
+    checked = unfound = 0
+    in_verbatim = False
+
+    for line in body.splitlines(keepends=True):
+        if line.lstrip().startswith("#"):
+            in_verbatim = _normalise_heading(line) == "verbatim"
+            out.append(line)
+            continue
+        if not in_verbatim or VERBATIM_UNFOUND in line:
+            out.append(line)
+            continue
+        spans = quoted_spans(_NOTE_MARKER_RE.sub(" ", line))
+        missing = 0
+        for span in spans:
+            checked += 1
+            if flatten(span) in said:
+                continue
+            if words is None:
+                words = Words(said_text)
+            if closeness(span, words) >= _VERBATIM_TOLERANCE:
+                continue
+            missing += 1
+        if missing:
+            unfound += missing
+            ending = line[len(line.rstrip("\r\n")) :]
+            line = f"{line.rstrip()} {VERBATIM_UNFOUND}{ending}"
+        out.append(line)
+    return "".join(out), checked, unfound
 
 
 # -- selection ---------------------------------------------------------------
@@ -231,11 +305,16 @@ def select(
                 chosen.append(row)
         return chosen, skipped
 
+    # **Not limited here.** The queue is ordered by `first_seen`, and a video
+    # the worker always skips — a transcript under the length floor, or past
+    # the ceiling — never leaves it. Cutting the queue to `limit` before the
+    # worker ran meant those videos took the first slots of every `--limit`
+    # run, until a run made no notes at all. The limit is applied to attempts
+    # in `write_notes`, where a skip is known to be free.
     rows = ledger.videos_needing_note(
         version=version,
         stale_only=not every,
         missing_only=missing_only,
-        limit=limit,
     )
     return rows, skipped
 
@@ -282,9 +361,13 @@ def write_notes(
     run.results.extend(skipped)
 
     streak = 0
+    attempts = 0
     try:
         for row in rows:
-            if limit is not None and run.count(NOTED) >= limit:
+            # Attempts, not successes and not skips. A skip costs nothing and
+            # must not use a slot; a failure cost a whole transcript's worth of
+            # model call and must, or `--limit 3` would bound nothing.
+            if limit is not None and attempts >= limit:
                 run.stopped_because = STOP_LIMIT
                 break
             if _overspent(config, client):
@@ -309,6 +392,8 @@ def write_notes(
                 run.stopped_because = STOP_REFUSED
                 break
             run.results.append(result)
+            if result.outcome in (NOTED, FAILED):
+                attempts += 1
 
             streak = streak + 1 if result.outcome == FAILED else 0
             if streak >= _FAILURE_STREAK:
@@ -427,6 +512,19 @@ def _one(
         log.info("note: %s failed (%s)", video_id, exc)
         return NoteResult(video_id, FAILED, f"transient: {_brief(exc)}")
 
+    if reply.finish_reason == "length":
+        # A fragment, refused before it can pass for a note. `validate_note`
+        # only asks that every section be present and non-empty, and the last
+        # section is the one a ceiling cuts: a reply that stopped two lines into
+        # `## Verbatim` passed, and was stored as complete. Every other
+        # long-output call here already discards a truncated reply.
+        log.info("note: %s hit the token ceiling; the reply is a fragment", video_id)
+        return NoteResult(
+            video_id,
+            FAILED,
+            f"truncated: hit the {config.note.max_tokens:,}-token ceiling",
+        )
+
     body = reply.text.strip()
     try:
         validate_note(body)
@@ -437,17 +535,43 @@ def _one(
         log.info("note: %s produced an invalid note (%s)", video_id, exc)
         return NoteResult(video_id, FAILED, f"invalid: {exc}")
 
+    # Two corrections before the note is written, both pure and both free: the
+    # transcript is already in hand. Timestamps first, because the snapper
+    # anchors on Verbatim quotes; then the Verbatim check, whose markers the
+    # snapper ignores.
+    index = build_index(transcript)
+    snapped = 0
+    if index:
+        body, changes, _left = snap_note(body, index, label=video_id)
+        snapped = len(changes)
+    body, checked, unfound = check_verbatim(body, transcript)
+    if unfound:
+        log.info(
+            "note: %s — %d of %d verbatim quote(s) not found in the transcript; marked",
+            video_id,
+            unfound,
+            checked,
+        )
+
     # File first, ledger second. A crash between them costs one model call; the
     # other order would leave a row claiming a note that does not exist, and
     # nothing would ever revisit it.
     library.write_note(video_id, note_header(video_id, meta) + "\n" + body)
     ledger.mark_noted(video_id, version=prompt.version, model=reply.model)
+    detail = f"{reply.usage.output_tokens:,} tokens"
+    if snapped:
+        detail += f", {snapped} timestamp(s) snapped"
+    if unfound:
+        detail += f", {unfound} of {checked} verbatim quote(s) not in the transcript"
     return NoteResult(
         video_id,
         NOTED,
-        f"{reply.usage.output_tokens:,} tokens",
+        detail,
         tokens=reply.usage.output_tokens,
         version=prompt.version,
+        snapped=snapped,
+        verbatim_checked=checked,
+        verbatim_unfound=unfound,
     )
 
 

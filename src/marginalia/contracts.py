@@ -1429,6 +1429,12 @@ class NoteResult:
     detail: str
     tokens: int = 0
     version: str | None = None
+    # What the worker corrected or flagged in a note it wrote, before writing
+    # it: timestamps moved onto the cue they cite, and `## Verbatim` quotes
+    # checked against the transcript, with how many it could not find.
+    snapped: int = 0
+    verbatim_checked: int = 0
+    verbatim_unfound: int = 0
 
 
 @dataclass

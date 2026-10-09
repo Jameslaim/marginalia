@@ -224,3 +224,25 @@ def test_the_hyphen_id_reaches_the_command(stubbed) -> None:
     assert main(["note", "-Ueh5XBpcoY"]) in (EXIT_OK, EXIT_FAILED)
 
     assert stubbed["video_ids"] == ["-Ueh5XBpcoY"]
+
+
+def test_snap_timestamps_prints_citations_and_never_the_notes_line(configured, capsys) -> None:
+    """It printed seventy characters of the note's line beside every move, and
+    on a `## Verbatim` line those characters are the video's own words."""
+    from marginalia.core.library import Library
+    from marginalia.providers.base import TranscriptLine
+
+    library = Library(configured)
+    library.ensure()
+    spoken = "the minimum cacheable prefix is one thousand tokens"
+    library.write_transcript(
+        "aaaaaaaaaaa",
+        [TranscriptLine(0, 3000, "welcome back"), TranscriptLine(3000, 6000, spoken)],
+    )
+    library.write_note("aaaaaaaaaaa", f'## Verbatim\n- "{spoken}" (00:00:05)\n')
+
+    assert main(["snap-timestamps"]) == EXIT_OK
+    out = capsys.readouterr().out
+
+    assert "00:00:05 -> 00:00:03" in out
+    assert "cacheable" not in out

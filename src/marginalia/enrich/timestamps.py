@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "build_index",
     "parse_note_timestamps",
+    "snap_note",
     "snap_text",
     "snap_video",
     "snap_library",
@@ -383,8 +384,10 @@ def _coalesce(changes: Sequence[Change]) -> list[Change]:
     return merged
 
 
-def snap_video(library: Library, video_id: str, *, dry_run: bool = False) -> SnapResult:
-    """Snap one note to a fixpoint. Reads the transcript, never writes it.
+def snap_note(
+    note: str, index: TranscriptIndex, *, label: str = "note"
+) -> tuple[str, list[Change], list[tuple[str, str, str]]]:
+    """Snap every citation in ``note`` to a fixpoint. Pure; no disk.
 
     Iterated rather than single-pass because a snap can cascade: the search is
     bounded relative to the citation's current value, so moving it can bring a
@@ -395,6 +398,33 @@ def snap_video(library: Library, video_id: str, *, dry_run: bool = False) -> Sna
     The loop terminates on its own — once a citation sits on a cue start,
     recomputing it yields the same value — but it is capped anyway, because a
     bound that depends on a convergence argument is not a bound.
+
+    Shared by `marg snap-timestamps` and the note worker, which snaps every new
+    note before writing it: the answer prompt tells the model the timestamps
+    have been aligned, and that is only true if aligning is not optional.
+    """
+    updated = note
+    every: list[Change] = []
+    left: list[tuple[str, str, str]] = []
+    for _attempt in range(_MAX_PASSES):
+        updated, changes, left = snap_text(updated, index)
+        every.extend(changes)
+        if not changes:
+            break
+    else:
+        log.warning(
+            "snap: %s still changing after %d passes; leaving it where it settled",
+            label,
+            _MAX_PASSES,
+        )
+    return updated, _coalesce(every), left
+
+
+def snap_video(library: Library, video_id: str, *, dry_run: bool = False) -> SnapResult:
+    """Snap one stored note to a fixpoint. Reads the transcript, never writes it.
+
+    For notes written before the note worker snapped as it wrote; see
+    `snap_note` for the loop itself.
     """
     result = SnapResult(video_id=video_id)
 
@@ -411,22 +441,7 @@ def snap_video(library: Library, video_id: str, *, dry_run: bool = False) -> Sna
         result.error = "transcript has no cue lines"
         return result
 
-    updated = note
-    every: list[Change] = []
-    left: list[tuple[str, str, str]] = []
-    for attempt in range(_MAX_PASSES):
-        updated, changes, left = snap_text(updated, index)
-        every.extend(changes)
-        if not changes:
-            break
-    else:
-        log.warning(
-            "snap: %s still changing after %d passes; leaving it where it settled",
-            video_id,
-            _MAX_PASSES,
-        )
-
-    changes = _coalesce(every)
+    updated, changes, left = snap_note(note, index, label=video_id)
     result.snapped = changes
     result.left = left
 

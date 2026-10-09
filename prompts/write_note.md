@@ -1,8 +1,14 @@
 ---
 name: write_note
-version: "8"
+version: "9"
 stage: note
-note: "v8 drops the section count. The prompt said seven sections and
+note: "v9 says what Verbatim is held to. The worker now checks every quote
+  in it against the transcript and marks the ones it cannot find. Measured on
+  the archived library before the change: 581 of 5,316 Verbatim quotes in notes
+  of English videos (11%) and 423 of 673 in notes of other-language videos
+  (63%, mostly translations) have no close match in the transcript, so the
+  section now asks for the original wording with any translation in a marker.
+  v8 drops the section count. The prompt said seven sections and
   listed eight from the commit that added `How current is it` (2032513); the
   list is now the only count, so the next section added cannot make it wrong.
   v7 passes TODAY. A model applied its training cutoff to a video's
@@ -221,6 +227,17 @@ otherwise assume the video stated.
 **Verbatim** — exact quotes worth preserving: commands, configuration, prompts,
 precise phrasings, specific numbers. These are what hand-written notes lose
 first and what a reader is most likely to want quoted.
+
+This is the one section that promises the speaker's own words, and every
+quotation in it is checked against the transcript above after you write it. So:
+copy each quote from the transcript lines, **in the language the speaker used**,
+without tidying the grammar, completing a sentence, or rebuilding it from
+memory. Put quotation marks around what is in the transcript and nothing else.
+If the video is not in the language you are writing in, quote the original and
+put your translation after it inside a marker:
+`"la memoria a largo plazo del agente" [note: translation: the agent's long-term
+memory]`. Something worth keeping that you cannot find word for word — a
+command shown on screen, a paraphrase — goes in without quotation marks.
 
 Two rules that override everything above:
 

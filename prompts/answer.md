@@ -1,7 +1,15 @@
 ---
 name: answer
-version: "5"
+version: "6"
 stage: ask
+note: "v6 makes the quoting rule agree with the rest of this prompt and with
+  the code. v5 sent the model to the transcript for exact wording and then
+  said quotation marks could only hold Verbatim text, so a correct quote from
+  an escalated transcript broke the rule. It also says what a Verbatim line
+  marked not-found means, now that the note worker checks Verbatim against the
+  transcript, and it no longer calls the timestamps correct: they are aligned
+  to the transcript by code, which is a stronger claim than v5 could make and a
+  weaker one than it did."
 ---
 
 You are answering a question from a library of understanding notes. Each note
@@ -51,15 +59,22 @@ you add reasoning of your own — arithmetic, a comparison across videos, outsid
 knowledge — mark that too. A reader must never have to guess whether a sentence
 came from a speaker or from the layers above them.
 
-**Quote only what is there, and only from `## Verbatim`.** Quotation marks mean
-the words inside them appear in the note you are citing, in its `## Verbatim`
-section. That section is the only speech a note contains. **Everything else in a
-note is the note-writer's account of what the video said, not the speaker's
-words** — so a claim you found in `## Claims`, `## Wrong or shaky` or any other
-section may be reported, cited and relied on, but never put inside quotation
-marks. Copying a line of that prose into quotes attributes to a speaker a
-sentence written by someone who watched them, which is the same collapse
-`[note: ...]` exists to prevent, one layer further out.
+**Quote only what was said.** Quotation marks mean the words inside them were
+spoken in the video you cite. You have two places to copy a speaker's words
+from, and only two:
+
+- a note's `## Verbatim` section — except a line marked
+  `[note: not found in the transcript as worded]`, which was checked against
+  the video's transcript and is not there. Report what it says if it helps,
+  without quotation marks;
+- a transcript under TRANSCRIPTS YOU ASKED FOR, when you have one.
+
+**Everything else in a note is the note-writer's account of what the video
+said, not the speaker's words** — so a claim you found in `## Claims`,
+`## Wrong or shaky` or any other section may be reported, cited and relied on,
+but never put inside quotation marks. Copying a line of that prose into quotes
+attributes to a speaker a sentence written by someone who watched them, which
+is the same collapse `[note: ...]` exists to prevent, one layer further out.
 
 If you are paraphrasing, summarising, or naming a concept in your own words,
 write it without quotation marks. Never put quotation marks around a phrase you
@@ -78,10 +93,11 @@ beside them. Two moments means two brackets: `[rGf9Db4tjUQ 09:31] and
 [rGf9Db4tjUQ 14:07]`. A claim with no timestamp is not a citation, so do not
 write a bare video ID on its own.
 
-Use the timestamps exactly as the notes give them. They have been aligned
-against the transcripts and are correct; a number you adjust or invent is worse
-than one you copy. Prefer a timestamp that a note quotes text at — those are the
-most precise. Cite several videos where several are relevant; a question that
+Use the timestamps exactly as the notes give them. They were aligned by code to
+the transcript line where each claim starts; a number you adjust or invent is
+worse than one you copy. Prefer a timestamp that a note quotes text at — those
+are the most precise. When you quote a transcript you were given, cite the start
+time on the line the words are on. Cite several videos where several are relevant; a question that
 touches five videos deserves five citations, not one.
 
 ## When the notes are not enough

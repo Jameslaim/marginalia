@@ -612,3 +612,187 @@ def test_a_transcript_above_the_floor_is_unaffected(tmp_path: Path) -> None:
     run = write_notes(config, ledger, library, made, prompts_directory=prompts(tmp_path))
 
     assert run.count(NOTED) == 1
+
+
+# -- a reply that stopped on the ceiling is not a note -----------------------
+
+
+def test_a_truncated_reply_is_a_failure_even_when_every_section_is_present(tmp_path):
+    """`validate_note` asks only that each section exist with something under
+    it, and a ceiling cuts the *last* section — so a reply that stopped two
+    lines into `## Verbatim` passed and was stored as complete."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa")
+
+    def cut_off(**_):
+        response = FakeResponse(GOOD_NOTE, FakeUsage())
+        response.choices[0].finish_reason = "length"
+        return response
+
+    truncating = LlmClient(make_config(Path(".")).llm, transport=cut_off, sleep=lambda _: None)
+
+    run = write_notes(config, ledger, library, truncating, prompts_directory=prompts(tmp_path))
+
+    assert [r.outcome for r in run.results] == [FAILED]
+    assert "truncated" in run.results[0].detail
+    assert not library.has_note("aaaaaaaaaaa")
+    assert ledger.get("aaaaaaaaaaa").noted_at is None
+
+
+# -- --limit bounds attempts, and a skip is not one --------------------------
+
+
+def test_a_short_transcript_at_the_head_of_the_queue_does_not_jam_limit(tmp_path):
+    """The queue is ordered by `first_seen` and a too-short transcript never
+    leaves it. Cut to `--limit` before the worker ran, those videos took every
+    slot of every `--limit` run — the skills recommend `--limit 3` first."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", text="too short")
+    for video_id in ("bbbbbbbbbbb", "ccccccccccc"):
+        library.write_transcript(video_id, [TranscriptLine(0, 2000, FIXTURE_TRANSCRIPT)])
+        ledger.mark_pending(video_id)
+        ledger.mark_has_transcript(video_id, source="captions", provider="ytdlp")
+
+    run = write_notes(
+        config, ledger, library, client(GOOD_NOTE), limit=1, prompts_directory=prompts(tmp_path)
+    )
+
+    assert [(r.video_id, r.outcome) for r in run.results] == [
+        ("aaaaaaaaaaa", SKIPPED),
+        ("bbbbbbbbbbb", NOTED),
+    ]
+
+
+def test_limit_counts_failures_so_it_still_bounds_the_spend(tmp_path):
+    """A failed note paid for a whole transcript. Counting only successes would
+    let `--limit 1` keep reading transcripts for as long as they failed."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", "bbbbbbbbbbb")
+    broken = client("## Claims\nonly one section\n")
+
+    run = write_notes(config, ledger, library, broken, limit=1, prompts_directory=prompts(tmp_path))
+
+    assert [r.outcome for r in run.results] == [FAILED]
+    assert len(broken.sent) == 1
+
+
+# -- what the worker corrects before writing ---------------------------------
+
+
+CUES = [
+    TranscriptLine(0, 3000, "welcome back everyone"),
+    TranscriptLine(3000, 6000, "the minimum cacheable prefix is one thousand tokens"),
+    TranscriptLine(6000, 9000, "below that threshold nothing gets written"),
+    TranscriptLine(9000, 12000, FIXTURE_TRANSCRIPT),
+]
+
+
+def _with_cues(tmp_path):
+    config = make_config(tmp_path)
+    library = Library(config.library_path)
+    library.ensure()
+    ledger = Ledger(library.ledger_path)
+    library.write_transcript("aaaaaaaaaaa", CUES)
+    library.write_meta("aaaaaaaaaaa", {"video_id": "aaaaaaaaaaa", "title": "A video"})
+    ledger.mark_pending("aaaaaaaaaaa")
+    ledger.mark_has_transcript("aaaaaaaaaaa", source="captions", provider="ytdlp")
+    return config, library, ledger
+
+
+def _note_with_verbatim(*lines: str) -> str:
+    sections = [s for s in REQUIRED_SECTIONS if s != "Verbatim"]
+    body = "\n".join(f"## {s}\nsomething about {s.lower()}\n" for s in sections)
+    return body + "\n## Verbatim\n" + "\n".join(lines) + "\n"
+
+
+def test_timestamps_are_snapped_as_the_note_is_written(tmp_path):
+    """The answer prompt tells the model the timestamps "have been aligned
+    against the transcripts". On the archived library a dry-run snap would still
+    move 9,298 citations in 676 of 719 notes: aligning was a separate command
+    nobody had re-run since the notes were regenerated."""
+    config, library, ledger = _with_cues(tmp_path)
+    late = _note_with_verbatim(
+        '- "the minimum cacheable prefix is one thousand tokens" (00:00:05)'
+    )
+
+    run = write_notes(config, ledger, library, client(late), prompts_directory=prompts(tmp_path))
+
+    written = library.read_note("aaaaaaaaaaa")
+    assert "(00:00:03)" in written and "(00:00:05)" not in written
+    assert run.results[0].snapped == 1
+
+
+def test_a_verbatim_quote_the_transcript_lacks_is_marked_in_the_note(tmp_path):
+    config, library, ledger = _with_cues(tmp_path)
+    note = _note_with_verbatim(
+        '- "below that threshold nothing gets written" (00:00:06)',
+        '- "caching is always free on every provider" (00:00:07)',
+    )
+
+    run = write_notes(config, ledger, library, client(note), prompts_directory=prompts(tmp_path))
+
+    written = library.read_note("aaaaaaaaaaa")
+    assert '"caching is always free on every provider" (00:00:07) [note: not found' in written
+    assert '"below that threshold nothing gets written" (00:00:06)\n' in written
+    result = run.results[0]
+    assert (result.verbatim_checked, result.verbatim_unfound) == (2, 1)
+    assert "1 of 2 verbatim quote(s) not in the transcript" in result.detail
+
+
+def test_check_verbatim_leaves_unquoted_lines_and_note_markers_alone():
+    """A command on screen is often not spoken, and a translation inside the
+    note-writer's `[note: ...]` marker is the writer's wording by definition."""
+    from marginalia.enrich.note import check_verbatim
+
+    transcript = "[00:00:00.000 --> 00:00:03.000] la memoria a largo plazo del agente\n"
+    body = (
+        "## Claims\n- \"a quoted claim outside verbatim is not checked\"\n"
+        "## Verbatim\n"
+        "- `pip install langchain==0.1.0`\n"
+        '- "la memoria a largo plazo del agente" '
+        '[note: translation: "the long-term memory of the agent"]\n'
+    )
+
+    out, checked, unfound = check_verbatim(body, transcript)
+
+    assert out == body
+    assert (checked, unfound) == (1, 0), "the Spanish quote was checked, its translation was not"
+
+
+def test_a_note_marker_does_not_exempt_the_quote_beside_it():
+    from marginalia.enrich.note import VERBATIM_UNFOUND, check_verbatim
+
+    transcript = "[00:00:00.000 --> 00:00:03.000] something entirely different\n"
+    body = '## Verbatim\n- "a sentence nobody in this video said" [note: approximate]\n'
+
+    out, checked, unfound = check_verbatim(body, transcript)
+
+    assert (checked, unfound) == (1, 1)
+    assert VERBATIM_UNFOUND in out
+    assert check_verbatim(out, transcript)[0] == out, "and a second pass changes nothing"
+
+
+def test_check_verbatim_tolerates_a_fixed_caption_error():
+    """"cash control" written as "cache control" is the same sentence."""
+    from marginalia.enrich.note import check_verbatim
+
+    transcript = (
+        "[00:00:00.000 --> 00:00:03.000] you set the cash control header on every "
+        "system block you want reused\n"
+    )
+    body = '## Verbatim\n- "you set the cache control header on every system block you want reused"\n'
+
+    out, checked, unfound = check_verbatim(body, transcript)
+
+    assert (checked, unfound) == (1, 0)
+    assert out == body
+
+
+def test_check_verbatim_reads_non_latin_text():
+    """An ASCII-only flattening reduced an Arabic quote to nothing, and it was
+    never checked at all."""
+    from marginalia.enrich.note import check_verbatim
+
+    transcript = "[00:00:00.000 --> 00:00:03.000] الذاكرة طويلة المدى للوكيل\n"
+    found = '## Verbatim\n- "الذاكرة طويلة المدى للوكيل"\n'
+    missing = '## Verbatim\n- "هذه جملة لم يقلها أحد في الفيديو"\n'
+
+    assert check_verbatim(found, transcript)[1:] == (1, 0)
+    assert check_verbatim(missing, transcript)[1:] == (1, 1)

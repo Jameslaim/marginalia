@@ -788,6 +788,15 @@ def _cmd_note(args: argparse.Namespace) -> int:
         f"${run.cost_usd:.2f}, {_elapsed(run.elapsed_s)}"
         + (f", stopped: {run.stopped_because}" if run.stopped_because != "done" else "")
     )
+    checked = sum(result.verbatim_checked for result in run.results)
+    if checked:
+        # Printed whenever anything was checked, zero included: "0 not found"
+        # is the line that makes the count trustworthy on the day it is not.
+        print(
+            f"          {sum(r.snapped for r in run.results)} timestamp(s) snapped; "
+            f"{sum(r.verbatim_unfound for r in run.results)} of {checked} verbatim "
+            f"quote(s) not found in the transcript, marked in the note"
+        )
     return EXIT_FAILED if run.count(FAILED) else EXIT_OK
 
 
@@ -1258,10 +1267,14 @@ def _recent_runs(ledger: Ledger, limit: int = 10) -> list[str]:
 def _cmd_snap_timestamps(args: argparse.Namespace) -> int:
     """Align cited timestamps onto the transcript line they refer to.
 
-    Note text never reaches stdout here either. What is printed is the
-    citations themselves — ``00:09:33 -> 00:09:31`` — plus a truncated preview
-    of the note's own line, which is the note's words about the video rather
-    than the video's words. The transcript is read and never quoted.
+    Note text never reaches stdout here. What is printed is the citations
+    themselves — ``00:09:33 -> 00:09:31`` — and the section each sits in.
+
+    It used to print the first seventy characters of the note's line beside
+    each move, on the reasoning that a note's words about a video are not the
+    video's words. That is false exactly where snapping matters most: a
+    ``## Verbatim`` line *is* the video's words, and a library-wide run printed
+    hundreds of them — the note-text cost curve rule 1 exists to prevent.
     """
     config = _load(args)
     library = Library(config.library_path)
@@ -1297,7 +1310,7 @@ def _cmd_snap_timestamps(args: argparse.Namespace) -> int:
                 shift = change.delta_ms / 1000.0
                 print(
                     f"             {change.before} -> {change.after} "
-                    f"({shift:+.1f}s, {change.section})  {change.preview}"
+                    f"({shift:+.1f}s, {change.section})"
                 )
         elif result.total:
             _report("unchanged", result.video_id, f"0 of {result.total}")
