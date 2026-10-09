@@ -10,9 +10,11 @@ note and returns identifiers.
 
 **Rule 8 arrives here in a new place.** A note wrongly excluded is invisible:
 the answer never sees it, cites around it, and nothing reports that it existed.
-So every failure in this module resolves toward loading more — a refused call, a
-truncated reply, an unparseable list and an empty list all fall through to the
-caller's budget fill rather than to a narrow selection.
+So every failure in this module resolves toward loading more — a failed batch
+keeps all of its notes — and a selection that failed outright is reported as
+failed, never narrowed: `ask.choose_notes` retries once and then refuses to
+answer, because filling the budget by position is exclusion by an order
+unrelated to the question.
 
 Rule 9: no filesystem, no database, no provider. Summary lines in, identifiers
 out.
