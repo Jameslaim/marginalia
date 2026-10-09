@@ -416,6 +416,28 @@ def test_a_long_round_says_how_much_it_did_not_show() -> None:
     assert "(+15 more, not shown)" in rendered
 
 
+def test_rejections_made_after_reading_the_transcript_are_shown_first() -> None:
+    """The loop appends every stage-1 NO before any transcript is read, so with
+    30 of them ahead of 3 stage-2 NOs the cap of 25 showed none of the three —
+    the rejections that rest on reading the video. Reordered in the render only:
+    `report.rejected` keeps the order the loop wrote it in."""
+    metadata = [_video(f"Title only {n}", "off topic") for n in range(30)]
+    full = [_video(f"Transcript read {n}", "pooling never discussed", stage="full")
+            for n in range(3)]
+    report = _round(rejected=[*metadata, *full])
+
+    rendered = render_round(report)
+    section = rendered.split("REJECTED (33):", 1)[1].split("\n\n", 1)[0]
+    shown = [line for line in section.splitlines() if line.startswith("- ")]
+
+    assert [line.split(" [")[0] for line in shown[:3]] == [
+        "- Transcript read 0", "- Transcript read 1", "- Transcript read 2",
+    ]
+    assert "- Title only 0 [metadata]" in shown[3]
+    assert "(+8 more, not shown)" in section
+    assert report.rejected == [*metadata, *full], "the report's own order is untouched"
+
+
 def test_the_evidence_carries_no_transcript_text() -> None:
     """Hard rule 1, structurally: `JudgedVideo` has a title and a reason and
     nowhere to put anything larger."""

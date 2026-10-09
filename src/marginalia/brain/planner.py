@@ -575,8 +575,15 @@ def render_round(
     lines.extend(_marked_video_lines(unreadable) or ["- none"])
 
     lines.append("")
+    # Stage-2 rejections first, here and only here. The loop appends every
+    # stage-1 NO before any transcript is read, so with 25 or more of those the
+    # cap below showed none of the rejections made after reading a transcript —
+    # the most informative ones. A stable sort keeps each stage's own order, and
+    # `report.rejected` itself is left as it was. The literal is `STAGE_FULL`,
+    # which `brain/` may not import from `core/`.
+    rejected = sorted(report.rejected, key=lambda video: video.stage != "full")
     lines.append(f"REJECTED ({len(report.rejected)}):")
-    lines.extend(_video_lines(report.rejected) or ["- none"])
+    lines.extend(_video_lines(rejected) or ["- none"])
 
     lines.append("")
     already = [item for item in baseline if item.satisfied]
