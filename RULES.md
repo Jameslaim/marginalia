@@ -377,6 +377,9 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     about an ecosystem — and *today minus eighteen months* is a calculation, done in
     `_derive_published_after`. A calculation asked of a model is one that is sometimes
     simply not done, and its absence looks exactly like a decision not to filter.
+    The parse of that judgement is code too, and was wrong: it read the first number and
+    ignored its unit, so "2 years" derived a 2-month cutoff. Years now count as twelve
+    months and a range takes its wider end.
 
     **The window is sampled three times and the widest is taken.** Making the call
     load-bearing made its variance load-bearing, and the variance was then measured —

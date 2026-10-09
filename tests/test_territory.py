@@ -238,6 +238,53 @@ def test_an_absurd_window_is_not_used() -> None:
     assert territory.recency.months is None
 
 
+# The parser used to take the first number and ignore its unit, so "2 years"
+# derived a 2-month cutoff onto every main query — rule 16's undetectable
+# exclusion, produced by a parser. A range takes its wider end.
+@pytest.mark.parametrize(
+    "line,months",
+    [
+        ("2 years — the API churned", 24),
+        ("1 year — tooling moves fast", 12),
+        ("2 yrs — the API churned", 24),
+        ("18 months — churn", 18),
+        ("6-12 months — pricing moved", 12),
+        ("1-2 years — the API churned", 24),
+        ("1–2 years — the API churned", 24),
+        ("12 — no unit, so months as the prompt asks", 12),
+        ("24m — churn", 24),
+    ],
+)
+def test_the_recency_unit_is_read_and_a_range_takes_its_wider_end(line: str, months: int) -> None:
+    territory = parse_map(
+        f"CONCEPTS: a\nRECENCY: {line}\nQUERY: a b\nFROM: t", topic="t", version="1"
+    )
+
+    assert territory.recency.months == months
+    assert "recency" not in territory.problem
+
+
+def test_any_still_means_no_window() -> None:
+    territory = parse_map(
+        "CONCEPTS: a\nRECENCY: ANY — fundamentals do not move\nQUERY: a b\nFROM: t",
+        topic="t",
+        version="1",
+    )
+
+    assert territory.recency.months is None
+    assert territory.recency.reason == "fundamentals do not move"
+
+
+@pytest.mark.parametrize("line", ["3 weeks — very fresh", "1 decade — stable", "90 days — new"])
+def test_an_unrecognised_unit_is_unreadable_never_a_narrower_window(line: str) -> None:
+    territory = parse_map(
+        f"CONCEPTS: a\nRECENCY: {line}\nQUERY: a b\nFROM: t", topic="t", version="1"
+    )
+
+    assert territory.recency.months is None
+    assert "recency line unreadable" in territory.problem
+
+
 # -- the validator: unsupported and malformed --------------------------------
 
 

@@ -93,8 +93,26 @@ _LABEL_RE = re.compile(
 # a filter you cannot inspect is one you cannot correct.
 _FILTER_RE = re.compile(r"^\s*([A-Za-z]+)\s*=\s*([^(]*?)\s*(?:\((.*)\))?\s*$")
 
-# `12 months — the ecosystem turns over`, `ANY — fundamentals do not move`.
-_RECENCY_RE = re.compile(r"^\s*(ANY|\d{1,3})\s*(?:months?)?\s*[-–—:]?\s*(.*)$", re.IGNORECASE)
+# `12 months — the ecosystem turns over`, `ANY — fundamentals do not move`,
+# `2 years — …`, `6-12 months — …`. The number, an optional second number making
+# a range, and then whatever follows: the unit is read from that remainder.
+_RECENCY_RE = re.compile(
+    r"^\s*(?:(ANY)\b|(\d+)(?:\s*(?:-|–|—|to)\s*(\d+))?)\s*(.*)$",
+    re.IGNORECASE,
+)
+
+# The unit after the number. Months and years are read; any other time unit is
+# a window this parser cannot convert, and is refused rather than read as months
+# — "2 weeks" taken as 2 months would be a guess, and "1 decade" as 1 month a
+# narrowing. A word that is not a time unit is the start of the reason, and the
+# number is months, as the prompt asks for.
+_MONTH_UNIT_RE = re.compile(r"(?:months?|mos?|m)\b\.?", re.IGNORECASE)
+_YEAR_UNIT_RE = re.compile(r"(?:years?|yrs?)\b\.?", re.IGNORECASE)
+_OTHER_UNIT_RE = re.compile(
+    r"(?:days?|weeks?|wks?|decades?|centur(?:y|ies)|hours?|hrs?|minutes?|mins?)\b",
+    re.IGNORECASE,
+)
+_SEPARATOR_RE = re.compile(r"^\s*[-–—:]?\s*")
 
 _ISO_DATE_RE = re.compile(r"\A(\d{4})-(\d{2})-(\d{2})")
 
@@ -289,21 +307,36 @@ def parse_map(text: str, *, topic: str, version: str) -> TerritoryMap:
 
 
 def _parse_recency(body: str) -> tuple[Recency, str]:
-    """``12 months — reason`` or ``ANY — reason``.
+    """``12 months — reason``, ``2 years — reason`` or ``ANY — reason``.
 
     An unreadable recency line becomes *any time*, which is the wider answer.
     Guessing a window from a line nobody could read would be excluding content
     on the strength of a parse failure.
+
+    **The unit is read, not assumed.** This used to take the first number and
+    ignore what followed it, so "2 years — the API churned" derived a 2-month
+    cutoff onto every main query. Years are twelve months; a range takes its
+    wider end, because an unstable exclusion is ambiguity and rule 16 resolves
+    that toward keeping; any other time unit is unreadable.
     """
+    unreadable = Recency(reason="recency line unreadable; searching any time"), (
+        "recency line unreadable"
+    )
     match = _RECENCY_RE.match(body.strip())
     if match is None:
-        return Recency(reason="recency line unreadable; searching any time"), (
-            "recency line unreadable"
-        )
-    head, reason = match.group(1), tidy(match.group(2), limit=_MAX_REASON)
-    if head.upper() == "ANY":
-        return Recency(months=None, reason=reason), ""
-    months = int(head)
+        return unreadable
+    any_time, first, second, rest = match.groups()
+    if any_time:
+        return Recency(months=None, reason=tidy(_SEPARATOR_RE.sub("", rest), limit=_MAX_REASON)), ""
+
+    months = max(int(first), int(second or first))
+    unit = _YEAR_UNIT_RE.match(rest) or _MONTH_UNIT_RE.match(rest)
+    if unit is not None and unit.re is _YEAR_UNIT_RE:
+        months *= 12
+    elif unit is None and _OTHER_UNIT_RE.match(rest):
+        return unreadable
+    remainder = rest[unit.end():] if unit is not None else rest
+    reason = tidy(_SEPARATOR_RE.sub("", remainder), limit=_MAX_REASON)
     if not 1 <= months <= _MAX_RECENCY_MONTHS:
         return Recency(reason=reason), f"recency of {months} months is not a usable window"
     return Recency(months=months, reason=reason), ""
