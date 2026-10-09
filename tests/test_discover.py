@@ -2788,3 +2788,83 @@ def test_too_long_to_note_is_measured_as_the_note_worker_measures(
 
     assert outcome.rounds[0].too_long_to_note == 1
     assert len(library.read_transcript("aaaaaaaaaaa")) == stored
+
+
+# -- a transcript on disk is judged for this topic, not skipped --------------
+
+
+def _hold(library, ledger, video_id: str, text: str = "a stored sentence about prompt caching") -> None:
+    from marginalia.flow.store import store_transcript
+
+    ledger.mark_pending(video_id)
+    store_transcript(
+        library,
+        ledger,
+        video_id,
+        replace(transcript(), lines=[TranscriptLine(5000, 9000, text)]),
+        provider="ytdlp",
+    )
+
+
+def test_a_held_transcript_never_judged_for_this_topic_is_judged_from_disk(
+    config, ledger, library, client, searches
+) -> None:
+    """It used to be skipped as "already on disk", so it never reached stage 2
+    for this topic, never counted as coverage, and the planner could name as a
+    gap a video the library was holding."""
+    _hold(library, ledger, "aaaaaaaaaaa")
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    outcome = run(config, ledger, library, client, judge, provider=provider, max_rounds=1)
+
+    assert provider.fetched == [], "read from disk, not fetched again"
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+    assert "[00:00:05.000] a stored sentence about prompt caching" in judge.transcripts_seen[0]
+    assert "-->" not in judge.transcripts_seen[0], "the same shape a fresh fetch is shown in"
+    round_one = outcome.rounds[0]
+    assert (round_one.already_held, round_one.judged_from_disk) == (1, 1)
+    assert [video.video_id for video in round_one.kept] == ["aaaaaaaaaaa"]
+    assert outcome.stored_ids == [] and round_one.stored == 0, "nothing was downloaded"
+
+
+def test_a_held_transcript_already_judged_for_this_topic_is_skipped(
+    config, ledger, library, client, searches
+) -> None:
+    _hold(library, ledger, "aaaaaaaaaaa")
+    ledger.log_decision("aaaaaaaaaaa", TOPIC, stage=STAGE_FULL, verdict=VERDICT_YES, reason="read")
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == []
+    assert (outcome.rounds[0].already_held, outcome.rounds[0].judged_from_disk) == (1, 0)
+
+
+def test_a_transcript_stored_before_a_refusal_is_judged_on_the_next_run(
+    config, ledger, library, client, searches
+) -> None:
+    """Storing before stage 2 keeps the bytes when the judge refuses. Without
+    judging from disk, the next run found them held and skipped stage 2 for the
+    topic for good."""
+    from marginalia.llm import LlmBillingError
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    refusing = FakeJudge()
+
+    def refuse(*_args, **_kwargs):
+        raise LlmBillingError("no balance")
+
+    refusing.judge_full = refuse
+    with pytest.raises(LlmBillingError):
+        run(config, ledger, library, client, refusing, max_rounds=1)
+
+    provider = FakeTranscripts()
+    judge = FakeJudge()
+    run(config, ledger, library, client, judge, provider=provider, max_rounds=1)
+
+    assert provider.fetched == []
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+    assert STAGE_FULL in {d.stage for d in ledger.decisions_for("aaaaaaaaaaa")}

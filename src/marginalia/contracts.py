@@ -1202,6 +1202,10 @@ class RoundReport:
     # Kept, and past the note ceiling, so it will never be noted. Counted apart
     # from `degraded`: the transcript was fine and the length was not.
     too_long_to_note: int = 0
+    # Of `already_held`, the transcripts stage 2 read from disk because nothing
+    # had judged them for this topic. Their own counter: no fetch happened,
+    # and a verdict did.
+    judged_from_disk: int = 0
     # Kept, but stage 2 could not read the transcript well enough to be sure.
     # Not a rejection and not a clean keep — and it suppresses the note, which
     # is a consequence nobody should have to infer from a silent counter.

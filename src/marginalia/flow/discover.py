@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
 from typing import Sequence
@@ -85,6 +86,7 @@ from ..core.ledger import (
     FAIL_TRANSIENT,
     STAGE_FULL,
     STAGE_METADATA,
+    STAGE_OPENING,
     Ledger,
     normalise_topic,
 )
@@ -345,7 +347,9 @@ def _loop(
             run.stopped_because = STOP_MAX_VIDEOS
             return
 
-        quiet_rounds = 0 if report.stored else quiet_rounds + 1
+        # Kept, not stored: a round that judged held transcripts relevant found
+        # coverage, though it downloaded nothing.
+        quiet_rounds = 0 if report.kept else quiet_rounds + 1
         if quiet_rounds >= config.discover.quiet_rounds:
             run.stopped_because = STOP_NO_NEW_VIDEOS
             return
@@ -822,9 +826,17 @@ def _judge_round(
         # is the guard working, not a reason to weaken Gate 1. The transcript
         # stays, no network call is made, and `marg note` will pick the video up
         # from `has_transcript` regardless of which topic first found it.
-        if library.has_transcript(candidate.video_id):
+        #
+        # **Held is not judged.** A transcript on disk with no stage-2 verdict for
+        # *this* topic — fetched for another topic, or stored just before a judge
+        # refused — used to be skipped here, so it never counted as coverage and
+        # the planner could name as a gap a video sitting on disk. It is judged
+        # from the stored file instead, below; only a video already judged for
+        # this topic is skipped.
+        held = library.has_transcript(candidate.video_id)
+        if held and _judged_for_topic(ledger, candidate.video_id, run.topic):
             log.info(
-                "discover: %s already has a transcript; not re-fetching",
+                "discover: %s is on disk and already judged for this topic",
                 candidate.video_id,
             )
             report.already_held += 1
@@ -846,7 +858,7 @@ def _judge_round(
         # uploaded* tracks: 6 of 6 manual right, 31 of 31 auto wrong. Trusting it
         # would route most of what discovery finds into `needs_asr`, whose worker
         # does not exist until M4. See `DEFAULT_TRUST_CAPTION_HINT`.
-        if config.discover.trust_caption_hint and candidate.has_captions is False:
+        if not held and config.discover.trust_caption_hint and candidate.has_captions is False:
             log.info(
                 "discover: %s reports no caption track; routing to ASR unfetched",
                 candidate.video_id,
@@ -871,19 +883,31 @@ def _judge_round(
             run.stopped_because = STOP_MAX_COST
             return _dedupe_concepts(concepts)
 
-        _pace(config, fetched_any)
-        fetched_any = True
-        fetched = _fetch(ledger, candidate.video_id, provider, config)
-        if fetched is None:
-            report.failed += 1
-            continue
+        if held:
+            report.already_held += 1
+            report.judged_from_disk += 1
+            material = _held_material(library, ledger, candidate.video_id)
+        else:
+            _pace(config, fetched_any)
+            fetched_any = True
+            fetched = _fetch(ledger, candidate.video_id, provider, config)
+            if fetched is None:
+                report.failed += 1
+                continue
 
-        # **Stored before it is judged.** Rule 12 stores the transcript whatever
-        # stage 2 says, so nothing about storing waits on the verdict — and
-        # storing first means a judge that raises (a 402, a rejected key, an
-        # interrupt) leaves the bytes on disk and the row `has_transcript`,
-        # instead of a fetched transcript lost with the process.
-        _store(library, ledger, candidate, fetched, config)
+            # **Stored before it is judged.** Rule 12 stores the transcript
+            # whatever stage 2 says, so nothing about storing waits on the
+            # verdict — and storing first means a judge that raises (a 402, a
+            # rejected key, an interrupt) leaves the bytes on disk and the row
+            # `has_transcript`, instead of a fetched transcript lost with the
+            # process. The next run then judges it from disk, above.
+            _store(library, ledger, candidate, fetched, config)
+            material = _Material(
+                text=_transcript_text(fetched),
+                chapters=[chapter.get("title", "") for chapter in fetched.chapters][:12],
+                duration_s=fetched.duration_s,
+                stored_chars=len(render_transcript(fetched.lines)),
+            )
 
         # **Every keeper is read before it is kept**, whatever stage 1 said.
         #
@@ -909,15 +933,15 @@ def _judge_round(
         # well and never arrives — the two are identical for a thousand
         # words, and padding is exactly what stage 2 exists to catch.
         #
-        # Built from the lines in hand rather than read back from disk.
-        # `brain/` cannot reach the filesystem, so "the judge never reads a
-        # stored transcript into a report" is structural here, not careful.
+        # Handed to the judge as text. `brain/` cannot reach the filesystem, so
+        # "the judge never reads a stored transcript into a report" is
+        # structural here, not careful.
         judgement = judge.judge_full(
             run.brief,
             candidate,
-            transcript=_transcript_text(fetched),
-            chapters=[chapter.get("title", "") for chapter in fetched.chapters][:12],
-            duration_s=fetched.duration_s or candidate.duration_s,
+            transcript=material.text,
+            chapters=material.chapters,
+            duration_s=material.duration_s or candidate.duration_s,
             territory=run.territory,
         )
         _log(
@@ -992,7 +1016,7 @@ def _judge_round(
         # Measured in the stored file's own format, because that is what the
         # worker measures. The judge's rendering is shorter per line, so
         # checking it here undercounted videos the worker would then refuse.
-        stored_chars = len(render_transcript(fetched.lines))
+        stored_chars = material.stored_chars
         if stored_chars > config.note.max_transcript_chars:
             report.too_long_to_note += 1
             log.info(
@@ -1003,7 +1027,12 @@ def _judge_round(
                 config.note.max_transcript_chars,
             )
 
-        run.stored_ids.append(candidate.video_id)
+        if not held:
+            # Stored by this run. A video judged from disk was stored by an
+            # earlier one, and counting it here would inflate `videos_stored`
+            # and spend `max_videos` on a download that never happened.
+            run.stored_ids.append(candidate.video_id)
+            report.stored += 1
         # The other half of what the planner reads, and the half that makes
         # coverage answerable at all. A planner shown only rejections can only
         # ever learn what to avoid; it needs what was kept to say which part of
@@ -1013,12 +1042,58 @@ def _judge_round(
         # reason describes a title rather than a transcript, which is what made
         # a coverage claim built on one a claim built on a guess.
         report.kept.append(_judged(candidate, STAGE_FULL, judgement))
-        report.stored += 1
 
     return _dedupe_concepts(concepts)
 
 
 # -- fetching and storing ---------------------------------------------------
+
+
+class _Material:
+    """What stage 2 is shown of one video, from a fetch or from disk."""
+
+    def __init__(
+        self, *, text: str, chapters: list[str], duration_s: int | None, stored_chars: int
+    ) -> None:
+        self.text = text
+        self.chapters = chapters
+        self.duration_s = duration_s
+        self.stored_chars = stored_chars
+
+
+_STORED_CUE_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2}\.\d{3}) --> [^\]]*\] ?", re.MULTILINE)
+
+
+def _judged_for_topic(ledger: Ledger, video_id: str, topic: str) -> bool:
+    """Has stage 2 already read this video for this topic?"""
+    return any(
+        decision.stage in (STAGE_FULL, STAGE_OPENING) and decision.topic == topic
+        for decision in ledger.decisions_for(video_id)
+    )
+
+
+def _held_material(library: Library, ledger: Ledger, video_id: str) -> _Material:
+    """A stored transcript, in the shape stage 2 reads a fetched one.
+
+    Read through the library's one transcript path and recorded with
+    `touch_accessed`, as every transcript read is. The stored cue prefix
+    `[start --> end]` becomes the `[start]` the judge is shown for a fresh
+    fetch, so both arrive in one format.
+    """
+    stored = library.read_transcript(video_id)
+    ledger.touch_accessed(video_id)
+    meta = library.read_meta(video_id) or {}
+    chapters = [
+        str(chapter.get("title", ""))
+        for chapter in (meta.get("chapters") or [])
+        if isinstance(chapter, dict)
+    ][:12]
+    return _Material(
+        text=_STORED_CUE_RE.sub(lambda match: f"[{match.group(1)}] ", stored).rstrip("\n"),
+        chapters=chapters,
+        duration_s=meta.get("duration_s") or None,
+        stored_chars=len(stored),
+    )
 
 
 def _fetch(

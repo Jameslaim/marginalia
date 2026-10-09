@@ -361,6 +361,9 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.failed, "fetch failed"),
             (report.no_captions, "no captions, sent to ASR"),
             (report.already_held, "already on disk"),
+            # Of those, the ones read from disk because nothing had judged them
+            # for this topic. A verdict happened; a download did not.
+            (report.judged_from_disk, "of them judged from disk"),
             (report.known_this_run, "stored in an earlier round"),
             (report.flipped_to_no, "kept on disk, declined here"),
             # Its own line, and the one worth reading. This is stage 1 having
@@ -657,6 +660,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "stored": report.stored,
                 "failed": report.failed,
                 "already_held": report.already_held,
+                "judged_from_disk": report.judged_from_disk,
                 "no_captions": report.no_captions,
                 "degraded": report.degraded,
                 "too_long_to_note": report.too_long_to_note,

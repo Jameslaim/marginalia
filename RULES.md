@@ -295,6 +295,13 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     covers in detail. The planner was not wrong; it had one sentence of evidence and
     reported honestly on it.
 
+    **A candidate already on disk reaches it too.** A transcript held from another
+    topic, or stored just before a judge refused, used to be skipped as "already on
+    disk" — no fetch, which was right, and no stage 2 for this topic, which was not:
+    it never counted as coverage, and the planner could name as a gap a video the
+    library was holding. Stage 2 now reads it from the stored file, counted in
+    `judged_from_disk`, unless it has already been judged for this topic.
+
     Two counters, never one. A MAYBE stage 2 declines is `flipped_to_no` and is stage 2
     working; a **YES** stage 2 declines is `overturned` and is stage 1 having been
     wrong. Summing them hides the only number that says how far a metadata verdict can
