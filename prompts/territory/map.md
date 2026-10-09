@@ -1,8 +1,12 @@
 ---
 name: map_territory
-version: "3"
+version: "4"
 stage: territory
-note: "v3 corrects the claim that a reasoned window goes on every main query.
+note: "v4 replaces a vendor name in the example vocabulary:
+  rule 7 says no prompt names a model family, and the test meant to hold
+  that scanned only the top level of prompts/, so this file was never
+  checked.
+  v3 corrects the claim that a reasoned window goes on every main query.
   A per-query waiver and a topic that asks for material of any age both keep
   it off, and both exceptions were written in the same commit as the sentence."
 ---
@@ -119,7 +123,7 @@ Exactly this format. No preamble, no commentary, no markdown headings.
 
 ```
 CONCEPTS: prefix matching, cache expiry, cost accounting, breakpoint placement
-VOCABULARY: cache_control, KV cache, ephemeral cache, Anthropic, cached tokens
+VOCABULARY: cache_control, KV cache, ephemeral cache, cache breakpoint, cached tokens
 RECENCY: 6 months — provider pricing for cached tokens changed three times this year
 
 QUERY: kv cache reuse llm api

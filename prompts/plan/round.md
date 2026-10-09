@@ -1,8 +1,12 @@
 ---
 name: plan_round
-version: "4"
+version: "5"
 stage: plan
-note: "v4 makes two statements true. Only KEPT satisfying anything was
+note: "v5 replaces two vendor names in an example query:
+  rule 7 says no prompt names a model family, and the test meant to hold
+  that scanned only the top level of prompts/, so this file was never
+  checked.
+  v4 makes two statements true. Only KEPT satisfying anything was
   written before the library baseline existed, and contradicted the line
   that lets ALREADY IN THE LIBRARY satisfy an item once the code added it.
   The date window going on every query was never true, since a waiver or a
@@ -180,7 +184,7 @@ QUERY: prompt cache ttl expiry
 FROM: gap — cache expiry and TTL behaviour
 FILTERS: none
 
-QUERY: anthropic vs openai caching compared
+QUERY: prompt caching providers compared
 FROM: gap — comparison across providers
 FILTERS: order=date (provider behaviour changed this year)
 

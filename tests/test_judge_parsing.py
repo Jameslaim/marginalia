@@ -21,7 +21,7 @@ from marginalia.brain.judge import (
     _CHAPTER_LIMIT,
     _describe,
     parse_batch,
-    parse_opening,
+    parse_full,
     parse_queries,
 )
 from marginalia.contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES, SearchResult
@@ -204,74 +204,36 @@ def test_batch_of_one_still_defaults_to_maybe() -> None:
     assert verdicts(parse_batch("no idea", 1)) == [VERDICT_MAYBE]
 
 
-# -- stage 2 ----------------------------------------------------------------
+# -- concepts, as stage 2 reports them ------------------------------------------
+#
+# Threads become the next round's queries, so what counts as a concept matters.
+# These used to be exercised through the opening judge's parser, which nothing
+# in production called; the live path is `parse_full`'s UNEXPLAINED line.
 
 
-OPENING = """\
-VERDICT: YES
-REASON: explains cache expiry with a worked example
-CONCEPTS: kv cache eviction, prefix matching, speculative decoding
-"""
-
-
-def test_an_opening_reply_parses() -> None:
-    verdict, reason, concepts, parsed = parse_opening(OPENING)
-
-    assert verdict == VERDICT_YES
-    assert reason == "explains cache expiry with a worked example"
-    assert concepts == ["kv cache eviction", "prefix matching", "speculative decoding"]
-    assert parsed
-
-
-def test_an_opening_no_parses() -> None:
-    verdict, reason, _, parsed = parse_opening("VERDICT: NO\nREASON: it is a product demo\n")
-    assert verdict == VERDICT_NO
-    assert reason == "it is a product demo"
-    assert parsed
+def _full(unexplained: str) -> str:
+    return (
+        "VERDICT: YES\nEVIDENCE: CLEAR\nREASON: shows the cache_control breakpoints.\n"
+        f"RELEVANT: 00:01:00-00:02:00\nUNEXPLAINED: {unexplained}\n"
+    )
 
 
 def test_none_means_no_concepts() -> None:
-    _, _, concepts, _ = parse_opening("VERDICT: YES\nREASON: r\nCONCEPTS: NONE\n")
-    assert concepts == []
-
-
-def test_an_unparseable_opening_keeps_the_video() -> None:
-    """There is no stage 3, so a MAYBE has nowhere to go. The asymmetry
-    resolves the other way here: a parser bug must not be able to reject."""
-    verdict, reason, _, parsed = parse_opening("I think this one is probably fine?")
-
-    assert verdict == VERDICT_YES
-    assert not parsed
-    assert "could not be parsed" in reason
-
-
-def test_a_stage_two_maybe_resolves_to_keeping() -> None:
-    verdict, _, _, _ = parse_opening("VERDICT: MAYBE\nREASON: hard to say\n")
-    assert verdict == VERDICT_YES
-
-
-def test_markdown_decoration_survives() -> None:
-    reply = "**VERDICT:** NO\n**REASON:** unrelated\n**CONCEPTS:** NONE"
-    verdict, reason, _, parsed = parse_opening(reply)
-    assert verdict == VERDICT_NO
-    assert reason == "unrelated"
-    assert parsed
+    assert parse_full(_full("NONE"), "dQw4w9WgXcQ").concepts == []
 
 
 def test_concepts_are_capped_and_deduplicated() -> None:
-    body = "VERDICT: YES\nREASON: r\nCONCEPTS: a b, a b, c d, e f, g h, i j, k l, m n\n"
-    _, _, concepts, _ = parse_opening(body)
-    assert len(concepts) <= 6
+    concepts = parse_full(_full("a b, a b, c d, e f, g h, i j, k l, m n"), "dQw4w9WgXcQ").concepts
+    assert len(concepts) <= 5
     assert len(set(concepts)) == len(concepts)
 
 
 def test_a_sentence_masquerading_as_a_concept_is_dropped() -> None:
     """Threads become search queries. A whole sentence is not a query."""
-    body = (
-        "VERDICT: YES\nREASON: r\n"
-        "CONCEPTS: kv cache, the video also discusses at length how batching interacts\n"
-    )
-    _, _, concepts, _ = parse_opening(body)
+    concepts = parse_full(
+        _full("kv cache, the video also discusses at length how batching interacts"),
+        "dQw4w9WgXcQ",
+    ).concepts
     assert concepts == ["kv cache"]
 
 

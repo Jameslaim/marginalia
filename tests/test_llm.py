@@ -475,14 +475,15 @@ def test_the_model_comes_from_config_never_a_constant() -> None:
 
 
 def test_every_shipped_prompt_loads_with_a_version() -> None:
-    for name in (
-        "write_brief",
-        "review_brief",
-        "expand_queries",
-        "judge_metadata",
-        "judge_opening",
-        "write_note",
-    ):
+    """Every prompt on disk, found rather than listed. The list this replaced
+    named six and missed the four in subdirectories — the stage-2 judge, the
+    map and both planner prompts — and named one that nothing called."""
+    names = sorted(
+        path.relative_to(prompts_dir()).with_suffix("").as_posix()
+        for path in prompts_dir().rglob("*.md")
+    )
+    assert "judge/full" in names and "write_note" in names
+    for name in names:
         prompt = load_prompt(name)
         assert prompt.version, f"{name} has no version"
         assert prompt.text.strip()
@@ -492,7 +493,8 @@ def test_no_prompt_names_a_model_family() -> None:
     """Prompts must be model-agnostic: "you are Claude" framing, or anything
     tuned to one model's habits, breaks on the next provider."""
     banned = ("claude", "gpt-", "chatgpt", "gemini", "llama", "glm", "anthropic", "openai")
-    for path in sorted(prompts_dir().glob("*.md")):
+    # rglob: `glob` saw only the top level and skipped judge/, territory/ and plan/.
+    for path in sorted(prompts_dir().rglob("*.md")):
         body = path.read_text(encoding="utf-8").lower()
         for word in banned:
             assert word not in body, f"{path.name} names a model family: {word!r}"
@@ -659,14 +661,18 @@ def test_the_metadata_judge_is_told_duration_is_not_depth() -> None:
     assert "maybe" in body
 
 
-def test_both_judges_state_the_inclusion_bias() -> None:
-    """The asymmetry is the reason the whole three-way verdict exists. If it
-    ever falls out of a prompt, the judge silently starts making the
-    invisible, permanent mistake instead of the cheap, visible one."""
-    for name in ("judge_metadata", "judge_opening"):
-        body = load_prompt(name).text.lower()
-        assert "invisible" in body, f"{name} lost the asymmetry argument"
-        assert "permanent" in body, f"{name} lost the asymmetry argument"
+def test_both_judges_state_what_their_mistakes_cost() -> None:
+    """Stage 1's asymmetry is the reason the three-way verdict exists: a NO
+    there is never fetched, so it is the invisible, permanent mistake. Stage 2's
+    costs changed with rule 12 — its NO keeps the transcript and the note — and
+    its prompt must say that neither verdict is the safe one. This used to check
+    stage 1 and the opening judge nothing called, and never the live stage 2."""
+    metadata = load_prompt("judge_metadata").text.lower()
+    assert "invisible" in metadata and "permanent" in metadata
+
+    full = load_prompt("judge/full").text.lower()
+    assert "neither verdict is free" in full
+    assert "a wrong yes hides a gap" in full
 
 
 def test_the_note_prompt_demands_a_marker_on_anything_inferred() -> None:

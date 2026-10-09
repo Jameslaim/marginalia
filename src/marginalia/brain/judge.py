@@ -34,7 +34,6 @@ from ..contracts import (
     Brief,
     FullVerdict,
     MetadataVerdict,
-    OpeningVerdict,
     SearchResult,
     TerritoryMap,
 )
@@ -55,7 +54,6 @@ __all__ = [
     "Judge",
     "parse_batch",
     "parse_full",
-    "parse_opening",
     "parse_queries",
     "territory_lines",
 ]
@@ -77,6 +75,7 @@ _BATCH_LINE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# A labelled line, which query expansion must not mistake for a query.
 _LABEL_RE = re.compile(r"^\s*\**\s*(VERDICT|REASON|CONCEPTS)\s*\**\s*[:\-]\s*(.*)$", re.IGNORECASE)
 
 # Leading list markers a model adds to query lines despite being told not to.
@@ -89,8 +88,6 @@ _MAX_REASON = 120
 # hold one — the reason is the only durable account of why a video is or is
 # not in the library, read months later from the decision log.
 _FULL_REASON = 400
-
-_OPENING_WORDS = 1000
 
 # Chapters shown per candidate at stage 1. The same cap stage 2 uses.
 _CHAPTER_LIMIT = 12
@@ -148,41 +145,6 @@ def parse_batch(text: str, count: int) -> list[tuple[str, str, bool]]:
             missing,
         )
     return results
-
-
-def parse_opening(text: str) -> tuple[str, str, list[str], bool]:
-    """Read a stage-2 reply into ``(verdict, reason, concepts, parsed)``.
-
-    An unreadable reply keeps the video. There is no third stage to route a
-    MAYBE to here, so the inclusion bias resolves the other way: a parser bug
-    must not be able to reject.
-    """
-    verdict: str | None = None
-    reason = ""
-    concepts: list[str] = []
-
-    for line in text.splitlines():
-        match = _LABEL_RE.match(line)
-        if match is None:
-            continue
-        label, body = match.group(1).upper(), match.group(2).strip()
-        if label == "VERDICT" and verdict is None:
-            word = re.search(r"\b(YES|NO|MAYBE)\b", body, re.IGNORECASE)
-            if word is not None:
-                found = _VERDICT_WORDS[word.group(1).upper()]
-                # There is no stage 3. A MAYBE here has nowhere to go, so it
-                # resolves the way the asymmetry points: keep it.
-                verdict = VERDICT_YES if found == VERDICT_MAYBE else found
-        elif label == "REASON" and not reason:
-            reason = _tidy_reason(body)
-        elif label == "CONCEPTS" and not concepts:
-            concepts = _parse_concepts(body)
-
-    if verdict is None:
-        log.warning("judge: stage-2 verdict unparseable — keeping the video, never rejecting")
-        return VERDICT_YES, "verdict could not be parsed, kept", concepts, False
-
-    return verdict, reason or "no reason given", concepts, True
 
 
 # -- stage 2, whole transcript ----------------------------------------------
@@ -880,10 +842,10 @@ class Judge:
     ) -> FullVerdict:
         """Judge one video on everything it says.
 
-        The transcript arrives as text rather than being read from disk, for the
-        same reason `opening_words` takes lines: this must never become a path
-        that can read a stored transcript into a report. `brain/` cannot reach
-        the filesystem at all, which makes that structural rather than careful.
+        The transcript arrives as text rather than being read from disk: this
+        must never become a path that can read a stored transcript into a
+        report. `brain/` cannot reach the filesystem at all, which makes that
+        structural rather than careful.
         """
         prompt = self.prompt(FULL_PROMPT)
         chapter_text = (
@@ -946,44 +908,6 @@ class Judge:
             )
 
         return parse_full(reply.text, candidate.video_id)
-
-
-    # -- stage 2: the opening, one per call --------------------------------
-
-    def judge_opening(
-        self,
-        brief: Brief,
-        candidate: SearchResult,
-        *,
-        opening: str,
-        chapters: Sequence[str] = (),
-    ) -> OpeningVerdict:
-        prompt = self.prompt("judge_opening")
-        chapter_text = (
-            "CHAPTERS: " + "; ".join(chapters) if chapters else "CHAPTERS: none published"
-        )
-        try:
-            reply = self.client.complete(
-                "You judge video relevance from how the video opens.",
-                prompt.render(
-                    brief=brief.text,
-                    title=candidate.title,
-                    channel=candidate.channel,
-                    chapters=chapter_text,
-                    opening=opening,
-                ),
-                task="judge_opening",
-            )
-        except LlmConfigError:
-            raise  # a refusal, not a blip — see judge_metadata
-        except Exception as exc:  # noqa: BLE001 - see above
-            log.warning("judge: stage-2 call failed for %s (%s) — keeping", candidate.video_id, exc)
-            return OpeningVerdict(
-                candidate.video_id, VERDICT_YES, "opening judge failed, kept", parsed=False
-            )
-
-        verdict, reason, concepts, parsed = parse_opening(reply.text)
-        return OpeningVerdict(candidate.video_id, verdict, reason, concepts, parsed)
 
 
 # The sections every later judgement reads, as `write_brief` asks for them. A
@@ -1071,17 +995,3 @@ def _describe(position: int, candidate: SearchResult) -> str:
     if shown:
         parts.append("   chapters: " + " | ".join(shown))
     return "\n".join(parts)
-
-
-def opening_words(transcript_lines: Sequence[str], limit: int = _OPENING_WORDS) -> str:
-    """The first ~1000 words of caption text, for stage 2.
-
-    Takes already-extracted text, not the stored file: this must never become a
-    path that reads a transcript into a report.
-    """
-    words: list[str] = []
-    for line in transcript_lines:
-        words.extend(line.split())
-        if len(words) >= limit:
-            break
-    return " ".join(words[:limit])

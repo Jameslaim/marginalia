@@ -1,8 +1,12 @@
 ---
 name: judge_full
-version: "9"
+version: "10"
 stage: full
-note: "v9 corrects what the two mistakes cost. v8 still said a NO loses the
+note: "v10 replaces a vendor name in an example import:
+  rule 7 says no prompt names a model family, and the test meant to hold
+  that scanned only the top level of prompts/, so this file was never
+  checked.
+  v9 corrects what the two mistakes cost. v8 still said a NO loses the
   video, invisibly and permanently, and rule 12 changed that. A stage-2 NO now
   keeps the transcript and the video still gets a note, so what a NO costs is
   coverage for the topic, and the error that hides is a wrong YES. It also
@@ -76,7 +80,7 @@ Everything above says your reason must come from the transcript. There is one
 place where that is genuinely impossible and the judgement is still worth
 making: **whether what the video teaches is current.**
 
-A transcript that imports `from langchain.embeddings import OpenAI` does not say
+A transcript that imports `from langchain.vectorstores import FAISS` does not say
 that path is superseded. Nothing in it can. Recognising it as an old API surface
 is knowledge about the subject, not evidence from the video — and it is often
 the single most useful thing to notice, because an obsolete tutorial is accurate

@@ -89,7 +89,6 @@ __all__ = [
     # judgement
     "Brief",
     "MetadataVerdict",
-    "OpeningVerdict",
     "FullVerdict",
     "RELEVANT_UNAVAILABLE",
     "RELEVANT_NONE",
@@ -1034,29 +1033,11 @@ class MetadataVerdict:
 
 
 @dataclass(frozen=True)
-class OpeningVerdict:
-    """Stage 2 before B3, when it read only the opening.
-
-    Kept because `prompts/judge_opening.md` and its parser are still here and
-    still tested: the opening judge is the fallback if reading whole
-    transcripts turns out to cost more than it is worth, and deleting the
-    working version of a thing while replacing it is how a rollback stops
-    being possible. Nothing in the live path constructs one.
-    """
-
-    video_id: str
-    verdict: str
-    reason: str
-    concepts: list[str] = field(default_factory=list)
-    parsed: bool = True
-
-
-@dataclass(frozen=True)
 class FullVerdict:
     """Stage 2's answer, having read the whole transcript.
 
-    Replaces `OpeningVerdict`, which was named for evidence stage 2 no longer
-    uses. Reading only the opening could not tell a video that delivers from one
+    Replaced the opening verdict (B3), which was named for evidence stage 2
+    no longer uses. Reading only the opening could not tell a video that delivers from one
     that opens well and never arrives — the two are identical for a thousand
     words — so the name had to go with the evidence.
 

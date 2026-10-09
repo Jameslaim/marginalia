@@ -153,7 +153,7 @@ extra = { reasoning_effort = "none", temperature = 0, seed = 42 }
 # task is intrinsically short enough to finish first. Measured, same prompts:
 #
 #   task            effort   finish    reasoning   content
-#   judge_opening   max      stop            685      187ch   ok
+#   judge_opening   max      stop            685      187ch   ok   (since removed)
 #   write_brief     max      stop          2,256    2,969ch   ok
 #   review_brief    max      length        8,192        0ch   EMPTY
 #   review_brief    high     stop          2,320    2,432ch   ok
@@ -170,9 +170,6 @@ extra = { reasoning_effort = "none", temperature = 0, seed = 42 }
 # this provider. Match effort to how much the task has to WRITE, not to how
 # hard it is. And verify after any prompt grows: write_brief at max is
 # comfortable today, not safe by construction.
-[llm.tasks.judge_opening]
-extra = { reasoning_effort = "max" }
-
 # B3's stage 2: the whole transcript, thinking OFF.
 #
 # Not a cost saving — a shape argument. With the complete evidence in hand the
