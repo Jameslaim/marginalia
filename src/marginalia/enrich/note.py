@@ -63,7 +63,7 @@ __all__ = [
     "write_notes",
 ]
 
-# The seven sections, spelled as the prompt spells them. Consistent structure is
+# The required sections, spelled as the prompt spells them. Consistent structure is
 # what lets M6 reason across fifty notes at once; free prose inside each is what
 # keeps them worth reading.
 REQUIRED_SECTIONS: tuple[str, ...] = (
@@ -349,7 +349,7 @@ def _one(
     if floor and len(transcript) < floor:
         # **Its own outcome, not a failure and not the ceiling's twin.** Nothing
         # went wrong and nothing was too big: there is not enough transcript for
-        # seven sections to be written from, so whatever a note contained would
+        # the required sections to be written from, so whatever a note contained would
         # be mostly the model's own supply. Rule 14 — a skip that shared the
         # ceiling's counter would report "too short" and "too long" as one
         # number, and they have opposite causes.

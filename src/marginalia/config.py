@@ -313,7 +313,7 @@ class NoteConfig:
     # entire premise of a note is one model reading the whole thing at once —
     # chunking would produce something that looks like a note and is not.
     max_transcript_chars: int
-    # M-later. Below this, there is not enough transcript for seven sections
+    # M-later. Below this, there is not enough transcript for the note's sections
     # to be written from. Measured: a note is normally ~0.47x its transcript,
     # and below ~1,200 characters that inverts to 5x-126x.
     min_transcript_chars: int

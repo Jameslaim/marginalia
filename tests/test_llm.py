@@ -684,6 +684,21 @@ def test_the_note_prompt_asks_for_a_deliberate_undefined_terms_pass() -> None:
     assert "without ever being defined" in body
 
 
+def test_the_note_prompt_lists_every_required_section_and_states_no_count() -> None:
+    """The prompt said "exactly these seven sections" and listed eight, from the
+    commit that added `How current is it` until v8. The list is the count: a
+    number beside it is a second statement of the same fact that can drift."""
+    from marginalia.enrich.note import REQUIRED_SECTIONS
+
+    text = load_prompt("write_note").text
+    for name in REQUIRED_SECTIONS:
+        assert f"\n## {name}" in text.replace("\r\n", "\n"), f"the prompt does not list {name!r}"
+    body = " ".join(text.lower().split())
+    for word in ("six", "seven", "eight", "nine", "ten"):
+        assert f"exactly these {word} sections" not in body
+    assert "output exactly these sections, in this order" in body
+
+
 def test_the_metadata_judge_rejects_other_depth_proxies_too() -> None:
     """Duration was the one observed. View count and channel size are the same
     inference and would be just as invisible."""

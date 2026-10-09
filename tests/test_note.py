@@ -46,7 +46,7 @@ from marginalia.providers.base import TranscriptLine
 
 PROMPT = '---\nname: write_note\nversion: "1"\n---\nRead {{ transcript }} about\n{{ title }} {{ channel }} {{ duration }} {{ upload_date }} {{ caption_kind }}\n{{ chapters }}\n'
 
-# A reply the validator must accept: all seven sections, each with something
+# A reply the validator must accept: every required section, each with something
 # under it. The distinctive phrases are here so the "nothing leaks to stdout"
 # test has something specific to look for.
 GOOD_NOTE = "\n".join(
@@ -93,7 +93,7 @@ def client(replies, *, usage: FakeUsage | None = None) -> LlmClient:
 
 
 # Long enough to clear `[note] min_transcript_chars`. The floor is a real
-# guard — below it there is not enough transcript for seven sections — and a
+# guard — below it there is not enough transcript for a note's sections — and a
 # fixture that trips it would make every drain test assert the wrong thing.
 FIXTURE_TRANSCRIPT = "hello world, and here is some more of it. " * 40
 
@@ -590,8 +590,8 @@ def test_degraded_evidence_still_stops_a_note(tmp_path: Path) -> None:
 
 def test_a_transcript_under_the_floor_is_skipped_with_its_own_reason(tmp_path: Path) -> None:
     """**Its own outcome, not a failure and not the ceiling's twin.** Nothing
-    went wrong and nothing was too big: there is not enough transcript for seven
-    sections, so whatever a note contained would be mostly the model's own
+    went wrong and nothing was too big: there is not enough transcript for the
+    required sections, so whatever a note contained would be mostly the model's own
     supply. Measured — a note is normally about half its transcript (median
     0.469x), and a 37-character transcript produced a 4,681-character note."""
     config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", text="too short")

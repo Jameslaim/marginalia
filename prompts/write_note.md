@@ -1,8 +1,11 @@
 ---
 name: write_note
-version: "7"
+version: "8"
 stage: note
-note: "v7 passes TODAY. A model applied its training cutoff to a video's
+note: "v8 drops the section count. The prompt said seven sections and
+  listed eight from the commit that added `How current is it` (2032513); the
+  list is now the only count, so the next section added cannot make it wrong.
+  v7 passes TODAY. A model applied its training cutoff to a video's
   publication date and recorded as fact that content it had never heard of did
   not exist — calling it `not a real model` or `appears to be a hallucination`
   — and called the source `speculative or from a future/alternate timeline`.
@@ -41,7 +44,7 @@ TRANSCRIPT (each line carries its start and end timestamp):
 
 ---
 
-Output exactly these seven sections, in this order, each introduced by its
+Output exactly these sections, in this order, each introduced by its
 heading on its own line, spelled exactly as written here:
 
 ## Claims
