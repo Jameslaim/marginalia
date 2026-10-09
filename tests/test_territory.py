@@ -574,6 +574,14 @@ def test_a_topic_with_no_stated_constraint_leaves_the_reasoning_alone() -> None:
     assert user_constraints("history of transformers").no_date_filter
 
 
+def test_a_constraint_phrase_must_be_a_whole_word() -> None:
+    """"ever" was matched as a substring, so every topic containing "every",
+    "however" or "never" was read as asking for material of any age."""
+    for topic in ("every agent framework compared", "never lose agent state", "clever caching"):
+        assert not user_constraints(topic).no_date_filter, topic
+    assert user_constraints("the best agent framework ever").no_date_filter
+
+
 def test_the_user_rule_only_ever_removes_a_hard_filter() -> None:
     """One-directional by design: it can forbid `publishedAfter`, never require
     one. A phrase it recognises wrongly costs one unfiltered search."""
@@ -1135,3 +1143,40 @@ def test_a_sample_with_nothing_usable_is_still_unusable() -> None:
 
     assert not territory
     assert not territory.parsed
+
+
+class _SequenceClient(FakeClient):
+    """One reply per call, in order — three samples that disagree."""
+
+    def __init__(self, replies) -> None:
+        super().__init__()
+        self._replies = list(replies)
+
+    def complete(self, system, user, *, task=None, max_tokens=None):
+        self.tasks.append(task)
+        return self._replies[min(len(self.tasks) - 1, len(self._replies) - 1)]
+
+
+def _sample_reply(months: str) -> FakeReply:
+    return FakeReply(
+        "CONCEPTS: agent memory\nVOCABULARY: scratchpad\n"
+        f"RECENCY: {months} months — the APIs moved\n"
+        "QUERY: agent memory tutorial\nFROM: concept: agent memory\nFILTERS: none\n"
+    )
+
+
+def test_widening_does_not_count_the_codes_own_cutoff_as_a_rejection() -> None:
+    """Each sample derived its own cutoff onto its queries, and the winner was
+    then re-validated against the widest window — where the first sample's
+    derived date "excludes more than the reasoned window" and is refused. That
+    is the code rejecting its own arithmetic, counted in `filters_rejected` and
+    printed as a filter the map proposed that would have excluded content."""
+    mapper = Mapper(_SequenceClient([_sample_reply("12"), _sample_reply("24"), _sample_reply("18")]))
+
+    territory = mapper.map(BRIEF)
+
+    assert territory.recency.months == 24
+    assert territory.rejected == []
+    derived = territory.queries[0].filters.published_after
+    assert derived is not None
+    assert RECENCY_DERIVED_WHY in territory.queries[0].reasons[FILTER_PUBLISHED_AFTER]

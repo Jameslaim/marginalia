@@ -180,7 +180,9 @@ def user_constraints(topic: str) -> UserConstraints:
     """Read the explicit constraints out of the topic the user typed."""
     lowered = " ".join(topic.split()).lower()
     for phrase in _TIMELESS_PHRASES:
-        if phrase in lowered:
+        # Whole words. As a substring "ever" is inside "every", "however" and
+        # "never", and "every agent framework" is not a request for old videos.
+        if re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", lowered):
             return UserConstraints(
                 no_date_filter=True,
                 reason=f"the topic says {phrase!r}, which asks for older material",
@@ -1032,10 +1034,9 @@ class Mapper:
                 recency.samples_label,
                 recency.label,
             )
-        # Re-validated against the widened window, because the first sample's
-        # queries were checked against the first sample's recency: a
-        # `publishedAfter` the model proposed may now be legal that was not, and
-        # every main query needs the derived cutoff recomputed from the winner.
+        # Validated once, here, against the widened window — the only window
+        # that will run. A `publishedAfter` the model proposed is judged against
+        # it, and every main query's cutoff is derived from it.
         kept, rejections = validate(first.queries, recency=recency, topic=brief.topic)
         # The other samples' problems are kept on the stored map too (rule 14):
         # a sample that cast no vote must be visible as one. Labels only for a
@@ -1058,7 +1059,7 @@ class Mapper:
     def _sample(
         self, brief: Brief, *, count: int, max_tokens: int | None
     ) -> TerritoryMap:
-        """One mapping call, parsed and validated against its own recency."""
+        """One mapping call, parsed. Validation happens once, in `map`."""
         prompt = self.prompt(MAP_PROMPT)
         try:
             reply = self.client.complete(
@@ -1102,20 +1103,22 @@ class Mapper:
             )
 
         parsed = parse_map(reply.text, topic=brief.topic, version=prompt.version)
-        kept, rejections = validate(
-            parsed.queries, recency=parsed.recency, topic=brief.topic
-        )
+        # **Not validated here.** `map` validates the winning sample once,
+        # against the widest window. Validating each sample against its own
+        # window derived that window's cutoff onto the queries, and the second
+        # validation then refused the code's own date as narrower than the
+        # widened window — counted in `filters_rejected` and printed as a filter
+        # the map proposed that "would have excluded".
         return TerritoryMap(
             topic=parsed.topic,
             version=parsed.version,
             concepts=parsed.concepts,
             vocabulary=parsed.vocabulary,
             recency=parsed.recency,
-            queries=kept,
-            # Both halves, in the order they were caught: what the reply asked
-            # for that this system does not send, then what it asked for that
-            # the rules would not allow.
-            rejected=[*parsed.rejected, *rejections],
+            queries=parsed.queries,
+            # What the reply asked for that this system does not send. What it
+            # asked for that the rules would not allow is `map`'s to find.
+            rejected=list(parsed.rejected),
             parsed=parsed.parsed,
             problem=parsed.problem,
             recency_readable=parsed.recency_readable,
