@@ -452,9 +452,13 @@ def check_grounding(
       words, not the speaker's (`in_verbatim` says which part of the note);
     * nowhere — unverified, split by length into speech and phrases.
 
-    When no cited video has a transcript on disk, the note's `## Verbatim`
-    section stands in for it, as it did before transcripts were consulted, and
-    the quote is counted in ``quotes_unchecked``.
+    A cited video with no transcript on disk is checked against its note's
+    `## Verbatim` instead, as every video was before transcripts were
+    consulted, and a quote settled that way is counted in ``quotes_unchecked``.
+    Per video, not per quote: when an answer cites one video with a transcript
+    and one without, a quote from the second's Verbatim is that note's speech,
+    not "the note's words", and the first video's transcript says nothing
+    about it.
 
     **The two unverified lists are never summed.** A sentence attributed to a
     video that its sources do not contain is a claim about what somebody said; a
@@ -467,7 +471,12 @@ def check_grounding(
     "the video says X instead". This reports whether a string was found and
     never what stood in its place.
     """
-    text = normalise_dashes(text)
+    # Dashes are normalised for finding ids and nowhere else. The quotes keep
+    # the answer's own characters: `mark_unverified` places its markers by
+    # matching them against the answer as written, and a quote carrying an em
+    # dash was recorded as failing and never marked. The translation is one
+    # character for one, so offsets agree between the two.
+    ids_text = normalise_dashes(text)
     known = set(loaded)
     folded = {video_id.lower(): video_id for video_id in known}
     flat = {note.video_id: flatten(note.text) for note in notes}
@@ -491,7 +500,7 @@ def check_grounding(
 
     # Brackets only. Scanning free prose would flag every eleven-character word.
     unresolved: list[str] = []
-    for group in _GROUP_RE.finditer(text):
+    for group in _GROUP_RE.finditer(ids_text):
         for candidate in _ID_TOKEN_RE.findall(group.group(1)):
             if candidate in known or candidate in unresolved:
                 continue
@@ -517,7 +526,7 @@ def check_grounding(
         needle = flatten(body)
         if len(needle) < 8:
             continue
-        window = text[max(0, quote.start() - _CITE_WINDOW) : quote.end() + _CITE_WINDOW]
+        window = ids_text[max(0, quote.start() - _CITE_WINDOW) : quote.end() + _CITE_WINDOW]
         ids = _cited_near(window, folded)
         if not ids:
             uncited.append(body)
@@ -527,40 +536,35 @@ def check_grounding(
         # held the string, so naming one would misreport what was tested.
         cited = "/".join(ids)
         heard = [video_id for video_id in ids if video_id in said]
+        unheard = [video_id for video_id in ids if video_id not in said]
 
-        if heard:
-            if any(needle in said[video_id] for video_id in heard):
-                verified += 1
-                continue
-            loose = any(
-                closeness(body, words_of("transcript", video_id)) >= _TRANSCRIPT_LOOSE_RATIO
-                for video_id in heard
-            )
-            if not loose and any(needle in flat.get(video_id, "") for video_id in ids):
-                # **The words are in the note; the video does not say them.**
-                unspoken.append(
-                    UnverifiedQuote(
-                        text=body,
-                        video_ids=cited,
-                        in_verbatim=any(needle in spoken_note.get(v, "") for v in ids),
-                    )
-                )
-                continue
-        else:
-            # No transcript on disk for anything cited here: the note's Verbatim
-            # is the best record available, and the quote is counted as checked
-            # only against it.
+        if any(needle in said[video_id] for video_id in heard):
+            verified += 1
+            continue
+        if any(needle in spoken_note.get(video_id, "") for video_id in unheard):
+            # Speech by the only record there is for that video.
+            verified += 1
             unchecked += 1
-            if any(needle in spoken_note.get(video_id, "") for video_id in ids):
-                verified += 1
-                continue
-            if any(needle in flat.get(video_id, "") for video_id in ids):
-                unspoken.append(UnverifiedQuote(text=body, video_ids=cited))
-                continue
-            loose = any(
-                closeness(body, words_of("verbatim", video_id)) >= _LOOSE_RATIO
-                for video_id in ids
+            continue
+        if not heard:
+            unchecked += 1
+        loose = any(
+            closeness(body, words_of("transcript", video_id)) >= _TRANSCRIPT_LOOSE_RATIO
+            for video_id in heard
+        ) or any(
+            closeness(body, words_of("verbatim", video_id)) >= _LOOSE_RATIO
+            for video_id in unheard
+        )
+        if not loose and any(needle in flat.get(video_id, "") for video_id in ids):
+            # **The words are in the note; the record does not have them.**
+            unspoken.append(
+                UnverifiedQuote(
+                    text=body,
+                    video_ids=cited,
+                    in_verbatim=any(needle in spoken_note.get(v, "") for v in heard),
+                )
             )
+            continue
 
         entry = UnverifiedQuote(text=body, video_ids=cited, loose=loose)
         # Measured on the raw span, not the flattened one: the boundary was
@@ -1466,7 +1470,7 @@ def answer_question(
 def _transcripts_for(
     library: Library, ledger: Ledger | None, text: str, known: Sequence[str]
 ) -> dict[str, str]:
-    """The stored transcript of every loaded video the answer names.
+    """The stored transcript of every loaded video the answer cites beside a quote.
 
     Read whole from disk, not taken from what was opened mid-answer: an opened
     transcript is cut at `[ask] max_transcript_chars`, and a quote from past
@@ -1475,10 +1479,20 @@ def _transcripts_for(
     `touch_accessed`, because a video cited in an answer is a video that was
     used.
     """
-    lowered = normalise_dashes(text).lower()
+    folded = {video_id.lower(): video_id for video_id in known}
+    flat_text = normalise_dashes(text)
+    # Only a video cited beside a quote is read: the check has nothing to ask of
+    # any other, and an answer citing thirty long videos would otherwise read
+    # tens of megabytes to check three quotes.
+    wanted: list[str] = []
+    for quote in QUOTE_RE.finditer(text):
+        window = flat_text[max(0, quote.start() - _CITE_WINDOW) : quote.end() + _CITE_WINDOW]
+        for video_id in _cited_near(window, folded):
+            if video_id not in wanted:
+                wanted.append(video_id)
     found: dict[str, str] = {}
-    for video_id in known:
-        if video_id.lower() not in lowered or not library.has_transcript(video_id):
+    for video_id in wanted:
+        if not library.has_transcript(video_id):
             continue
         try:
             found[video_id] = library.read_transcript(video_id)

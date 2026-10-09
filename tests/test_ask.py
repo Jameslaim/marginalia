@@ -1426,3 +1426,59 @@ def test_no_transcript_is_opened_past_the_ceiling_left_by_deep():
     """`--deep` can spend the whole `[ask] max_transcripts`. With nothing left
     the loop still took one, because it checked the limit after appending."""
     assert parse_escalations(f"ESCALATE: {A}: wording", known=[A], limit=0) == []
+
+
+def test_a_failing_quote_with_an_em_dash_is_still_marked_where_it_stands(tmp_path):
+    """The check normalised dashes in the whole answer, so a failing quote was
+    recorded with ASCII hyphens and `mark_unverified`, matching against the
+    answer as written, never found it. Models write em dashes constantly."""
+    config, library = build(
+        tmp_path, {A: "## Claims\n\n- x\n"}, {A: _cue("something else entirely was said here")}
+    )
+    invented = "the agent — not the user — decides everything here"
+    spoken = client([f'It says "{invented}" [{A} 00:00].'])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert len(answer.unverified_speech) == 1
+    assert f'"{invented}" [unverified]' in mark_unverified(answer)
+
+
+def test_a_verbatim_quote_from_a_video_without_a_transcript_is_not_accused(tmp_path):
+    """Cited beside a video that has a transcript, a quote from the other
+    video's Verbatim was checked against the first video's transcript only and
+    marked `[not spoken]` — the false accusation the transcript check exists to
+    remove. Each video is checked against its own best record."""
+    config, library = build(
+        tmp_path,
+        {A: "## Claims\n\n- x\n", B: "## Verbatim\n\n- the cache is warmed every night\n"},
+        {A: _cue("something unrelated that was actually said")},
+    )
+    text = f'They say "the cache is warmed every night" [{A} 00:00] [{B} 01:00].'
+
+    grounding = check_grounding(
+        text, load_notes(library), [A, B], transcripts={A: library.read_transcript(A)}
+    )
+
+    assert grounding.unspoken_quotes == ()
+    assert (grounding.quotes_verified, grounding.quotes_unchecked) == (1, 1)
+
+
+def test_only_transcripts_cited_beside_a_quote_are_read(tmp_path, monkeypatch):
+    """A cited video with no quote beside it gives the check nothing to ask."""
+    config, library = build(
+        tmp_path,
+        {A: "## Claims\n\n- x\n", B: "## Claims\n\n- y\n"},
+        {A: _cue("the minimum is one thousand tokens"), B: _cue("words from b")},
+    )
+    read: list[str] = []
+    original = library.read_transcript
+    monkeypatch.setattr(library, "read_transcript", lambda v: read.append(v) or original(v))
+    filler = " Further discussion of unrelated points follows here." * 6  # past the window
+    spoken = client([
+        f'A says "the minimum is one thousand tokens" [{A} 00:00].{filler} B agrees [{B} 00:00].'
+    ])
+
+    answer_question(config, library, spoken, "q")
+
+    assert read == [A]

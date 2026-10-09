@@ -63,9 +63,11 @@ came from a speaker or from the layers above them.
 spoken in the video you cite. You have two places to copy a speaker's words
 from, and only two:
 
-- a note's `## Verbatim` section — except a line marked
-  `[note: not found in the transcript as worded]`, which was checked against
-  the video's transcript and is not there. Report what it says if it helps,
+- text that a note's `## Verbatim` section puts inside quotation marks —
+  except on a line marked `[note: not found in the transcript as worded]`,
+  which was checked against the video's transcript and is not there. A
+  Verbatim line without quotation marks (a command shown on screen, a
+  paraphrase) was not checked and is not speech. Report either if it helps,
   without quotation marks;
 - a transcript under TRANSCRIPTS YOU ASKED FOR, when you have one.
 
