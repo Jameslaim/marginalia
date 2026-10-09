@@ -12,9 +12,10 @@
       search each query -> candidates          (M2a, unchanged)
       gates 1 and 2, including what this run already stored
       stage 1, batched -> no / fetch-or-not
-      yes or maybe -> fetch -> stage 2 -> yes / no + threads
-      stage-2 yes -> store and note; stage-2 no -> store, no note
-      decide whether to run again
+      yes or maybe -> check the ceilings -> fetch -> store -> stage 2
+      stage-2 yes -> counts as coverage, its concepts become threads
+      stage-2 no -> kept on disk, does not count (both get a note later)
+      planner, then decide whether to run again
 
 The loop-back is the whole point. Everything else is plumbing.
 
@@ -28,13 +29,14 @@ transcript.
 **The map runs once, before the first round.** It is what makes a query out of a
 word the user never typed — searching "AI agent memory" never returns the video
 called "Building ReAct loops with tool calling", and no judge can rescue a video
-that was never returned. Revising the map between rounds is B5's planner and is
-deliberately not here: this phase builds the map, not the thing that changes it.
+that was never returned. Revising it between rounds is the planner's job (B5), and
+the planner's revisions are applied here, after each round's plan.
 
-**Threads come free.** Stage 2 already reads the opening, so it returns the
+**Threads come free.** Stage 2 already reads the transcript, so it returns the
 concepts a video mentions without explaining in the same response — no second
-request. A video on prompt caching that says "KV cache" and moves on has
-written round two's query for us.
+request. A kept video on prompt caching that says "KV cache" and moves on has
+written round two's query for us. Only kept videos contribute: a rejected
+video's jargon is usually the subject the judge just turned down.
 
 Cost discipline runs through the whole file. Model requests are the scarce
 resource on a free tier, so: gates run before judging, judging runs before
@@ -87,7 +89,7 @@ from ..core.ledger import (
     normalise_topic,
 )
 from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
-from ..core.library import Library, format_timestamp
+from ..core.library import Library, format_timestamp, render_transcript
 from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
 from ..providers.base import TranscriptProvider
@@ -797,7 +799,7 @@ def _judge_round(
     for verdict in ordered:
         if len(run.stored_ids) >= max_videos:
             run.stopped_because = STOP_MAX_VIDEOS
-            return concepts
+            return _dedupe_concepts(concepts)
 
         candidate = by_id[verdict.video_id]
 
@@ -851,12 +853,30 @@ def _judge_round(
             report.no_captions += 1
             continue
 
+        # The ceilings, before the fetch rather than between it and stage 2.
+        # Checked after, a run that hit one threw away the transcript it had
+        # just paid for and left the row `pending` — rule 6's sign of a fetch
+        # that *died*, when what happened was a budget doing its job.
+        if client.usage.requests >= max_requests:
+            run.stopped_because = STOP_MAX_REQUESTS
+            return _dedupe_concepts(concepts)
+        if _overspent(config, client):
+            run.stopped_because = STOP_MAX_COST
+            return _dedupe_concepts(concepts)
+
         _pace(config, fetched_any)
         fetched_any = True
         fetched = _fetch(ledger, candidate.video_id, provider, config)
         if fetched is None:
             report.failed += 1
             continue
+
+        # **Stored before it is judged.** Rule 12 stores the transcript whatever
+        # stage 2 says, so nothing about storing waits on the verdict — and
+        # storing first means a judge that raises (a 402, a rejected key, an
+        # interrupt) leaves the bytes on disk and the row `has_transcript`,
+        # instead of a fetched transcript lost with the process.
+        _store(library, ledger, candidate, fetched, config)
 
         # **Every keeper is read before it is kept**, whatever stage 1 said.
         #
@@ -876,12 +896,7 @@ def _judge_round(
         #
         # So stage 1 is a filter that decides whether to *fetch*, and stage 2 is
         # the verdict that decides whether to keep.
-        if client.usage.requests >= max_requests:
-            run.stopped_because = STOP_MAX_REQUESTS
-            return concepts
-        if _overspent(config, client):
-            run.stopped_because = STOP_MAX_COST
-            return concepts
+        #
         # The whole transcript, not the first thousand words. An opening
         # cannot distinguish a video that delivers from one that promises
         # well and never arrives — the two are identical for a thousand
@@ -909,7 +924,6 @@ def _judge_round(
             prompt_version=judge.prompt(FULL_PROMPT).version,
             relevant=judgement.relevant_text,
         )
-        concepts.extend(judgement.concepts)
         if not judgement.parsed:
             report.unparsed += 1
         if judgement.unmarked_currency:
@@ -952,26 +966,36 @@ def _judge_round(
             # What keeps it out of the library is the absence of a *note*,
             # not the absence of a transcript. `in_library` stays False, so
             # a later topic still gets to judge this video on its own
-            # terms — and by then the download is already done.
-            _store(library, ledger, candidate, fetched, config)
+            # terms — and by then the download is already done. (Stored
+            # above, before the judge was asked anything.)
             continue
+
+        # Only a kept video's unexplained concepts feed the next round. Both
+        # prompts that read them — query expansion and the planner — say they
+        # come from videos judged relevant, and a rejected video's jargon is
+        # often the other meaning of a shared word: the mistake the stage-2
+        # prompt says once cost eight good videos, fed forward as a query.
+        concepts.extend(judgement.concepts)
 
         # Knowable now, and only now. The note worker refuses a transcript past
         # its ceiling, which happens after this run has ended — so without this
         # check the planner counts the video as coverage and `/ask` can never
         # reach it. Four of one run's 24 keepers were in exactly that state.
-        too_long = len(_transcript_text(fetched)) > config.note.max_transcript_chars
-        if too_long:
+        #
+        # Measured in the stored file's own format, because that is what the
+        # worker measures. The judge's rendering is shorter per line, so
+        # checking it here undercounted videos the worker would then refuse.
+        stored_chars = len(render_transcript(fetched.lines))
+        if stored_chars > config.note.max_transcript_chars:
             report.too_long_to_note += 1
             log.info(
                 "discover: %s is %d characters, past the note ceiling of %d; "
                 "it is stored but will never be noted",
                 candidate.video_id,
-                len(_transcript_text(fetched)),
+                stored_chars,
                 config.note.max_transcript_chars,
             )
 
-        _store(library, ledger, candidate, fetched, config)
         run.stored_ids.append(candidate.video_id)
         # The other half of what the planner reads, and the half that makes
         # coverage answerable at all. A planner shown only rejections can only

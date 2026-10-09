@@ -41,7 +41,7 @@ from .ids import is_video_id
 
 log = logging.getLogger(__name__)
 
-__all__ = ["Library", "format_timestamp", "format_duration", "slugify"]
+__all__ = ["Library", "format_timestamp", "format_duration", "render_transcript", "slugify"]
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 _WS_RE = re.compile(r"\s+")
@@ -83,6 +83,21 @@ def slugify(text: str, limit: int = _SLUG_LIMIT) -> str:
         # ends on a word rather than mid-syllable.
         slug = slug[:limit].rsplit("-", 1)[0] or slug[:limit]
     return slug or "question"
+
+
+def render_transcript(lines: Sequence[TranscriptLine]) -> str:
+    """``transcript.txt`` exactly as it is written to disk.
+
+    The one definition of the stored format. Discovery needs the stored length
+    before the note worker ever runs — the worker refuses a transcript past
+    ``[note] max_transcript_chars`` by measuring this text — and a second
+    rendering would measure something else.
+    """
+    return "".join(
+        f"[{format_timestamp(line.start_ms)} --> {format_timestamp(line.end_ms)}] "
+        f"{_one_line(line.text)}\n"
+        for line in lines
+    )
 
 
 def format_duration(seconds: int | None) -> str:
@@ -219,13 +234,7 @@ class Library:
         if path.exists():
             raise FileExistsError(f"transcript.txt already exists for {video_id}; it is immutable")
         path.parent.mkdir(parents=True, exist_ok=True)
-
-        body = "".join(
-            f"[{format_timestamp(line.start_ms)} --> {format_timestamp(line.end_ms)}] "
-            f"{_one_line(line.text)}\n"
-            for line in lines
-        )
-        _atomic_write(path, body)
+        _atomic_write(path, render_transcript(lines))
         return len(lines)
 
     def write_meta(self, video_id: str, meta: dict[str, Any]) -> None:

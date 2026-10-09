@@ -2655,3 +2655,136 @@ def test_a_stage_two_maybe_is_counted_as_unparsed_and_still_kept(
     assert (stage_two.verdict, stage_two.evidence) == ("yes", "CLEAR")
     assert stage_two.reason == "walks through pool_mode settings."
     assert stage_two.relevant == "00:04:20-00:09:15"
+
+
+# -- a fetched transcript is never thrown away ------------------------------
+#
+# Acquisition is the fragile step (rule 12), and rule 6 leaves `pending` only
+# as the trace of a fetch that *died*. A ceiling that stops the run is not a
+# fetch dying, so it must leave neither a discarded transcript nor a `pending`
+# row behind it.
+
+
+class _SpendingJudge(FakeJudge):
+    """Stage 1 costs one request, as it does against a real client."""
+
+    def __init__(self, client, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._client = client
+
+    def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+        self._client.usage = Usage(
+            requests=self._client.usage.requests + 1,
+            input_tokens=self._client.usage.input_tokens,
+            output_tokens=self._client.usage.output_tokens + 1_000_000,
+        )
+        return super().judge_metadata(
+            brief, candidates, batch_size=batch_size, territory=territory
+        )
+
+
+def test_the_request_ceiling_is_checked_before_a_fetch_not_after(
+    config, ledger, library, client, searches
+) -> None:
+    """The ceiling used to be checked between the fetch and stage 2, so the
+    transcript just paid for was dropped and the row stayed `pending` — the
+    state that tells the next run a fetch crashed, when none did."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    client.usage = Usage(requests=99)
+    provider = FakeTranscripts()
+
+    outcome = run(
+        config, ledger, library, client, _SpendingJudge(client),
+        provider=provider, max_rounds=1, max_requests=100,
+    )
+
+    assert outcome.stopped_because == STOP_MAX_REQUESTS
+    assert provider.fetched == [], "the ceiling was reached before the fetch"
+    assert ledger.get("aaaaaaaaaaa") is None
+
+
+def test_the_cost_ceiling_is_checked_before_a_fetch_not_after(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    config = replace(config, discover=replace(config.discover, max_cost_usd=1.0))
+    provider = FakeTranscripts()
+
+    outcome = run(
+        config, ledger, library, client, _SpendingJudge(client),
+        provider=provider, max_rounds=1,
+    )
+
+    assert outcome.stopped_because == STOP_MAX_COST
+    assert provider.fetched == []
+    assert ledger.get("aaaaaaaaaaa") is None
+
+
+def test_a_refusal_during_stage_two_keeps_the_transcript_already_fetched(
+    config, ledger, library, client, searches
+) -> None:
+    """A 402 at stage 2 stops the run (rule 24) and says nothing about the
+    video. The transcript is already in hand, so it is stored before anything
+    is asked of the judge: storing never depended on the verdict anyway."""
+    from marginalia.llm import LlmBillingError
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge()
+
+    def refuse(*_args, **_kwargs):
+        raise LlmBillingError("no balance")
+
+    judge.judge_full = refuse
+
+    with pytest.raises(LlmBillingError):
+        run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert library.has_transcript("aaaaaaaaaaa")
+    assert ledger.get("aaaaaaaaaaa").status == STATUS_HAS_TRANSCRIPT
+    # No stage-2 row: nothing judged it, and inventing a verdict would be worse.
+    assert STAGE_FULL not in {d.stage for d in ledger.decisions_for("aaaaaaaaaaa")}
+
+
+def test_concepts_from_a_rejected_video_do_not_steer_the_next_round(
+    config, ledger, library, client, searches
+) -> None:
+    """Both prompts that read these concepts say they come from videos that were
+    kept. A rejected video's jargon is often the wrong meaning of a shared word —
+    the failure the stage-2 prompt says cost eight good videos — so feeding it
+    forward aims the next round at the subject the judge just turned down."""
+    searches["q1"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    searches["q2"] = [result("ccccccccccc")]
+    judge = FakeJudge(
+        queries=[["q1"], ["q2"]],
+        openings={
+            "aaaaaaaaaaa": (VERDICT_YES, "good", ["kv cache eviction"]),
+            "bbbbbbbbbbb": (VERDICT_NO, "a different subject", ["semantic cache lookup"]),
+        },
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2)
+
+    assert outcome.rounds[0].concepts == ["kv cache eviction"]
+    assert judge.query_calls[1][1] == ("kv cache eviction",)
+
+
+def test_too_long_to_note_is_measured_as_the_note_worker_measures(
+    config, ledger, library, client, searches
+) -> None:
+    """The worker refuses on the length of `transcript.txt`. Discovery used to
+    measure the judge's shorter rendering, so a transcript between the two
+    lengths was counted as coverage and then never noted."""
+    from marginalia.core.library import render_transcript
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+    provider.lines = [TranscriptLine(i * 1000, i * 1000 + 900, "word " * 4) for i in range(50)]
+    stored = len(render_transcript(provider.lines))
+    judged = sum(len(f"[00:00:00.000] {line.text}") + 1 for line in provider.lines)
+    assert judged < stored
+    config = replace(config, note=replace(config.note, max_transcript_chars=(judged + stored) // 2))
+
+    outcome = run(config, ledger, library, client, FakeJudge(), provider=provider, max_rounds=1)
+
+    assert outcome.rounds[0].too_long_to_note == 1
+    assert len(library.read_transcript("aaaaaaaaaaa")) == stored
