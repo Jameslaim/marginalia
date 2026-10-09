@@ -663,8 +663,18 @@ def wanted_for_a_note(row: VideoRow, decisions: Sequence[DecisionRow]) -> bool:
 class Ledger:
     """SQLite-backed ledger. One instance owns one connection."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Path | str, *, read_only: bool = False) -> None:
         self.db_path = Path(db_path)
+        if read_only:
+            # For `marg doctor`, whose promise is that it changes nothing. The
+            # ordinary path below migrates an older ledger in place before it
+            # checks it — additive columns, new tables, the status rename — so a
+            # doctor opened that way would alter the file it was diagnosing.
+            # SQLite enforces this one: a write raises instead of landing.
+            self._conn = sqlite3.connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True)
+            self._conn.row_factory = sqlite3.Row
+            self._check_schema()
+            return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row

@@ -1177,7 +1177,7 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     rows: list[VideoRow] = []
     runs: list[Any] = []
     if library.ledger_path.is_file():
-        with Ledger(library.ledger_path) as ledger:
+        with Ledger(library.ledger_path, read_only=True) as ledger:
             rows = ledger.list_by_status()
             runs = ledger.list_runs()
     else:

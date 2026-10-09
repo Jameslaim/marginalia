@@ -492,3 +492,44 @@ def test_diagnose_reads_nothing_when_given_nothing(tmp_path: Path) -> None:
     assert report.clean
     assert report.findings == ()
     assert not (tmp_path / "nowhere").exists()
+
+
+def test_doctor_does_not_migrate_an_older_ledger(root: Path, capsys) -> None:
+    """`Ledger()` migrates an older schema in place before checking it, so a
+    doctor that opened the ledger that way altered the file it diagnosed. It
+    opens read-only now, and an older ledger is reported, not repaired."""
+    import hashlib
+    import sqlite3
+
+    root.mkdir(parents=True)
+    path = root / "ledger.db"
+    connection = sqlite3.connect(path)
+    connection.executescript(
+        "CREATE TABLE videos (video_id TEXT PRIMARY KEY, status TEXT NOT NULL, "
+        "first_seen TEXT NOT NULL, last_updated TEXT NOT NULL);"
+    )
+    connection.commit()
+    connection.close()
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    code, _out, err = _run(capsys=capsys)
+
+    assert code != 0
+    assert "older version of marginalia" in err
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before
+    assert sorted(p.name for p in root.iterdir()) == ["ledger.db"]
+
+
+def test_doctor_leaves_a_current_ledger_byte_for_byte(root: Path, capsys) -> None:
+    import hashlib
+
+    library = Library(root)
+    library.ensure()
+    with Ledger(library.ledger_path) as ledger:
+        _store(library, ledger, "aaaaaaaaaaa", hash_it=True)
+    before = hashlib.sha256(library.ledger_path.read_bytes()).hexdigest()
+
+    code, _out, _err = _run(capsys=capsys)
+
+    assert code == 0
+    assert hashlib.sha256(library.ledger_path.read_bytes()).hexdigest() == before
