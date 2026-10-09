@@ -1025,6 +1025,40 @@ measurement instrument that does not exist. What remains is not a gap in the
 work; it is a property of measuring a stochastic answer layer, and it is recorded
 as one.
 
+### Addendum, 2026-10: the instrument existed — it was the transcript
+
+The paragraph above was wrong about one thing. Every number in this section
+measured an answer's quotes against **notes**, and took `## Verbatim` as the
+definition of speech. The transcript — immutable, on disk, beside every note —
+was never consulted, by the counters or by anything else, and nothing checked
+Verbatim against it either. Re-measured read-only over the archived library
+(counts only):
+
+| measurement | result |
+|---|---|
+| Verbatim quotes with no close match in their own transcript | **571 of 5,733 (10%)**, in 153 of 719 notes |
+| — in notes of English videos / of other-language videos | 11% / **63%** (mostly translations) |
+| answer quotes marked `[not spoken]` that the cited transcript holds word for word | **62 of 102** |
+| cited answer quotes found exactly in a cited transcript, all stored answers | 508 of 1,078 (47%) |
+| of the rest, near (closeness ≥ 0.6) to the cited transcript / to a random one | 121 / **0** of 570 |
+| note citations a dry-run snap would still move | 9,298 in 676 of 719 notes |
+
+So "29% are things someone actually said" was a statement about agreement with
+the note-writer's quotes, and `[not spoken]` was wrong more often than right.
+
+What changed (RULES.md rule 26): the answer check reads the stored transcript of
+each cited video, and reports a denominator; the note worker checks every Verbatim
+quote and marks the ones it cannot find with `[note: not found in the transcript
+as worded]`, snaps timestamps before writing, and refuses a reply cut off at the
+ceiling. The note's Verbatim is the fallback only where no transcript is on disk,
+counted apart.
+
+What did not change: the check covers quoted text and nothing else, so an
+unquoted claim is exactly as unmeasured as before, and the answer and note
+prompts (`answer` v6, `write_note` v9) are untested against a real model. Whether
+v9 lowers the Verbatim miss rate, or v6 changes what gets quoted, needs a run;
+the counters above are what to compare it with.
+
 ### The verdict noise floor — measured, and it is not the problem
 
 `CPgp8MhmGVY` is stored as a stage-2 NO and then judged YES on three consecutive
@@ -1383,63 +1417,67 @@ When it is eventually built, the expected shape:
 
 ## 14. Repository structure
 
+What is on disk, as of the 2026-10 review. Nothing here is planned rather than
+built; the ASR provider and caption normalisation are M4's and appear in §9.
+
 ```
 marginalia/
-├── .claude-plugin/
-│   └── plugin.json              name, description, version
+├── .claude-plugin/plugin.json   name, description, version
+├── .gitattributes               LF everywhere, CRLF for *.cmd
 ├── CLAUDE.md                    Claude Code adapter; points at RULES.md
 ├── RULES.md                     the rules (anti-drift)
 ├── PLAN.md                      this file
+├── README.md
 ├── config.example.toml
 ├── pyproject.toml
 │
-├── bin/
-│   ├── marg                     CLI entrypoint — added to Bash PATH automatically
-│   └── marg.cmd                 Windows shim
-│
-├── skills/
-│   ├── ingest/SKILL.md          /marginalia:ingest
-│   └── ask/SKILL.md             /marginalia:ask
-│
-├── agents/
-│   ├── judge-relevance.md       model: haiku
-│   └── write-note.md            model: opus
-│
-├── hooks/
-│   └── hooks.json               PreToolUse guard: no direct writes to the library
+├── bin/marg, bin/marg.cmd       entrypoints that find a working Python 3.11+
+├── skills/ingest, skills/ask    thin wrappers that call `marg`
+├── hooks/hooks.json             PreToolUse guard: no direct writes to the library
 │
 ├── prompts/
-│   ├── write_brief.md
-│   ├── expand_queries.md
-│   ├── judge_metadata.md
-│   ├── judge_opening.md
-│   └── write_note.md
+│   ├── write_brief.md  review_brief.md  expand_queries.md
+│   ├── judge_metadata.md        stage 1
+│   ├── judge/full.md            stage 2, the whole transcript
+│   ├── territory/map.md         B4
+│   ├── plan/round.md            B5
+│   ├── plan/baseline.md         what the library already covers
+│   ├── select_notes.md          M7 stage 1
+│   ├── write_note.md
+│   └── answer.md
 │
 ├── src/marginalia/
 │   ├── cli.py                   single entry point
 │   ├── config.py
 │   ├── contracts.py             every structure that crosses a boundary
-│   ├── llm.py                   all model calls, prompt loading
-│   ├── ask.py                   load notes, escalate to transcript
+│   ├── llm.py                   all model calls, prompt loading, error classes
+│   ├── ask.py                   load notes, select, answer, escalate, ground
+│   ├── quotes.py                the one quote matcher (answers and Verbatim)
 │   ├── core/
 │   │   ├── ids.py               canonical video ID extraction
-│   │   ├── ledger.py            the three gates, decisions, quota
-│   │   └── library.py           folder layout read/write
+│   │   ├── ledger.py            the gates, decisions, runs, quota
+│   │   └── library.py           folder layout read/write, the stored format
 │   ├── providers/
 │   │   ├── base.py              TranscriptProvider + SearchProvider interfaces
-│   │   ├── ytdlp.py
+│   │   ├── ytdlp.py             captions
 │   │   ├── youtube_api.py       official search, metered
 │   │   ├── ytdlp_search.py      overflow search, unmetered
-│   │   └── whisper_local.py     faster-whisper small, int8, CPU
-│   ├── brain/
-│   │   └── judge.py             model output → verdicts (the parsers)
+│   │   └── chapters.py          chapter parsing shared by the search providers
+│   ├── brain/                   reasoning only; no I/O
+│   │   ├── judge.py             brief, query expansion, stages 1 and 2
+│   │   ├── territory.py         the map and the filter validator
+│   │   ├── planner.py           the round plan and the library baseline
+│   │   └── selector.py          M7 note selection
 │   ├── flow/
 │   │   ├── search.py            provider chain + gates 1 and 2
-│   │   └── discover.py          brief → queries → judge → loop
+│   │   ├── discover.py          the loop
+│   │   ├── store.py             the one path a fetched transcript is stored by
+│   │   ├── refetch.py           retry transient fetch failures
+│   │   ├── doctor.py            disk against ledger, read-only
+│   │   └── export.py            one run as a readable folder
 │   └── enrich/
-│       ├── note.py              background note worker
-│       ├── timestamps.py        snap cited timestamps onto the transcript
-│       └── normalize.py         artifact stripping, chapters, gap preservation
+│       ├── note.py              the note worker, Verbatim check
+│       └── timestamps.py        snap cited timestamps onto the transcript
 │
 └── tests/
 ```

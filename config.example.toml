@@ -30,7 +30,7 @@ search_order = ["youtube_api", "ytdlp_search"]
 #
 # Several provider changes have exercised this boundary. One also required
 # deleting a hardcoded `temperature=0` from llm.py, which is the reason `_send`
-# now names only model/messages/max_tokens/extra.
+# now names only model/messages/max_tokens/user/extra (RULES.md rule 7).
 provider = "deepseek"
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"

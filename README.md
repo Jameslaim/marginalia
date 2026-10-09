@@ -7,9 +7,26 @@ with a timestamped link per claim.
 **Where it is.** Discovery, notes and answering all work. `marg discover` maps a
 subject, searches it, judges candidates in two stages and plans each round from the
 last one's results; `marg note` turns a stored transcript into a note; `marg ask`
-answers from every note at once. There is no ASR yet, so a video with no caption
-track is recorded as `needs_asr` and left. `PLAN.md` has the full design and the
-build order; `RULES.md` has the rules that must not drift.
+answers from every note at once — or, past the context budget, from a selection of
+whole notes — and checks every quote in its answer against the transcript of the
+video it cites. There is no ASR yet, so a video with no caption track is recorded
+as `needs_asr` and left. `PLAN.md` has the full design and the build order;
+`RULES.md` has the rules that must not drift.
+
+## What to trust in an answer
+
+Every claim carries a `[video_id mm:ss]` citation and a link that lands at that
+moment. Quoted words are checked after the answer is written, against the stored
+transcript of the cited video — the record, not the note — and marked where they
+were not found:
+
+- `[loosely quoted]` — the transcript holds the passage in almost these words
+- `[not spoken]` — the words are in the note, not in the transcript
+- `[unverified]` — no close match in either
+
+The line under the answer says how many quotes were checked and how many were found.
+Unquoted prose is not checked by anything; a citation says where to look, and the link
+is how to look.
 
 ## The architectural rule
 
@@ -92,11 +109,16 @@ log says which transcript was opened and never what was in it.
 marg ingest <url>                  ingest one video
 marg search "<q>" [--limit N]      find candidates; --topic T, --json
 marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requests
-marg note [<video_id>...]          write notes; --limit N, --regenerate [--all], --status
-marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --dry-run
-marg ask "<question>"              answer from every note; --deep <id>, --json,
-                                   --no-save (saving to answers/ is the default)
+marg note [<video_id>...]          write notes; --limit N, --regenerate [--all],
+                                   --missing-only, --status
+marg refetch                       retry transient fetch failures; --limit N, --dry-run
+marg snap-timestamps [<id>...]     align an older note's timestamps; --dry-run
+                                   (new notes are aligned as they are written)
+marg ask "<question>"              answer from the notes; --deep <id>, --json,
+                                   --no-save (saving to answers/ is the default);
+                                   exits 1 when no answer was produced
 marg run export <run_id>           write exports/<run_id>/ from the ledger
+marg doctor                        compare disk against ledger; read-only; --json
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list [--status S]             list videos by asset state (default has_transcript)

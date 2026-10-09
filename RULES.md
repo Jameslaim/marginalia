@@ -28,6 +28,12 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    those carry request bodies, which here means every transcript and note the model
    was ever shown. An answer file names the notes it was written from and never
    quotes them.
+   **A note's line is note text, including when it is short.** `snap-timestamps`
+   printed seventy characters of the note's line beside every moved citation, on
+   the reasoning that a note's words about a video are not the video's words.
+   On a `## Verbatim` line they are exactly the video's words, and a
+   library-wide run printed hundreds of them. It now prints the citations and
+   their sections and nothing else.
 
 2. **Never write into the library directory directly — always go through the CLI.**
    No `Write`, no `Edit`, no shell redirection into the library path. The ledger and
@@ -79,6 +85,14 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    crash then leaves `pending`, or a run with no `finished_at`, which tells the next
    run the job was in flight. The ledger enforces this: `mark_stored` and friends
    raise if no row exists.
+
+   **The corollary: `pending` must mean a fetch died, and nothing else.** A
+   budget ceiling is checked *before* a fetch, never between a fetch and what
+   follows it, and a fetched transcript is stored before anything else is asked
+   of it. Discovery used to check its request and cost ceilings after the fetch
+   and store only after stage 2 returned, so a ceiling reached there — or a 402
+   from the judge — discarded a transcript already paid for and left a
+   `pending` row claiming a crash that never happened.
 
 7. **`llm.py` is the only place a model is named, a request is built, or a prompt is
    loaded.** The provider is temporary and has already been replaced once, so swapping
@@ -306,6 +320,12 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     from unreadable text is worse than no note, because `/ask` loads it and cannot tell.
     It overrides even `noted_at` — regenerating a note from a transcript now known to be
     garbled spends a model call to make the same bad note again.
+
+    **So DEGRADED must be earned by the reason, not only written on the label.** A
+    DEGRADED whose reason names no damage was counted as a violation and then honoured,
+    which let a format slip take a video out of the library for every topic. It now
+    resolves to CLEAR — the parser's own diagnosis is that it was "I am not sure"
+    wearing the label — and a NO resting on it is kept, as every resolution here is.
 
     **The `[outside knowledge: ...]` marker is checked here too, and it is the one rule
     in this file that changes no verdict.** Era is the single axis a transcript cannot
@@ -579,12 +599,12 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     like the first time — and still reports the notes already written, because there
     were 74 of them behind the first 402.
 
-    **And a refusal may not resolve toward keeping.** `judge_metadata`, `judge_full`
-    and `judge_opening` each catch a failed call and keep the video, which is rule 8
-    applied correctly to a blip. A refusal breaks that arithmetic: every later call
-    fails identically, so keeping would walk the whole candidate set through as MAYBE,
-    fetch it, and store it on judgements that never happened. All three re-raise
-    `LlmConfigError` ahead of the catch-all. Keeping on a blip is caution; keeping on a
+    **And a refusal may not resolve toward keeping.** `judge_metadata` and `judge_full`
+    each catch a failed call and keep the video, which is rule 8 applied correctly to a
+    blip. A refusal breaks that arithmetic: every later call fails identically, so
+    keeping would walk the whole candidate set through as MAYBE, fetch it, and store it
+    on judgements that never happened. Both re-raise `LlmConfigError` ahead of the
+    catch-all (as did `judge_opening`, removed in 2026-10 with no caller left). Keeping on a blip is caution; keeping on a
     refusal is storing an unjudged library.
 
     **A 429 is the one refusal the provider dates, and that is read rather than
@@ -593,6 +613,14 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     backoff instead of becoming a hot loop. Above `_MAX_RETRY_AFTER_S` it stops with
     `LlmRateLimited` instead of sleeping, on this rule's own judgement: a wait longer
     than the run is a refusal in a different costume.
+
+    **One request over the context window is refused for that request, not for the
+    run.** `LlmRequestTooLarge` — a 413, or a 400 whose code or message says the
+    context was exceeded — is not retried, because an identical request is refused
+    identically, and it is not an `LlmConfigError`, because the next request may fit.
+    Classed as config, one long transcript ended a discovery run at stage 2, and in
+    the note drain it stopped on the same video every time, blocking the queue for
+    good. Stage 2 keeps the video unread; the drain records it SKIPPED.
 
     **Only the request id is logged, never the error body.** A provider's body is the
     field its support asks about *and* an echo of the request, which here is a system
@@ -656,18 +684,61 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     siblings were reachable by one question — *what else calls this, and does it
     share the failure?* — asked at the time, of a diff that was already open.
 
+    **The 2026-10 review found five more, all by asking that question.** The
+    truncation guard (`finish_reason == "length"`) was on the map, the plan, the
+    baseline, the selector and stage 2, and not on the note, the answer or the brief —
+    the three whose fragments are stored as if whole. The snapper learned that an
+    ASCII word class cannot see an Arabic quote; the grounding check never did, and
+    skipped every non-Latin quote. `ESCALATE` existed to fetch exact wording, and the
+    check that judged quoted wording never read what it fetched. Rule 7's
+    model-family guard scanned `prompts/*.md` and not the three subdirectories, and
+    three prompts there named vendors. And three store paths carried three copies of
+    one schema until one was written.
+
+26. **The transcript is the record. A note and an answer are checked against it,
+    never against each other.** A note is one model's reading of a transcript, and
+    its `## Verbatim` section is that model's choice of quotes. Measured on the
+    archived library: **571 of 5,733 Verbatim quotes (10%) had no close match in
+    their own transcript** — 11% in notes of English videos, 63% in the rest, mostly
+    translations. The answer check treated Verbatim as speech, so it passed those,
+    and marked as `[not spoken]` quotes the transcript held word for word: **62 of
+    102** in the stored answers that could be re-scored.
+
+    So the note worker checks every Verbatim quote against the transcript before
+    the note is written, and marks a line it cannot find with the note format's own
+    `[note: not found in the transcript as worded]`; and `marg ask` checks every
+    quote an answer cites against the stored transcript of the video it cites,
+    reporting how many it checked and found. The note's Verbatim stands in only when
+    no cited video has a transcript on disk, and those quotes are counted apart.
+
+    **Checking reads the transcript; it never repeats it.** What may be reported is
+    whether a string was found and how close the nearest passage was, as a number —
+    never the passage. The same line rule 1 draws everywhere else.
+
+    The loose match is calibrated against chance, not chosen: of 570 cited quotes a
+    transcript did not hold exactly, 121 reach closeness 0.6 against the transcript
+    they cite and none against a random one. That is the `[loosely quoted]` line.
+
 ## Structure
 
 ```
-src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
+src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py  quotes.py
   core/     ids.py  ledger.py  library.py        identity, state, file layout
   providers/                                     the part guaranteed to break
-  brain/    judge.py  territory.py  planner.py   reasoning; no I/O
-  flow/     search.py  discover.py  export.py   execution
+  brain/    judge.py  territory.py  planner.py  selector.py   reasoning; no I/O
+  flow/     search.py  discover.py  store.py  refetch.py  doctor.py  export.py
+                                                 execution
   enrich/   note.py  timestamps.py               what happens after storage
 ```
 
 - `cli.py` is the only entry point.
+- `flow/store.py` is the one path a fetched transcript is stored by — ingest,
+  discovery and refetch all call it — and `core/library.py`'s `render_transcript` is
+  the one definition of the stored format, so a length measured before storing is the
+  length the note worker will see.
+- `quotes.py` is the one quote matcher. The answer check and the note's Verbatim
+  check both use it, so a quote cannot pass one and fail the other for reasons of
+  implementation. It is Unicode-aware, for the reason rule 25 records.
 - `core/library.py` builds every library path. No other module constructs one; `cli.py`
   reads `config.library_path` solely to hand it over. That now includes `answers/`,
   `exports/<run_id>/` and `logs/`, none of which is created until something writes into
@@ -691,7 +762,9 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py
 - `print` appears only in `cli.py`. Everything else uses `logging`.
 - Reading a transcript must be followed by `Ledger.touch_accessed(video_id)`. The
   deletion policy that arrives later depends on it, and it cannot be reconstructed
-  retroactively.
+  retroactively. Two reads are deliberately not accesses: hashing it (`marg doctor`)
+  and snapping a stored note's timestamps against it. Checking an answer's quotes
+  *is* one — a cited video is a video that was used.
 
 ## Scope
 
@@ -795,9 +868,11 @@ marg discover "<topic>"            the loop; --dry-run, --max-rounds/videos/requ
 marg note [<video_id>...]          write notes; --limit N, --regenerate [--all],
                                    --missing-only, --status
 marg refetch                       retry transient fetch failures; --limit N, --dry-run
-marg snap-timestamps [<id>...]     align cited timestamps to the transcript; --dry-run
-marg ask "<question>"              answer from every note; --deep <id>, --json,
-                                   --no-save (saving to answers/ is the default)
+marg snap-timestamps [<id>...]     align an older note's timestamps; --dry-run
+                                   (new notes are aligned as they are written)
+marg ask "<question>"              answer from the notes; --deep <id>, --json,
+                                   --no-save (saving to answers/ is the default);
+                                   exits 1 when no answer was produced
 marg run export <run_id>           write exports/<run_id>/ from the ledger
 marg doctor                        compare disk against ledger; read-only; --json
 marg llm-check                     one request to the configured provider
