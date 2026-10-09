@@ -447,7 +447,12 @@ def _removal_problem(revision: TerritoryRevision, ran: Sequence[str]) -> str | N
         return "a removal must name the queries that carried the term"
     if not ran:
         return "no queries ran this round, so no removal can be evidenced"
-    if not any(query and query in evidence for query in ran):
+    # Whole words: as a substring, a query `rag` was "named" by any evidence
+    # containing "leverage", and a term was removed on a sentence that cited
+    # nothing at all.
+    if not any(
+        query and re.search(rf"(?<!\w){re.escape(query)}(?!\w)", evidence) for query in ran
+    ):
         return "the evidence names no query that actually ran"
     return None
 
@@ -843,7 +848,10 @@ class Planner:
         revisions, refused = validate_revisions(
             parsed.revisions,
             territory=territory,
-            queries_run=[query.text for query, _ in searched],
+            # Searches that came back. A query whose search failed returned
+            # nothing to judge, so it cannot be the evidence rule 19 asks for —
+            # "a query that actually ran, and what came back".
+            queries_run=[query.text for query, results in searched if results is not None],
         )
 
         return RoundPlan(

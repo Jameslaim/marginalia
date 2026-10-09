@@ -308,6 +308,46 @@ def test_a_removal_with_real_evidence_is_accepted() -> None:
     assert not refused
 
 
+def test_a_query_named_inside_another_word_is_not_evidence() -> None:
+    """Substring matching let `rag` be "named" by evidence saying "leverage",
+    so a term was removed — never to be searched again — on a sentence that
+    cited no search at all."""
+    revision = TerritoryRevision(
+        REVISE_REMOVE,
+        REVISE_VOCABULARY,
+        "semantic cache",
+        "off topic",
+        evidence="the results seem to leverage unrelated material",
+    )
+
+    kept, refused = validate_revisions([revision], territory=MAP, queries_run=["rag"])
+
+    assert not kept
+    assert "names no query that actually ran" in refused[0][1]
+
+
+def test_a_search_that_failed_cannot_evidence_a_removal() -> None:
+    """Rule 19 asks for a query that ran *and what came back*. A failed search
+    brought nothing back."""
+    reply = (
+        "COVERAGE: shows code | NO | nothing\n"
+        "REVISE: remove vocabulary: semantic cache\n"
+        "WHY: a different subject entirely\n"
+        "EVIDENCE: semantic cache redis returned nothing relevant\n"
+        "QUERY: prompt cache ttl\nFROM: gap\nFILTERS: none\n"
+        "RECOMMENDATION: CONTINUE - x"
+    )
+    plan = Planner(FakeClient(FakeReply(reply))).plan(
+        BRIEF,
+        MAP,
+        _round(),
+        searched=[(PlannedQuery("semantic cache redis", ORIGIN_PLANNER), None)],
+    )
+
+    assert plan.revisions == []
+    assert "no queries ran this round" in plan.refused_revisions[0][1]
+
+
 def test_removing_a_term_the_map_does_not_hold_is_refused() -> None:
     revision = TerritoryRevision(
         REVISE_REMOVE, REVISE_VOCABULARY, "kv cache", "unhelpful", evidence="a query"
