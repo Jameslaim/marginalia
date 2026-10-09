@@ -50,7 +50,6 @@ import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
 from typing import Sequence
 
 from ..brain.judge import FULL_PROMPT, Judge
@@ -94,6 +93,7 @@ from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
 from ..providers.base import TranscriptProvider
 from .search import quota_headroom, run_search
+from .store import store_transcript
 
 log = logging.getLogger(__name__)
 
@@ -1045,43 +1045,14 @@ def _store(
     result: TranscriptResult,
     config: Config,
 ) -> None:
-    count = library.write_transcript(candidate.video_id, result.lines)
-    # Hashed from the file, not from `result.lines`: the ledger should record
-    # what landed on disk, which is the only thing `marg doctor` can later
-    # compare against. File first, then the row that describes it — a crash
-    # between the two leaves `pending`, which is the state the next run
-    # expects; the other order would leave a row claiming bytes that are not
-    # there.
-    digest = library.transcript_digest(candidate.video_id)
-    library.write_meta(
+    store_transcript(
+        library,
+        ledger,
         candidate.video_id,
-        {
-            "video_id": candidate.video_id,
-            "title": result.title or candidate.title,
-            "channel": result.channel or candidate.channel,
-            "channel_id": result.channel_id or None,
-            "duration_s": result.duration_s,
-            "language": result.language,
-            "upload_date": result.upload_date,
-            "source": result.source,
-            "caption_kind": result.caption_kind,
-            "provider": config.transcript_order[0],
-            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "chapters": result.chapters,
-            "original_url": f"https://www.youtube.com/watch?v={candidate.video_id}",
-            "line_count": count,
-        },
-    )
-    ledger.mark_has_transcript(
-        candidate.video_id,
-        source=result.source,
-        caption_kind=result.caption_kind,
+        result,
         provider=config.transcript_order[0],
-        content_hash=digest,
-        # Free with the fetch, and one network call per video to backfill later.
-        # `None` rather than `""` so the ledger's COALESCE preserves an earlier
-        # value instead of overwriting it with an absence.
-        channel_id=result.channel_id or None,
+        title=candidate.title,
+        channel=candidate.channel,
     )
 
 

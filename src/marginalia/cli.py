@@ -74,6 +74,7 @@ from .flow.discover import discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
+from .flow.store import store_transcript
 from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
@@ -222,17 +223,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             return EXIT_OK
 
         assert provider is not None
-        count, digest = _store(library, video_id, result, provider, args.url)
-        ledger.mark_has_transcript(
-            video_id,
-            source=result.source,
-            caption_kind=result.caption_kind,
-            provider=provider.name,
-            content_hash=digest,
-            # Empty becomes None so the ledger's COALESCE keeps whatever a
-            # previous store recorded: a provider that stopped reporting the
-            # channel must not erase one that did.
-            channel_id=result.channel_id or None,
+        count, _digest = store_transcript(
+            library, ledger, video_id, result, provider=provider.name, original_url=args.url
         )
         _report(
             "has-transcript",
@@ -1431,42 +1423,6 @@ def _fetch(
         log.info("provider %s reports no captions for %s", name, video_id)
 
     return provider, None, last_failure
-
-
-def _store(
-    library: Library,
-    video_id: str,
-    result: TranscriptResult,
-    provider: TranscriptProvider,
-    original_url: str,
-) -> tuple[int, str | None]:
-    """Write the transcript and its metadata; return the line count and the
-    file's digest. The digest is read back from the file rather than computed
-    from ``result.lines``, so it records what landed, not what was meant to —
-    a truncated write is exactly the failure worth catching, and only the
-    read-back sees it. Same ordering and reasoning as ``flow/discover.py``."""
-    count = library.write_transcript(video_id, result.lines)
-    digest = library.transcript_digest(video_id)
-    library.write_meta(
-        video_id,
-        {
-            "video_id": video_id,
-            "title": result.title,
-            "channel": result.channel,
-            "channel_id": result.channel_id or None,
-            "duration_s": result.duration_s,
-            "language": result.language,
-            "upload_date": result.upload_date,
-            "source": result.source,
-            "caption_kind": result.caption_kind,
-            "provider": provider.name,
-            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "chapters": result.chapters,
-            "original_url": original_url,
-            "line_count": count,
-        },
-    )
-    return count, digest
 
 
 def _metadata(provider: TranscriptProvider | None, video_id: str) -> dict[str, Any] | None:

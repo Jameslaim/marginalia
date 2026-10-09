@@ -45,6 +45,7 @@ from ..core.ledger import Ledger
 from ..core.library import Library
 from ..providers import get_provider
 from ..providers.base import PermanentError, TransientError
+from .store import store_transcript
 
 log = logging.getLogger(__name__)
 
@@ -155,42 +156,5 @@ def _try(ledger: Ledger, provider, video_id: str):
 
 
 def _store(library: Library, ledger: Ledger, config: Config, provider, video_id: str, result):
-    """Write the transcript and the metadata, then the ledger. File first.
-
-    The same ordering `flow/discover.py` uses, for the same reason: a crash
-    between them costs one fetch, while a ledger row claiming a transcript that
-    was never written costs a video nothing will ever revisit.
-    """
-    from datetime import datetime, timezone
-
-    count = library.write_transcript(video_id, result.lines)
-    # Read back from the file, as `discover.py` does, so the hash is of what
-    # is on disk rather than of what was about to be written.
-    digest = library.transcript_digest(video_id)
-    library.write_meta(
-        video_id,
-        {
-            "video_id": video_id,
-            "title": result.title or video_id,
-            "channel": result.channel or "",
-            "channel_id": result.channel_id or None,
-            "duration_s": result.duration_s,
-            "language": result.language,
-            "upload_date": result.upload_date,
-            "source": result.source,
-            "caption_kind": result.caption_kind,
-            "provider": config.transcript_order[0],
-            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "chapters": result.chapters,
-            "original_url": f"https://www.youtube.com/watch?v={video_id}",
-            "line_count": count,
-        },
-    )
-    ledger.mark_has_transcript(
-        video_id,
-        source=result.source,
-        caption_kind=result.caption_kind,
-        provider=config.transcript_order[0],
-        content_hash=digest,
-        channel_id=result.channel_id or None,
-    )
+    """The one store path, with refetch's provenance. See `flow/store.py`."""
+    store_transcript(library, ledger, video_id, result, provider=config.transcript_order[0])
