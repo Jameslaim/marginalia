@@ -621,6 +621,10 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     Classed as config, one long transcript ended a discovery run at stage 2, and in
     the note drain it stopped on the same video every time, blocking the queue for
     good. Stage 2 keeps the video unread; the drain records it SKIPPED.
+    **Three in a row, with nothing fitting between them, is a config error again**:
+    that is a `max_tokens` larger than the model's window, or a model too small for
+    the library, and handled per request it would keep every candidate unread —
+    an unjudged library by another route.
 
     **Only the request id is logged, never the error body.** A provider's body is the
     field its support asks about *and* an echo of the request, which here is a system

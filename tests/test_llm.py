@@ -302,6 +302,39 @@ def test_one_request_over_the_window_is_its_own_refusal(error) -> None:
     assert len(calls) == 1
 
 
+def test_overflow_after_overflow_is_the_configurations_fault() -> None:
+    """A `max_tokens` larger than the model's window makes *every* request
+    overflow. Handled per request, stage 2 would keep every candidate unread
+    and the drain would skip every note — an unjudged library by another route.
+    Three in a row with nothing fitting between them stops the run."""
+    from marginalia.llm import LlmRequestTooLarge
+
+    overflow = lambda: ContextOverflow(400, "maximum context length is 32768 tokens")  # noqa: E731
+    instance, calls = client(overflow(), overflow(), overflow())
+
+    for _ in range(2):
+        with pytest.raises(LlmRequestTooLarge):
+            instance.complete("s", "u")
+    with pytest.raises(LlmConfigError, match="3 requests in a row"):
+        instance.complete("s", "u")
+    assert len(calls) == 3
+
+
+def test_a_success_between_overflows_resets_the_count() -> None:
+    from marginalia.llm import LlmRequestTooLarge
+
+    overflow = lambda: ContextOverflow(400, "maximum context length is 32768 tokens")  # noqa: E731
+    instance, _ = client(overflow(), overflow(), FakeResponse("fits"), overflow(), overflow())
+
+    for expected in (LlmRequestTooLarge, LlmRequestTooLarge, None, LlmRequestTooLarge, LlmRequestTooLarge):
+        if expected is None:
+            assert instance.complete("s", "u").text == "fits"
+            continue
+        with pytest.raises(expected) as raised:
+            instance.complete("s", "u")
+        assert not isinstance(raised.value, LlmConfigError)
+
+
 def test_an_ordinary_400_is_still_a_config_error() -> None:
     """A bad parameter in `[llm] extra` fails every call identically."""
     instance, calls = client(ContextOverflow(400, "unknown variant `banana`"))

@@ -291,6 +291,9 @@ class LlmClient:
         self._max_attempts = max_attempts
         self._transport = transport
         self._client: Any = None
+        # Consecutive requests refused as over the context window. See
+        # `_TOO_LARGE_STREAK`.
+        self._too_large = 0
 
     @property
     def model(self) -> str:
@@ -328,7 +331,22 @@ class LlmClient:
                 raise
             except Exception as exc:  # noqa: BLE001 - classified immediately below
                 error = self._classify(exc)
-                if isinstance(error, (LlmConfigError, LlmRequestTooLarge)):
+                if isinstance(error, LlmRequestTooLarge):
+                    self._too_large += 1
+                    if self._too_large >= _TOO_LARGE_STREAK:
+                        # Every request lately has been over the window, which is
+                        # not one long input — it is a ceiling or a model that
+                        # cannot fit any of them. A config error, so the run
+                        # stops instead of keeping every video unread.
+                        raise LlmConfigError(
+                            f"{self._too_large} requests in a row were too large for "
+                            f"{self.config.model!r}'s context window — the configured "
+                            f"max_tokens or the inputs do not fit this model. Lower "
+                            f"[note] max_tokens / [ask] max_tokens, or [note] "
+                            f"max_transcript_chars."
+                        ) from exc
+                    raise error from exc
+                if isinstance(error, LlmConfigError):
                     raise error from exc
                 last = error
 
@@ -362,6 +380,7 @@ class LlmClient:
                 continue
 
             reply = self._to_reply(response, time.monotonic() - started)
+            self._too_large = 0
             self.usage.add(reply.usage)
             log.info(
                 "llm: %s replied in %.1fs (in=%d out=%d, finish=%s, %d requests so far)",
@@ -596,6 +615,14 @@ def _request_id(exc: Exception) -> str:
     value = getattr(exc, "request_id", None)
     return " ".join(str(value).split())[:120] if value else ""
 
+
+# Overflows in a row, with no success between them, before one is treated as the
+# configuration's fault rather than the input's. One overflow is a long
+# transcript. Three in a row with nothing fitting in between is a `max_tokens`
+# larger than the model's window, or a model too small for this library — and
+# handled per request, that would keep every stage-2 candidate unread and skip
+# every note, which is rule 24's "storing an unjudged library" by another route.
+_TOO_LARGE_STREAK = 3
 
 # How OpenAI-compatible servers word a context overflow. Read from the error's
 # own text, which the classifier already reads for `_brief`; the result is a
