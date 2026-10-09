@@ -30,7 +30,8 @@ a `PreToolUse` hook blocks it.
 
 `marg ingest` returns one line:
 
-- `stored` — the transcript is in the library
+- `has-transcript` — the transcript is stored; the video joins the library once it
+  has a note
 - `skipped` — already had it; say so
 - `needs-asr` — no captions, queued for transcription (not yet implemented)
 - `failed` — report the reason and whether it was permanent or transient
