@@ -493,6 +493,10 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
             reason,
         )
 
+    # Read before the NO rule below rewrites `evidence`: whether the judge's own
+    # DEGRADED label is backed by its own reason.
+    unjustified_degraded = evidence == EVIDENCE_DEGRADED and not blames_damage
+
     if verdict == VERDICT_NO and (evidence == EVIDENCE_DEGRADED or blames_damage):
         problems.append(
             "rejected on degraded evidence"
@@ -508,8 +512,17 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         verdict = VERDICT_YES
         evidence = EVIDENCE_DEGRADED
 
-    if evidence == EVIDENCE_DEGRADED and not blames_damage:
+    if unjustified_degraded:
         problems.append("degraded without naming an evidence problem")
+        # **And resolved to CLEAR, toward keeping the video in the library.**
+        # DEGRADED is the one label that takes a video out: `wanted_for_a_note`
+        # refuses it a note for every topic, permanently. A DEGRADED whose reason
+        # names no damage is the judge declining to decide, not a finding about
+        # the text — so honouring it would let a format violation remove a
+        # video, which rule 13 says no resolution may do. The damage-word fix
+        # closed this path for a NO whose *reason* over-fired; this closes it
+        # for a label the reason does not support.
+        evidence = EVIDENCE_CLEAR
 
     if (
         verdict == VERDICT_YES
@@ -743,14 +756,21 @@ class Judge:
             max_tokens=max_tokens,
         )
 
-        # A reviewer that returns a sentence has answered the wrong question.
-        # The draft is a real brief; a critique of it is not.
-        usable = len(revised.text) > 80
-        if not usable:
-            log.warning("judge: brief review returned too little; keeping the original draft")
+        # The review replaces the draft only if it is a whole brief. It used to
+        # be enough to be over eighty characters, so a review cut off by the
+        # token ceiling, or a critique instead of a brief, became the authority
+        # every verdict in the run was measured against.
+        problem = _brief_problem(revised)
+        if problem:
+            log.warning("judge: brief review unusable (%s); keeping the draft", problem)
+        drafted_problem = _brief_problem(drafted)
+        if drafted_problem and problem:
+            # Nothing better exists, so the run goes ahead on the draft — but
+            # not silently: a brief missing EXCLUDED judges every near miss in.
+            log.warning("judge: the draft brief is also incomplete (%s)", drafted_problem)
         return Brief(
             topic=topic,
-            text=revised.text if usable else drafted.text,
+            text=drafted.text if problem else revised.text,
             version=f"{first.version}/{second.version}",
         )
 
@@ -944,6 +964,30 @@ class Judge:
 
         verdict, reason, concepts, parsed = parse_opening(reply.text)
         return OpeningVerdict(candidate.video_id, verdict, reason, concepts, parsed)
+
+
+# The sections every later judgement reads, as `write_brief` asks for them. A
+# reply missing one of these is a fragment or a critique, not a brief. EDGE
+# CASES and ALSO WANTED break ties and are not required.
+_BRIEF_HEADINGS = ("INTENT", "MUST CONTAIN", "EXCLUDED")
+
+
+def _brief_problem(reply: Reply) -> str:
+    """Why this reply cannot serve as a brief, or ``""`` if it can.
+
+    A heading counts at the start of a line, decorated or not, with its body on
+    the same line or the next — `INTENT`, `## Intent`, `**EXCLUDED:**`.
+    """
+    if reply.finish_reason == "length":
+        return "cut off at the token ceiling"
+    missing = [
+        heading
+        for heading in _BRIEF_HEADINGS
+        if not re.search(rf"^[\s#*_>-]*{heading}\b", reply.text, re.IGNORECASE | re.MULTILINE)
+    ]
+    if missing:
+        return "no " + ", ".join(missing) + " section"
+    return ""
 
 
 def territory_lines(territory: TerritoryMap | None) -> str:

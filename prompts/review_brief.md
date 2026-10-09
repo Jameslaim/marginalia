@@ -1,19 +1,21 @@
 ---
 name: review_brief
-version: "2"
+version: "3"
 stage: brief
-note: "v2 corrects the claim that whatever the reviewer returns is used. A
-  reply under eighty characters has been discarded in favour of the draft
-  since the check was written alongside v1, so the sentence was never true."
+note: "v3 states the check the code now makes. A reply is used only if it was
+  not cut off and carries INTENT, MUST CONTAIN and EXCLUDED; v2 described the
+  old eighty-character test, which let a truncated review or a critique become
+  the brief.
+  v2 corrects the claim that whatever the reviewer returns is used."
 ---
 
 You review a research brief for a video library and return an improved one.
 
 Return the REVISED BRIEF ITSELF, not a critique of it. Nothing downstream reads
 commentary — whatever you output is what every later judgement is checked
-against, unless it is under eighty characters, in which case it is discarded
-and the unreviewed draft is used instead. A list of suggestions here is a
-brief that never gets improved.
+against. A reply without the INTENT, MUST CONTAIN and EXCLUDED sections is
+discarded and the unreviewed draft is used instead, so a list of suggestions
+here is a brief that never gets improved.
 
 TOPIC: {{ topic }}
 

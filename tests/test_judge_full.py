@@ -17,7 +17,8 @@ import logging
 
 import pytest
 
-from marginalia.brain.judge import parse_full
+from marginalia.brain.judge import Judge, parse_full
+from marginalia.llm import LlmClient
 from marginalia.contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
@@ -188,6 +189,34 @@ def test_degraded_must_blame_the_evidence() -> None:
     )
 
     assert verdict.parsed is False
+    assert "degraded without naming an evidence problem" in verdict.problem
+
+
+def test_an_unsupported_degraded_does_not_take_the_video_out_of_the_library() -> None:
+    """DEGRADED is the one label that removes a video: `wanted_for_a_note`
+    refuses it a note for every topic. A DEGRADED its own reason does not back
+    was counted as a violation and then honoured anyway, so a format slip
+    removed the video. It now resolves to CLEAR, toward keeping."""
+    verdict = parse_full(
+        reply(EVIDENCE="DEGRADED", REASON="It is hard to say whether this really matches the brief."),
+        VIDEO,
+    )
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_CLEAR
+
+
+def test_a_no_on_an_unsupported_degraded_is_kept_on_clear_evidence() -> None:
+    """The NO rule still keeps the video, and the label it rested on is the
+    unsupported one, so the grade is CLEAR rather than DEGRADED."""
+    verdict = parse_full(
+        reply(VERDICT="NO", EVIDENCE="DEGRADED", REASON="A cooking tutorial with no bearing on the brief."),
+        VIDEO,
+    )
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_CLEAR
+    assert "rejected on degraded evidence" in verdict.problem
     assert "degraded without naming an evidence problem" in verdict.problem
 
 
@@ -847,3 +876,69 @@ def test_storing_the_ranges_changes_no_verdict() -> None:
     assert verdict.verdict == VERDICT_YES
     assert verdict.evidence == EVIDENCE_CLEAR
     assert verdict.relevant == ["00:04:20-00:09:15"]
+
+
+# -- the brief: the review replaces the draft only if it is a whole brief ----
+
+_DRAFT = (
+    "INTENT\nLearn how prompt caching changes cost.\n\n"
+    "MUST CONTAIN\n- cache_control breakpoints\n\n"
+    "ALSO WANTED\n- provider comparison\n\n"
+    "EXCLUDED\n- semantic caching of answers\n\n"
+    "EDGE CASES\n- conference talks count if they show configuration\n"
+)
+
+
+class _BriefResponse:
+    def __init__(self, text: str, finish_reason: str = "stop") -> None:
+        message = type("M", (), {"content": text})()
+        self.choices = [type("C", (), {"message": message, "finish_reason": finish_reason})()]
+        self.usage = type("U", (), {"prompt_tokens": 10, "completion_tokens": 10})()
+        self.model = "test-model"
+
+
+def _brief_judge(*replies, tmp_path):
+    from conftest import make_config
+
+    script = list(replies)
+
+    def transport(**_):
+        return script.pop(0)
+
+    config = make_config(tmp_path)
+    return Judge(LlmClient(config.llm, transport=transport, sleep=lambda _: None))
+
+
+def test_a_review_cut_off_by_the_ceiling_does_not_replace_the_draft(tmp_path) -> None:
+    """It used to be enough to be over eighty characters. A review truncated
+    after INTENT became the brief every verdict in the run was checked against,
+    with no EXCLUDED section to check near misses against."""
+    cut = "INTENT\nLearn how prompt caching changes cost, and" + " more" * 40
+    judge = _brief_judge(
+        _BriefResponse(_DRAFT), _BriefResponse(cut, finish_reason="length"), tmp_path=tmp_path
+    )
+
+    brief = judge.write_brief("prompt caching")
+
+    assert brief.text == _DRAFT.strip()
+
+
+def test_a_critique_instead_of_a_brief_does_not_replace_the_draft(tmp_path) -> None:
+    critique = (
+        "This brief is mostly sound. I would sharpen the intent, add near misses "
+        "about semantic caching, and state whether conference talks count."
+    )
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(critique), tmp_path=tmp_path)
+
+    assert judge.write_brief("prompt caching").text == _DRAFT.strip()
+
+
+def test_a_whole_review_replaces_the_draft_however_its_headings_are_written(tmp_path) -> None:
+    revised = (
+        "## Intent: decide whether prompt caching pays for a chat workload.\n"
+        "**MUST CONTAIN:**\n- cache write premium\n"
+        "EXCLUDED\n- semantic caching of answers\n"
+    )
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(revised), tmp_path=tmp_path)
+
+    assert judge.write_brief("prompt caching").text == revised.strip()
