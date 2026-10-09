@@ -254,7 +254,7 @@ def test_a_billing_error_is_a_config_error() -> None:
     assert issubclass(LlmBillingError, LlmConfigError)
 
 
-@pytest.mark.parametrize("status", [402, 405, 413, 418, 451])
+@pytest.mark.parametrize("status", [402, 405, 418, 451])
 def test_an_unrecognised_4xx_is_not_retried(status: int) -> None:
     """The default used to be to retry, and 402 fell through it.
 
@@ -266,6 +266,48 @@ def test_an_unrecognised_4xx_is_not_retried(status: int) -> None:
     with pytest.raises(LlmConfigError):
         instance.complete("s", "u")
 
+    assert len(calls) == 1
+
+
+class ContextOverflow(HttpError):
+    def __init__(self, status_code: int, message: str, code: str | None = None) -> None:
+        super().__init__(status_code)
+        self.args = (f"Error code: {status_code} - {message}",)
+        if code is not None:
+            self.code = code
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        HttpError(413),
+        ContextOverflow(400, "This model's maximum context length is 131072 tokens."),
+        ContextOverflow(400, "Invalid request", code="context_length_exceeded"),
+        ContextOverflow(400, "prompt is too long: 210000 tokens > 200000 maximum"),
+    ],
+)
+def test_one_request_over_the_window_is_its_own_refusal(error) -> None:
+    """Not retried, because an identical request is refused identically — and
+    not a config error, because the next request may fit. Classed as config,
+    one long transcript ended a discovery run, and in the note drain it stopped
+    the drain on the same video every time, blocking the queue for good."""
+    from marginalia.llm import LlmRequestTooLarge
+
+    instance, calls = client(error)
+
+    with pytest.raises(LlmRequestTooLarge) as raised:
+        instance.complete("s", "u")
+
+    assert not isinstance(raised.value, LlmConfigError)
+    assert len(calls) == 1
+
+
+def test_an_ordinary_400_is_still_a_config_error() -> None:
+    """A bad parameter in `[llm] extra` fails every call identically."""
+    instance, calls = client(ContextOverflow(400, "unknown variant `banana`"))
+
+    with pytest.raises(LlmConfigError):
+        instance.complete("s", "u")
     assert len(calls) == 1
 
 

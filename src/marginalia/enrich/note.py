@@ -49,7 +49,7 @@ from ..contracts import (
 )
 from ..core.ledger import Ledger
 from ..core.library import Library, format_duration
-from ..llm import LlmClient, LlmConfigError, LlmError, Prompt, load_prompt
+from ..llm import LlmClient, LlmConfigError, LlmError, LlmRequestTooLarge, Prompt, load_prompt
 from ..quotes import Words, closeness, flatten, quoted_spans, spoken_text
 from .timestamps import build_index, snap_note
 
@@ -508,6 +508,13 @@ def _one(
         # A bad key or an unknown model fails identically for every video.
         # Draining thirty-six of them to say so is a waste of everyone's time.
         raise
+    except LlmRequestTooLarge:
+        # This transcript is past the model's window; the next one may not be.
+        # Its own outcome, beside the character ceiling's, and not a failure:
+        # it says nothing about the provider, so it must not feed the streak
+        # that stops a drain.
+        log.warning("note: %s is too large for the model's context window — skipped", video_id)
+        return NoteResult(video_id, SKIPPED, "too large for the model's context window")
     except LlmError as exc:
         log.info("note: %s failed (%s)", video_id, exc)
         return NoteResult(video_id, FAILED, f"transient: {_brief(exc)}")

@@ -745,6 +745,33 @@ def test_a_refusal_propagates_instead_of_keeping(tmp_path) -> None:
         judge.judge_full(brief, candidate, transcript="hello world")
 
 
+class _ContextOverflow(Exception):
+    status_code = 400
+
+    def __init__(self) -> None:
+        super().__init__("Error code: 400 - This model's maximum context length is 131072 tokens.")
+
+
+def test_a_transcript_over_the_window_keeps_the_video_and_the_run(tmp_path) -> None:
+    """One long video used to end the discovery run here, because every 400 was
+    a config error. The transcript is already stored; nothing read it, so the
+    verdict is the keep any unanswered call gets, named for what happened."""
+    from marginalia.contracts import Brief, SearchResult
+
+    judge = _judge_with(_ContextOverflow(), tmp_path)
+    candidate = SearchResult(
+        video_id=VIDEO, title="t", channel="c", description="", duration_s=60,
+        published_at="20260101", view_count=None,
+    )
+    brief = Brief(topic="prompt caching", text="INTENT\nCaching.", version="1/1")
+
+    verdict = judge.judge_full(brief, candidate, transcript="hello world")
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.parsed is False
+    assert "context window" in verdict.problem
+
+
 def test_an_ordinary_call_failure_still_keeps(tmp_path) -> None:
     """The rule it must not have broken. A network blip is still a blip."""
     from marginalia.contracts import Brief, SearchResult

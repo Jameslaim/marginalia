@@ -796,3 +796,27 @@ def test_check_verbatim_reads_non_latin_text():
 
     assert check_verbatim(found, transcript)[1:] == (1, 0)
     assert check_verbatim(missing, transcript)[1:] == (1, 1)
+
+
+class _ContextOverflow(Exception):
+    status_code = 400
+
+    def __init__(self) -> None:
+        super().__init__("Error code: 400 - This model's maximum context length is 131072 tokens.")
+
+
+def test_a_transcript_over_the_context_window_does_not_stop_the_drain(tmp_path):
+    """Classed as a config error, it stopped the drain with `refused` and
+    recorded nothing, and the next drain met the same video first — so one
+    transcript blocked every later note. It is a fact about one request."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", "bbbbbbbbbbb")
+    replies = client(lambda index: _ContextOverflow() if index == 0 else GOOD_NOTE)
+
+    run = write_notes(config, ledger, library, replies, prompts_directory=prompts(tmp_path))
+
+    assert [(r.video_id, r.outcome) for r in run.results] == [
+        ("aaaaaaaaaaa", SKIPPED),
+        ("bbbbbbbbbbb", NOTED),
+    ]
+    assert "context window" in run.results[0].detail
+    assert run.stopped_because != STOP_REFUSED

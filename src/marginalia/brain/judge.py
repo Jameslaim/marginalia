@@ -38,7 +38,15 @@ from ..contracts import (
     SearchResult,
     TerritoryMap,
 )
-from ..llm import LlmClient, LlmConfigError, Prompt, Reply, batched, load_prompt
+from ..llm import (
+    LlmClient,
+    LlmConfigError,
+    LlmRequestTooLarge,
+    Prompt,
+    Reply,
+    batched,
+    load_prompt,
+)
 
 log = logging.getLogger(__name__)
 
@@ -898,6 +906,18 @@ class Judge:
             )
         except LlmConfigError:
             raise  # a refusal, not a blip — see judge_metadata
+        except LlmRequestTooLarge:
+            # This transcript is past the model's window, so nothing read it.
+            # Kept, like any call that judged nothing — and named, so the round
+            # does not report a length problem as a provider blip.
+            log.warning("judge: %s is too large for stage 2 — kept unread", candidate.video_id)
+            return FullVerdict(
+                candidate.video_id,
+                VERDICT_YES,
+                reason="transcript too large for the model's context window, kept unread",
+                parsed=False,
+                problem="too large for the context window",
+            )
         except Exception as exc:  # noqa: BLE001 - a failed call must not reject
             log.warning("judge: stage-2 call failed for %s (%s) — keeping", candidate.video_id, exc)
             return FullVerdict(

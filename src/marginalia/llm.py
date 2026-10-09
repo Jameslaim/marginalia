@@ -47,6 +47,7 @@ __all__ = [
     "LlmConfigError",
     "LlmBillingError",
     "LlmRateLimited",
+    "LlmRequestTooLarge",
     "LlmUnavailable",
     "Prompt",
     "Reply",
@@ -95,6 +96,23 @@ class LlmRateLimited(LlmConfigError):
     out and retried, because that is what the header is for. This is only the
     case where honouring the header would mean sleeping past the end of the
     run, which rule 24 calls a refusal in a different costume.
+    """
+
+
+class LlmRequestTooLarge(LlmError):
+    """This one request is over the model's context window. HTTP 413, or a 400
+    that says so.
+
+    **Deliberately not an `LlmConfigError`.** That class means "every later
+    call fails identically", and it stops a discovery run or a note drain. A
+    context overflow is a fact about *this* request: the next video's
+    transcript may fit. Classed as config, one long video ended a whole
+    discovery run at stage 2, and in the note drain it was worse — the drain
+    stopped on the video, recorded nothing about it, and met it first again on
+    the next run, so a single transcript blocked the queue for good.
+
+    Not retried either. An identical request is refused identically, which is
+    rule 24's reason for not retrying a refusal, applied to one request.
     """
 
 
@@ -310,7 +328,7 @@ class LlmClient:
                 raise
             except Exception as exc:  # noqa: BLE001 - classified immediately below
                 error = self._classify(exc)
-                if isinstance(error, LlmConfigError):
+                if isinstance(error, (LlmConfigError, LlmRequestTooLarge)):
                     raise error from exc
                 last = error
 
@@ -467,6 +485,13 @@ class LlmClient:
         """
         status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
         if isinstance(status, int):
+            if status == 413 or (status in (400, 422) and _says_too_long(exc)):
+                # Before the generic 4xx rule: one request over the window is not
+                # a broken configuration. See `LlmRequestTooLarge`.
+                return LlmRequestTooLarge(
+                    f"{self.config.provider} refused the request as too large for "
+                    f"{self.config.model!r}'s context window (HTTP {status})"
+                )
             if status in _RETRY_STATUSES:
                 return LlmError(f"transient HTTP {status}")
             if status in _BILLING_STATUSES:
@@ -570,6 +595,24 @@ def _request_id(exc: Exception) -> str:
     # attribute, not a parsed body.
     value = getattr(exc, "request_id", None)
     return " ".join(str(value).split())[:120] if value else ""
+
+
+# How OpenAI-compatible servers word a context overflow. Read from the error's
+# own text, which the classifier already reads for `_brief`; the result is a
+# classification, and nothing from the text is logged or kept.
+_TOO_LONG_RE = re.compile(
+    r"context[ _-]?(?:length|window)|maximum context|too many tokens|prompt is too long"
+    r"|input is too long|reduce the length|exceeds? the (?:model'?s? )?(?:maximum|token limit)",
+    re.IGNORECASE,
+)
+
+
+def _says_too_long(exc: Exception) -> bool:
+    """Does this 400 say the request was over the context window?"""
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and "context" in code.lower():
+        return True
+    return bool(_TOO_LONG_RE.search(str(exc)))
 
 
 def _call_id() -> str:
