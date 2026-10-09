@@ -225,12 +225,19 @@ _DAMAGE_WORDS = (
 )
 
 # These are damage only when the reason says them *of the evidence*: the
-# transcript, the captions, the subtitles, the audio, the text. Predicated of it
+# transcript, the captions, the subtitles, the audio. Predicated of it
 # ("the transcript is largely empty"), attached to it ("noisy auto captions",
 # "no usable transcript") or as its quality ("transcript quality too poor").
 # Merely appearing in a reason that also names the transcript is not enough —
 # "the transcript covers data corruption recovery" is a NO about content.
-_EVIDENCE_NOUN = r"(?:transcripts?|transcription|captions?|captioning|subtitles?|audio|text)"
+#
+# `text` only in a compound that means the transcript. Bare, it is a subject
+# too — a Postgres column type, so "empty text values" and "long text is
+# truncated at the column limit" are claims about content.
+_EVIDENCE_NOUN = (
+    r"(?:(?:stored|transcript|caption|subtitle)\s+text"
+    r"|transcripts?|transcription|captions?|captioning|subtitles?|audio)"
+)
 _AMBIGUOUS_DAMAGE = (
     r"(?:empty|blank|truncated|truncation|corrupt\w*|noise|noisy|nonsens\w*"
     r"|incomprehensib\w*|quality|no usable)"

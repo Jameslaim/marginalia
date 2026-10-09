@@ -259,6 +259,40 @@ def test_a_no_about_subject_matter_stays_a_no(reason: str) -> None:
 @pytest.mark.parametrize(
     "reason",
     [
+        "the stored text is truncated after two minutes",
+        "the transcript text is empty",
+        "caption text quality too poor to verify any claim",
+    ],
+)
+def test_damage_said_of_the_transcript_text_is_still_damage(reason: str) -> None:
+    verdict = parse_full(reply(VERDICT="NO", REASON=reason, RELEVANT="NONE"), VIDEO)
+
+    assert verdict.verdict == VERDICT_YES
+    assert verdict.evidence == EVIDENCE_DEGRADED
+
+
+# Bare `text` is a subject as well as the evidence — a Postgres column type —
+# so it counts as the transcript only in a compound that says so.
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "covers how empty text values are handled, not pooling",
+        "explains that long text is truncated at the column limit",
+        "compares text and varchar storage quality, nothing on pooling",
+        "covers full-text search, unrelated to connection pooling",
+    ],
+)
+def test_bare_text_as_a_subject_is_not_the_transcript(reason: str) -> None:
+    verdict = parse_full(reply(VERDICT="NO", REASON=reason, RELEVANT="NONE"), VIDEO)
+
+    assert verdict.verdict == VERDICT_NO
+    assert verdict.evidence == EVIDENCE_CLEAR
+    assert verdict.parsed is True, verdict.problem
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
         "Mostly about data quality, hard to say whether it matches.",
         "An empty sales pitch, unclear whether it fits the brief.",
     ],
