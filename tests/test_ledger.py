@@ -94,7 +94,7 @@ def test_an_older_ledger_fails_with_a_clear_message(tmp_path: Path) -> None:
     with pytest.raises(LedgerError) as caught:
         Ledger(path)
     assert "caption_kind" in str(caught.value)
-    assert "re-ingest" in str(caught.value)
+    assert "Do not delete the library" in str(caught.value)
 
 
 def test_a_ledger_with_the_old_rejections_table_is_refused(tmp_path: Path) -> None:
@@ -128,7 +128,7 @@ def test_a_ledger_with_the_old_rejections_table_is_refused(tmp_path: Path) -> No
     message = str(caught.value)
     assert "rejections" in message
     assert "decisions" in message
-    assert "re-ingest" in message
+    assert "Do not delete the library" in message
 
 
 def test_a_ledger_missing_a_decisions_column_is_refused(tmp_path: Path) -> None:

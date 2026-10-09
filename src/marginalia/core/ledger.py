@@ -1521,7 +1521,14 @@ class Ledger:
     def _stale(self, detail: str) -> LedgerError:
         return LedgerError(
             f"{self.db_path} was written by an older version of marginalia: {detail}. "
-            f"There is no migration yet — delete the library and re-ingest."
+            # Not "delete the library and re-ingest", which this said until
+            # 2026-10: transcripts are the one artifact rule 3 calls fragile to
+            # reacquire, and a schema mismatch is a fact about ledger.db alone.
+            f"There is no automatic migration. Do not delete the library: its "
+            f"transcripts are the part that cannot be cheaply recreated. Copy "
+            f"ledger.db somewhere safe, then use the marginalia version that wrote "
+            f"it, or add what is missing by hand against the schema in "
+            f"core/ledger.py."
         )
 
     def _require(self, video_id: str) -> VideoRow:
