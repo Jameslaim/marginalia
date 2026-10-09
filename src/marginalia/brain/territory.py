@@ -203,6 +203,7 @@ def parse_map(text: str, *, topic: str, version: str) -> TerritoryMap:
     concepts: list[str] = []
     vocabulary: list[str] = []
     recency = Recency()
+    recency_readable = True
     queries: list[PlannedQuery] = []
     problems: list[str] = []
     rejected: list[FilterRejection] = []
@@ -260,6 +261,7 @@ def parse_map(text: str, *, topic: str, version: str) -> TerritoryMap:
             recency, recency_problem = _parse_recency(body)
             if recency_problem:
                 problems.append(recency_problem)
+                recency_readable = False
 
     close()
 
@@ -299,10 +301,13 @@ def parse_map(text: str, *, topic: str, version: str) -> TerritoryMap:
         queries=queries,
         rejected=rejected,
         # A rejected filter is not a broken reply — it is the validator doing
-        # its job, and it happens on perfectly good maps. Only a reply that
-        # could not be read as a map at all is unparsed.
+        # its job, and it happens on perfectly good maps. `parsed` means the
+        # reply had no problems at all; whether it is *usable* is a separate
+        # question, answered by its content (`bool(map)`), so one bad line costs
+        # that line rather than the map.
         parsed=bool(queries) and not problems,
         problem=problem,
+        recency_readable=recency_readable,
     )
 
 
@@ -971,7 +976,7 @@ class Mapper:
         simply casts no vote, which leaves the window narrower than it might
         have been but never narrower than one sample alone would have made it.
         """
-        first: TerritoryMap | None = None
+        samples: list[TerritoryMap] = []
         recencies: list[Recency] = []
         spent = Usage()
 
@@ -984,17 +989,34 @@ class Mapper:
                     output_tokens=sample.output_tokens,
                 )
             )
-            if not sample.parsed:
+            samples.append(sample)
+            # Usable means something came out of it. A problem with one line —
+            # an over-long query, an unreadable RECENCY — costs that line, not
+            # the sample's concepts, vocabulary and other queries.
+            if not sample:
                 log.info(
-                    "territory: recency sample %d of %d was unusable (%s)",
+                    "territory: sample %d of %d was unusable (%s)",
                     attempt + 1,
                     recency_samples,
                     sample.problem,
                 )
                 continue
-            recencies.append(sample.recency)
-            if first is None:
-                first = sample
+            if sample.recency_readable:
+                recencies.append(sample.recency)
+            else:
+                log.info(
+                    "territory: sample %d of %d cast no recency vote (%s)",
+                    attempt + 1,
+                    recency_samples,
+                    sample.problem,
+                )
+
+        usable = [candidate for candidate in samples if candidate]
+        # The first with queries, so a sample that wrote terms and no searches
+        # does not displace one that did; otherwise the first usable at all.
+        first = next((candidate for candidate in usable if candidate.queries), None) or (
+            usable[0] if usable else None
+        )
 
         if first is None:
             # Every sample failed. Return the last one so its problem is
@@ -1015,8 +1037,17 @@ class Mapper:
         # `publishedAfter` the model proposed may now be legal that was not, and
         # every main query needs the derived cutoff recomputed from the winner.
         kept, rejections = validate(first.queries, recency=recency, topic=brief.topic)
+        # The other samples' problems are kept on the stored map too (rule 14):
+        # a sample that cast no vote must be visible as one. Labels only for a
+        # sample that produced nothing — its problem may carry a provider error.
+        others = [
+            f"sample {number}: {candidate.problem if candidate else 'unusable'}"
+            for number, candidate in enumerate(samples, start=1)
+            if candidate is not first and (candidate.problem or not candidate)
+        ]
         return replace(
             first,
+            problem="; ".join(part for part in (first.problem, *others) if part),
             recency=recency,
             queries=kept,
             rejected=[*first.rejected, *rejections],
@@ -1087,6 +1118,7 @@ class Mapper:
             rejected=[*parsed.rejected, *rejections],
             parsed=parsed.parsed,
             problem=parsed.problem,
+            recency_readable=parsed.recency_readable,
             input_tokens=reply.usage.input_tokens,
             output_tokens=reply.usage.output_tokens,
             latency_s=reply.latency_s,

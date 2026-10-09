@@ -1100,3 +1100,38 @@ def test_a_waiver_still_wins_against_a_widened_window() -> None:
     assert kept[0].filters.published_after is None
     assert rejections[0].is_recency_waiver
     assert not rejections[0].is_duplicate_query
+
+
+# -- one bad line costs that line, not the sample ------------------------------
+
+_LONG = " ".join(["word"] * 13)
+
+
+def test_an_over_long_query_keeps_the_rest_of_the_sample() -> None:
+    reply = (
+        "CONCEPTS: pooling\nVOCABULARY: PgBouncer\nRECENCY: ANY — stable\n"
+        f"QUERY: {_LONG}\nFROM: t\nQUERY: pgbouncer transaction mode\nFROM: t"
+    )
+    territory = Mapper(FakeClient(FakeReply(reply))).map(BRIEF)
+
+    assert [query.text for query in territory.queries] == ["pgbouncer transaction mode"]
+    assert territory.concepts == ["pooling"] and territory.vocabulary == ["PgBouncer"]
+    assert "too long" in territory.problem
+
+
+def test_an_unreadable_recency_line_keeps_the_sample_but_casts_no_vote() -> None:
+    reply = "CONCEPTS: pooling\nVOCABULARY: PgBouncer\nRECENCY: Last 12 months\nQUERY: a b\nFROM: t"
+    territory = Mapper(FakeClient(FakeReply(reply))).map(BRIEF)
+
+    assert territory.vocabulary == ["PgBouncer"]
+    assert [query.text for query in territory.queries] == ["a b"]
+    assert territory.recency.samples == ()
+    assert territory.recency.months is None
+    assert "recency line unreadable" in territory.problem
+
+
+def test_a_sample_with_nothing_usable_is_still_unusable() -> None:
+    territory = Mapper(FakeClient(FakeReply("I'm sorry, I can't help with that."))).map(BRIEF)
+
+    assert not territory
+    assert not territory.parsed

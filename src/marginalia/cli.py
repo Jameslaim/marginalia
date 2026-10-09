@@ -450,8 +450,11 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
         )
         reason = territory.recency.reason or "no reason given"
         lines.append(f"recency:  {territory.recency.label} — {reason}")
-    if not territory.parsed and territory.problem:
-        lines.append(f"map:      unusable ({territory.problem})")
+    if territory.problem:
+        # Printed whenever there was a problem, not only when the map was lost:
+        # a usable map can still have dropped a query or a recency vote.
+        state = "problems" if territory else "unusable"
+        lines.append(f"map:      {state} ({territory.problem})")
 
     # Printed even at zero, like the unparsed count, so the number is
     # trustworthy on the day it is not zero.

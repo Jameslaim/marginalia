@@ -582,8 +582,14 @@ class TerritoryMap:
     revision: int = 1
     revisions: list[TerritoryRevision] = field(default_factory=list)
     history: list[MapSnapshot] = field(default_factory=list)
+    # False when the reply's RECENCY line could not be read. Such a sample casts
+    # no vote in the widest-of-three — an unreadable line must not vote `ANY`
+    # and win — while its concepts, vocabulary and queries are still used.
+    recency_readable: bool = True
 
     def __bool__(self) -> bool:
+        """Is there anything usable in it? Separate from `parsed`, which means
+        the reply had no problems: one bad line costs that line, not the map."""
         return bool(self.concepts or self.vocabulary or self.queries)
 
     @property
