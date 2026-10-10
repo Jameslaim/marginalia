@@ -292,7 +292,8 @@ def test_check_6_transcript_modified(root: Path, capsys: pytest.CaptureFixture[s
     assert CHECK_TRANSCRIPT_MODIFIED in out
     assert f"  {A}" in out
     assert f"  {B}" not in out
-    assert "hashes:   2 verified, 0 unrecorded" in out
+    # One of the two matched. The other is the finding above, not a verification.
+    assert "hashes:   1 verified, 0 unrecorded" in out
 
 
 def test_check_6_counts_an_unrecorded_hash_rather_than_judging_it(

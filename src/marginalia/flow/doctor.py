@@ -173,10 +173,13 @@ def _check_row(library: Library, row: VideoRow) -> tuple[list[DoctorFinding], bo
     if has_transcript:
         if row.content_hash is None:
             hashed = False
-        else:
+        elif library.transcript_digest(video_id) == row.content_hash:
             hashed = True
-            if library.transcript_digest(video_id) != row.content_hash:
-                findings.append(DoctorFinding(CHECK_TRANSCRIPT_MODIFIED, video_id))
+        else:
+            # A finding, and not "verified": counted as verified before it was
+            # compared, a changed transcript read as one more verified hash in
+            # the line under the finding that said it had changed (rule 14).
+            findings.append(DoctorFinding(CHECK_TRANSCRIPT_MODIFIED, video_id))
 
     return findings, hashed
 
