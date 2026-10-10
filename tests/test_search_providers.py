@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from marginalia.contracts import SearchFilters
 from marginalia.providers import get_search_provider
 from marginalia.providers.base import (
     PermanentError,
@@ -131,6 +132,21 @@ def test_details_are_fetched_in_one_batched_call() -> None:
     assert len(transport.urls) == 2
     assert "/videos?" in transport.urls[1]
     assert "dQw4w9WgXcQ%2CjNQXAC9IVRw" in transport.urls[1]
+
+
+def test_a_details_call_that_fails_keeps_the_search_it_followed() -> None:
+    """`search.list` is paid for and in hand. A transient failure of the
+    `videos.list` after it used to discard the results, leave the units
+    unrecorded on the query, and send the chain to the overflow provider, which
+    applies no filters."""
+    provider, _ = api(fixture("youtube_search.json"), error(500, "backendError"))
+
+    results = provider.search("prompt caching", filters=SearchFilters(order="date"))
+
+    assert [r.video_id for r in results] == ["dQw4w9WgXcQ", "jNQXAC9IVRw"]
+    assert results[0].duration_s is None, "details are what was lost, and only that"
+    assert provider.units_spent() >= 100
+    assert provider.applied_filters().as_dict() == {"order": "date"}
 
 
 def test_non_video_items_are_dropped() -> None:

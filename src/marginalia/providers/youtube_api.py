@@ -198,13 +198,18 @@ class YouTubeApiProvider:
                 part="contentDetails,statistics",
                 id=",".join(video_ids),
             )
-        except QuotaExhausted:
+        except (QuotaExhausted, TransientError) as exc:
             # The search itself is already paid for and in hand. Losing
             # duration and view count is a smaller loss than discarding
-            # results we spent 100 units on.
+            # results we spent 100 units on — and a transient failure here is
+            # the same trade as a quota one. Raised, it threw the search away,
+            # left its 101 units charged and unrecorded on the query, and sent
+            # the chain to the overflow provider, which applies no filters: the
+            # reasoned date window lost exactly as in run `7da933b180fd`.
             log.warning(
-                "youtube_api: quota ran out before videos.list; "
-                "results lack duration and caption status"
+                "youtube_api: videos.list failed after the search (%s); "
+                "results lack duration and caption status",
+                exc,
             )
             return {}
         return {item.get("id"): item for item in _items(payload) if item.get("id")}
@@ -399,7 +404,10 @@ def _classify(exc: HttpStatusError) -> Exception:
         # kind and paid 100 units for each of 25 refusals.
         if _MENTIONS_DAILY_QUOTA.search(message or ""):
             return QuotaExhausted(f"daily quota exhausted ({reason}: {message[:90]})")
-        return TransientError(f"rate limited ({reason})")
+        # Named by status: a 5xx `backendError` shares this set and is a server
+        # fault, and calling it a rate limit sends a reader to the wrong cause.
+        kind = "server error" if exc.status >= 500 else "rate limited"
+        return TransientError(f"{kind} ({reason})")
     if exc.status == 429:
         return TransientError("rate limited")
     if exc.status >= 500:
