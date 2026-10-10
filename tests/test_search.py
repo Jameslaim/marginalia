@@ -27,7 +27,7 @@ from marginalia.contracts import (
     VERDICT_NO,
     VERDICT_YES,
 )
-from marginalia.core.ledger import STAGE_METADATA, STAGE_SEARCH, Ledger
+from marginalia.core.ledger import STAGE_FULL, STAGE_METADATA, STAGE_SEARCH, Ledger
 from marginalia.providers.base import (
     PermanentError,
     ProviderUnavailable,
@@ -261,12 +261,54 @@ def test_only_a_no_drops_a_video(config, ledger, providers, verdict: str) -> Non
     assert run_search(config, ledger, TOPIC).candidates[0].verdict == NEW
 
 
-def test_a_later_yes_does_not_undo_an_earlier_no(config, ledger, providers) -> None:
-    """Gate 2 asks whether a `no` exists for this topic, not what the most
-    recent verdict was. Re-surfacing a video the judge already declined would
-    make every search pay for it again."""
+def test_a_judges_no_is_not_undone_by_a_search_stage_row(config, ledger, providers) -> None:
+    """Re-surfacing a video the judge already declined would make every search
+    pay for it again. The gate's own `maybe` bookkeeping must not reopen it."""
+    ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO)
+    ledger.log_decision(A, TOPIC, stage=STAGE_SEARCH, verdict=VERDICT_MAYBE)
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    assert run_search(config, ledger, TOPIC).candidates[0].verdict == REJECTED
+
+
+def test_a_search_stage_no_is_bookkeeping_not_a_rejection(config, ledger, providers) -> None:
+    """This used to be pinned the other way, with a search-stage `no` standing in
+    for a judge's decline. A search row is what the gates wrote about
+    themselves — "already in the library", "no for this topic" — and never a
+    judgement. Gate 2 now reads judgements only, so an echo cannot outlive (or
+    replace) the verdict it echoed."""
     ledger.log_decision(A, TOPIC, stage=STAGE_SEARCH, verdict=VERDICT_NO)
     ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_YES)
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    assert run_search(config, ledger, TOPIC).candidates[0].verdict == NEW
+
+
+def test_a_stage_two_no_after_a_stage_one_yes_rejects(config, ledger, providers) -> None:
+    """The later stage read the transcript; it wins (rule 12, `current_verdicts`)."""
+    ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_YES)
+    ledger.log_decision(A, TOPIC, stage=STAGE_FULL, verdict=VERDICT_NO, outcome="judged")
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    assert run_search(config, ledger, TOPIC).candidates[0].verdict == REJECTED
+
+
+def test_a_stage_two_yes_supersedes_a_stage_one_no(config, ledger, providers) -> None:
+    """Stage 1 read the title; stage 2 read the transcript. When the bytes were
+    read and accepted, the title's NO no longer stands for the topic."""
+    ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO)
+    ledger.log_decision(A, TOPIC, stage=STAGE_FULL, verdict=VERDICT_YES, outcome="judged")
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    assert run_search(config, ledger, TOPIC).candidates[0].verdict == NEW
+
+
+def test_a_stage_two_call_that_judged_nothing_does_not_lift_a_no(config, ledger, providers) -> None:
+    """An unjudged row decided nothing, so it supersedes nothing."""
+    ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO)
+    ledger.log_decision(
+        A, TOPIC, stage=STAGE_FULL, verdict=VERDICT_MAYBE, outcome="call_failed"
+    )
     config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
 
     assert run_search(config, ledger, TOPIC).candidates[0].verdict == REJECTED

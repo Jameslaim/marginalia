@@ -87,6 +87,18 @@ __all__ = [
     "UNJUDGED_TRUNCATED",
     "UNJUDGED_NO_VERDICT",
     "UNJUDGED_REASONS",
+    "OUTCOME_JUDGED",
+    "OUTCOME_CALL_FAILED",
+    "OUTCOME_TOO_LARGE",
+    "OUTCOME_TRUNCATED",
+    "OUTCOME_NO_VERDICT",
+    "DECISION_OUTCOMES",
+    # acquisition
+    "ACQUIRED",
+    "ACQUIRE_NO_CAPTIONS",
+    "ACQUIRE_FAILED_PERMANENT",
+    "ACQUIRE_FAILED_TRANSIENT",
+    "Acquisition",
     # transcripts and search
     "TranscriptLine",
     "TranscriptResult",
@@ -766,10 +778,14 @@ class JudgedVideo:
     def covers(self) -> bool:
         """May the planner count this video as coverage?
 
-        Answerable *and* judged: a note must be able to exist, and stage 2 must
-        actually have read the video against the brief.
+        Answerable, judged *and* a YES: a note must be able to exist, stage 2
+        must actually have read the video against the brief, and it must have
+        said the brief is served. A MAYBE is kept (rule 8) and is not coverage —
+        it used to be resolved to YES here, which is the wrong YES rule 8's
+        stage-2 paragraph names: the planner counted an unsure reading as a
+        satisfied part of the brief and could stop on it.
         """
-        return self.answerable and self.judged
+        return self.answerable and self.judged and self.verdict == VERDICT_YES
 
 
 @dataclass(frozen=True)
@@ -965,6 +981,49 @@ UNJUDGED_REASONS = frozenset(
     {UNJUDGED_CALL_FAILED, UNJUDGED_TOO_LARGE, UNJUDGED_TRUNCATED, UNJUDGED_NO_VERDICT}
 )
 
+# Did a judge stage actually decide anything? Stored on every judgement row as
+# `decisions.outcome`, so the answer is read rather than reconstructed.
+#
+# It used to be reconstructed — from `verdict == "maybe"` or from an exact match
+# of `reason` against the strings above — and both halves were wrong somewhere:
+# `maybe` also means "the judge read it and was unsure", and a reason string is
+# prose that has changed four times in this file's history. Three historical
+# shapes were never in the set at all, so those videos read as "already judged
+# for this topic" forever. The reason stays human-readable; it no longer
+# carries state.
+#
+# Only `judged` is a judgement. The other four are a stage that ran and decided
+# nothing, and each is its own word because each has its own retry policy: a
+# call that failed or was cut off is tried again next run, and a transcript too
+# large for the model waits for a different model.
+OUTCOME_JUDGED = "judged"
+OUTCOME_CALL_FAILED = "call_failed"
+OUTCOME_TOO_LARGE = "too_large"
+OUTCOME_TRUNCATED = "truncated"
+OUTCOME_NO_VERDICT = "no_verdict"
+DECISION_OUTCOMES = frozenset(
+    {
+        OUTCOME_JUDGED,
+        OUTCOME_CALL_FAILED,
+        OUTCOME_TOO_LARGE,
+        OUTCOME_TRUNCATED,
+        OUTCOME_NO_VERDICT,
+    }
+)
+
+
+# -- acquisition ------------------------------------------------------------
+
+# What one attempt to acquire a transcript came to. Four outcomes, four words,
+# because each leaves a different ledger state and a different next step:
+# stored, routed to ASR, condemned, or retried later. A captionless video used
+# to be counted as a fetch *failure* by discovery while ingest and refetch called
+# it a route — one fact, two counters, depending on which command found it.
+ACQUIRED = "acquired"
+ACQUIRE_NO_CAPTIONS = "no_captions"
+ACQUIRE_FAILED_PERMANENT = "failed_permanent"
+ACQUIRE_FAILED_TRANSIENT = "failed_transient"
+
 
 # -- transcripts ------------------------------------------------------------
 
@@ -995,6 +1054,34 @@ class TranscriptResult:
     # carried because it arrives free with the fetch, and backfilling it later
     # would mean one network call per video already in the library.
     channel_id: str = ""
+
+
+@dataclass(frozen=True)
+class Acquisition:
+    """One attempt to get a transcript, across the configured provider chain.
+
+    ``provider`` is the provider that **answered** — the one whose transcript
+    this is, or whose refusal condemned the video — not the first one
+    configured. Provenance recorded from the configuration rather than from
+    what happened is a claim nobody made.
+
+    ``detail`` is the provider's classification of a failure, bounded and
+    already safe to print (the providers build it from error *shapes*, never
+    from a page or a transcript). Empty on success.
+
+    When ``outcome`` is ``ACQUIRED`` the ledger row is still ``pending``: the
+    caller stores the transcript, and storing is what moves it on. Every other
+    outcome has already been written to the ledger by the time this is returned.
+    """
+
+    outcome: str
+    result: TranscriptResult | None = None
+    provider: str | None = None
+    detail: str = ""
+
+    @property
+    def acquired(self) -> bool:
+        return self.outcome == ACQUIRED
 
 
 # -- search -----------------------------------------------------------------
@@ -1073,6 +1160,9 @@ class MetadataVerdict:
     verdict: str
     reason: str
     parsed: bool = True
+    # `judged` unless the batch call failed or this position was missing from
+    # the reply. Either way the verdict is MAYBE (rule 8); this says why.
+    outcome: str = OUTCOME_JUDGED
 
 
 @dataclass(frozen=True)
@@ -1102,12 +1192,19 @@ class FullVerdict:
     relevant: list[str] = field(default_factory=list)
     concepts: list[str] = field(default_factory=list)
     parsed: bool = True
-    # False when stage 2 produced no verdict: the call failed, the transcript
-    # was over the model's window, the reply was cut off, or it carried no
-    # verdict word. The video is kept — rule 8 — but kept is not judged
-    # relevant, and the verdict is then MAYBE. Narrower than ``parsed``, which
-    # is also False for a well-formed verdict with a stray line beside it.
-    judged: bool = True
+    # Anything but `judged` when stage 2 produced no verdict: the call failed,
+    # the transcript was over the model's window, the reply was cut off, or it
+    # carried no verdict word. The video is kept — rule 8 — but kept is not
+    # judged relevant, and the verdict is then MAYBE. Narrower than ``parsed``,
+    # which is also False for a well-formed verdict with a stray line beside it.
+    outcome: str = OUTCOME_JUDGED
+    # The verdict word the judge actually wrote, before any resolution. Differs
+    # from ``verdict`` only where the parser refused to take the judge at its
+    # word — a NO resting on a transcript the judge called unreadable is stored
+    # as MAYBE, because nobody read the content it would reject — and the
+    # ledger keeps both so it never claims the judge said something it did not.
+    # `None` when the reply carried no verdict word at all.
+    said: str | None = None
     # Set when a consistency rule fired, for the log line. The verdict is still
     # usable — a violation resolves toward keeping — but it was not the reply
     # the contract asked for, and silently accepting it is how a broken output
@@ -1135,6 +1232,11 @@ class FullVerdict:
     @property
     def timestamps_unavailable(self) -> bool:
         return self.relevant == [RELEVANT_UNAVAILABLE]
+
+    @property
+    def judged(self) -> bool:
+        """Did stage 2 produce a verdict at all? Read from ``outcome``."""
+        return self.outcome == OUTCOME_JUDGED
 
 
 # -- ledger rows ------------------------------------------------------------
@@ -1176,7 +1278,10 @@ class VideoRow:
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> VideoRow:
-        return cls(**{field.name: row[field.name] for field in fields(cls)})
+        # A read-only ledger is never migrated, so a column added after it was
+        # written is absent rather than NULL. NULL is what it would have held.
+        present = set(row.keys())
+        return cls(**{f.name: row[f.name] if f.name in present else None for f in fields(cls)})
 
     def note_is_current(self, version: str) -> bool:
         """Does this video carry a note written by the current prompt?
@@ -1252,6 +1357,11 @@ class RoundReport:
     # model's window, or the reply was cut off or carried no verdict. A subset
     # of `unparsed`, and the part of it that is not coverage.
     unjudged: int = 0
+    # Kept on a stage-2 MAYBE on a readable transcript: the judge read it and
+    # would not say YES. Not coverage, not a rejection, not re-judged. Its own
+    # counter because "nothing decided" and "decided it was unsure" are two
+    # findings, and a MAYBE used to be counted as a YES under neither.
+    uncertain: int = 0
     # Kept, but stage 2 could not read the transcript well enough to be sure.
     # Not a rejection and not a clean keep — and it suppresses the note, which
     # is a consequence nobody should have to infer from a silent counter.

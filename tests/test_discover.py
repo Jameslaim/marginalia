@@ -2631,9 +2631,10 @@ def test_stage_two_stores_its_ranges_and_no_other_stage_does(
 def test_a_stage_two_maybe_is_counted_as_unparsed_and_still_kept(
     config, ledger, library, client, searches
 ) -> None:
-    """The real parser, not a scripted verdict: a MAYBE reply is stored exactly
-    as a YES would be — same decision row, same keeper — and the round counts
-    it in `unparsed`, which is the whole of the change."""
+    """The real parser, not a scripted verdict: a MAYBE reply is kept and stored
+    and counted in `unparsed` — and recorded as what it is, a judged MAYBE, not
+    as the YES it used to be indistinguishable from. It is not coverage, and
+    because it *was* judged the next run does not ask again."""
     from marginalia.brain.judge import parse_full
 
     searches["*"] = [result("aaaaaaaaaaa")]
@@ -2650,9 +2651,12 @@ def test_a_stage_two_maybe_is_counted_as_unparsed_and_still_kept(
     outcome = run(config, ledger, library, client, judge, max_rounds=1)
 
     assert outcome.rounds[0].unparsed == 1
+    assert outcome.rounds[0].uncertain == 1
     assert outcome.stored_ids == ["aaaaaaaaaaa"]
+    assert [v.covers for v in outcome.rounds[0].kept] == [False]
     stage_two = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_FULL][0]
-    assert (stage_two.verdict, stage_two.evidence) == ("yes", "CLEAR")
+    assert (stage_two.verdict, stage_two.evidence) == ("maybe", "CLEAR")
+    assert stage_two.outcome == "judged" and stage_two.is_judgement
     assert stage_two.reason == "walks through pool_mode settings."
     assert stage_two.relevant == "00:04:20-00:09:15"
 
@@ -3050,3 +3054,53 @@ def test_a_transcript_left_by_an_interrupted_store_is_reconciled_when_judged_fro
     assert row.status == STATUS_HAS_TRANSCRIPT
     assert row.content_hash == library.transcript_digest("aaaaaaaaaaa")
     assert library.transcript_path("aaaaaaaaaaa").read_bytes() == before, "bytes untouched"
+
+
+# -- decision outcomes are written, not inferred ------------------------------
+
+
+def test_every_judgement_row_a_run_writes_carries_its_outcome(
+    config, ledger, library, client, searches
+) -> None:
+    """No later reader may have to infer whether a judge decided something.
+    Search rows are the gates' bookkeeping and carry none."""
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb"), result("ccccccccccc")]
+    judge = FakeJudge(
+        metadata={"ccccccccccc": (VERDICT_NO, "a cooking video")},
+        openings={"bbbbbbbbbbb": (VERDICT_NO, "off topic", [])},
+    )
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    rows = [d for v in ("aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc") for d in ledger.decisions_for(v)]
+    judged = [d for d in rows if d.stage != STAGE_SEARCH]
+    assert judged and all(d.outcome == "judged" for d in judged)
+    assert all(d.outcome is None for d in rows if d.stage == STAGE_SEARCH)
+
+
+def test_a_no_on_unreadable_evidence_is_stored_as_maybe_with_the_judges_word(
+    config, ledger, library, client, searches
+) -> None:
+    """It was stored as `yes` — the ledger said the judge accepted a video it
+    had refused. Now: MAYBE (kept, not a rejection, not coverage), DEGRADED (no
+    note), and `said` keeps the judge's NO."""
+    from marginalia.brain.judge import parse_full
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge()
+    reply = "\n".join([
+        "VERDICT: NO",
+        "EVIDENCE: DEGRADED",
+        "REASON: the captions are garbled machine translation throughout",
+        "RELEVANT: UNAVAILABLE",
+        "UNEXPLAINED: NONE",
+    ])
+    judge.judge_full = lambda brief, candidate, **_: parse_full(reply, candidate.video_id)
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    (row,) = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_FULL]
+    assert (row.verdict, row.said, row.evidence, row.outcome) == ("maybe", "no", "DEGRADED", "judged")
+    assert outcome.rounds[0].degraded == 1
+    assert outcome.rounds[0].rejected == [] or all(v.stage != STAGE_FULL for v in outcome.rounds[0].rejected)
+    assert ledger.topic_rejection("aaaaaaaaaaa", TOPIC) is None, "not a rejection for the topic"

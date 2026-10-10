@@ -188,7 +188,9 @@ def _verdict(
             reason = "already in the library"
         return KNOWN, reason, VERDICT_NO
 
-    previous = ledger.latest_decision(result.video_id, topic, verdict=VERDICT_NO)
+    # A judge's NO that is still the current verdict for this topic — never a
+    # search-stage row, which is this gate's own bookkeeping. See `rejection_in`.
+    previous = ledger.topic_rejection(result.video_id, topic)
     if previous is not None:
         return REJECTED, f"no for this topic ({previous.decided_on})", VERDICT_NO
 

@@ -35,6 +35,12 @@ from typing import Sequence
 from ..contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
+    DECISION_OUTCOMES,
+    OUTCOME_CALL_FAILED,
+    OUTCOME_JUDGED,
+    OUTCOME_NO_VERDICT,
+    OUTCOME_TOO_LARGE,
+    OUTCOME_TRUNCATED,
     STATUS_DUPLICATE,
     STATUS_FAILED,
     STATUS_HAS_TRANSCRIPT,
@@ -44,6 +50,10 @@ from ..contracts import (
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
+    UNJUDGED_CALL_FAILED,
+    UNJUDGED_NO_VERDICT,
+    UNJUDGED_TOO_LARGE,
+    UNJUDGED_TRUNCATED,
     VIDEO_STATUSES,
     VideoRow,
 )
@@ -62,6 +72,10 @@ __all__ = [
     "normalise_topic",
     "in_library",
     "wanted_for_a_note",
+    "current_verdicts",
+    "judged_for_topic",
+    "rejection_in",
+    "legacy_outcome",
     "quota_day",
     "now",
     "FAIL_PERMANENT",
@@ -140,15 +154,18 @@ CREATE INDEX IF NOT EXISTS idx_videos_hash   ON videos(content_hash);
 CREATE TABLE IF NOT EXISTS decisions (
   video_id   TEXT NOT NULL,
   topic      TEXT NOT NULL,
-  stage      TEXT NOT NULL,   -- search | metadata | opening | note
-  verdict    TEXT NOT NULL,   -- yes | no | maybe
+  stage      TEXT NOT NULL,   -- search | metadata | opening | full
+  verdict    TEXT NOT NULL,   -- yes | no | maybe: the resolved verdict
   reason     TEXT,
   decided_at TEXT NOT NULL,
   run_id     TEXT,            -- the discovery run, and so the brief, behind it
   model      TEXT,            -- which model said so; the provider is temporary
-  evidence   TEXT,            -- CLEAR | DEGRADED; B3 writes it, nothing reads it yet
+  evidence   TEXT,            -- CLEAR | DEGRADED; DEGRADED suppresses the note
   prompt_version TEXT,        -- which prompt produced this verdict
-  relevant   TEXT             -- stage 2's RELEVANT ranges or sentinel; read by nothing
+  relevant   TEXT,            -- stage 2's RELEVANT ranges or sentinel; read by nothing
+  outcome    TEXT,            -- judged | call_failed | too_large | truncated | no_verdict;
+                              -- NULL on search rows and on rows written before it existed
+  said       TEXT             -- the judge's own verdict word, before any resolution
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_topic ON decisions(topic, verdict);
 CREATE INDEX IF NOT EXISTS idx_decisions_video ON decisions(video_id);
@@ -265,6 +282,12 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # on every earlier row and on every stage that is not stage 2 — the honest
     # answer, since the ranges were produced and then discarded until now.
     ("decisions", "relevant", "TEXT"),
+    # Whether a judge stage decided anything, and what the judge itself said.
+    # NULL on every earlier row, which `legacy_outcome` reads by the rules that
+    # were in force when the row was written — the one place that still has to
+    # recognise historical reason text, so nothing else ever does.
+    ("decisions", "outcome", "TEXT"),
+    ("decisions", "said", "TEXT"),
     ("runs", "territory_map", "TEXT"),
     ("runs", "territory_version", "TEXT"),
     # What the library already satisfied before this run searched. NULL on
@@ -360,6 +383,14 @@ def normalise_topic(topic: str) -> str:
     return " ".join(topic.split()).lower()
 
 
+def _values(cls: type, row: sqlite3.Row) -> dict[str, object]:
+    """A row's fields by name. A read-only ledger is never migrated, so a column
+    added after it was written is absent rather than NULL — and NULL is what it
+    would have held, so that is what it reads as."""
+    present = set(row.keys())
+    return {field.name: row[field.name] if field.name in present else None for field in fields(cls)}
+
+
 @dataclass(frozen=True)
 class DecisionRow:
     """One verdict, and which stage produced it.
@@ -386,15 +417,37 @@ class DecisionRow:
     # Stage 2 only: where the judge said the relevant material is. Stored so a
     # verdict can be checked against the transcript; nothing decides on it.
     relevant: str | None = None
+    # Whether this stage decided anything (`contracts.DECISION_OUTCOMES`), and
+    # the judge's own verdict word. NULL on search rows and on rows written
+    # before the columns existed; read through `resolved_outcome`, never raw.
+    outcome: str | None = None
+    said: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> DecisionRow:
-        return cls(**{field.name: row[field.name] for field in fields(cls)})
+        return cls(**_values(cls, row))
 
     @property
     def decided_on(self) -> str:
         """Just the calendar date, for a report line."""
         return self.decided_at[:10]
+
+    @property
+    def resolved_outcome(self) -> str | None:
+        """What this row says happened: `None` for a search-stage row, which
+        records a gate and not a judgement; the stored outcome when there is
+        one; otherwise the legacy reading of a row written before it existed."""
+        if self.stage == STAGE_SEARCH:
+            return None
+        if self.outcome is not None:
+            return self.outcome
+        return legacy_outcome(self)
+
+    @property
+    def is_judgement(self) -> bool:
+        """Did a judge actually decide here? The one question every reader of
+        relevance asks first, answered in one place."""
+        return self.resolved_outcome == OUTCOME_JUDGED
 
 
 @dataclass(frozen=True)
@@ -427,7 +480,7 @@ class RunRow:
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> RunRow:
-        return cls(**{field.name: row[field.name] for field in fields(cls)})
+        return cls(**_values(cls, row))
 
 
 @dataclass(frozen=True)
@@ -458,7 +511,7 @@ class QueryRow:
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> QueryRow:
-        return cls(**{field.name: row[field.name] for field in fields(cls)})
+        return cls(**_values(cls, row))
 
 
 @dataclass(frozen=True)
@@ -483,7 +536,7 @@ class PlanRow:
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> PlanRow:
-        return cls(**{field.name: row[field.name] for field in fields(cls)})
+        return cls(**_values(cls, row))
 
 
 # Every table the current schema expects, and the columns it must have. Used
@@ -585,8 +638,96 @@ def skip_reason(row: VideoRow | None, *, transcript_present: bool) -> str | None
 _KEPT = frozenset({VERDICT_YES, VERDICT_MAYBE})
 
 
+# Reason strings that older code wrote, verbatim, for a judge stage that decided
+# nothing. Each was a literal in the code that wrote it — see `git log -S` on
+# each — so an exact match is right *here*, for history, and nowhere else: rows
+# written now carry `outcome` and are never read by their prose.
+#
+# The last four were missing from the set discovery used to recognise, so a
+# video whose B2-era opening call failed, or whose pre-2026-10 stage-2 reply had
+# no verdict word, read as "already judged for this topic" for good.
+_LEGACY_UNJUDGED_REASONS: dict[str, str] = {
+    UNJUDGED_CALL_FAILED: OUTCOME_CALL_FAILED,
+    UNJUDGED_TOO_LARGE: OUTCOME_TOO_LARGE,
+    UNJUDGED_TRUNCATED: OUTCOME_TRUNCATED,
+    UNJUDGED_NO_VERDICT: OUTCOME_NO_VERDICT,
+    "opening judge failed, kept": OUTCOME_CALL_FAILED,  # stage `opening`, before B3
+    "verdict could not be parsed, kept": OUTCOME_NO_VERDICT,  # `parse_opening`, before B3
+    "batch call failed": OUTCOME_CALL_FAILED,  # stage 1, a failed batch
+    "verdict could not be parsed": OUTCOME_NO_VERDICT,  # stage 1, a missing position
+}
+# Before 2026-10 a stage-2 reply with no verdict word was stored as `yes`, with
+# this prefix when it also had no REASON line. One with a REASON line kept the
+# model's own words and is indistinguishable from a real YES; that residue is
+# documented rather than guessed at.
+_LEGACY_CONTRACT_BREAK = "reply broke the output contract ("
+_LEGACY_NO_VERDICT_PROBLEM = "no readable verdict"
+
+
+def legacy_outcome(decision: DecisionRow) -> str:
+    """How a judge row written before `outcome` existed should be read.
+
+    The only function that interprets historical reason text. Everything else
+    asks `DecisionRow.is_judgement`, which calls this only when the row has no
+    stored outcome.
+    """
+    reason = decision.reason or ""
+    if reason in _LEGACY_UNJUDGED_REASONS:
+        return _LEGACY_UNJUDGED_REASONS[reason]
+    if decision.stage in _STAGE_TWO:
+        if decision.verdict == VERDICT_MAYBE:
+            # Before outcomes were stored, stage 2 wrote `maybe` for one thing
+            # only: a call that decided nothing (the judge's own MAYBE was
+            # resolved to `yes` then).
+            return OUTCOME_NO_VERDICT
+        if reason.startswith(_LEGACY_CONTRACT_BREAK) and _LEGACY_NO_VERDICT_PROBLEM in reason:
+            return OUTCOME_NO_VERDICT
+    return OUTCOME_JUDGED
+
+
+def judged_for_topic(
+    decisions: Sequence[DecisionRow], topic: str, *, model: str | None = None
+) -> bool:
+    """Has stage 2 already given this video a verdict for this topic?
+
+    A verdict, not a call. A stage-2 call that failed, was cut off or carried
+    no verdict is recorded too, and counting that row as a judgement meant one
+    provider blip stopped the topic from ever reading the video again.
+
+    The one non-judgement that does stand is a transcript too large for the
+    model that refused it: asking the same model again is refused again, so it
+    waits for a different model rather than spending a call every run.
+    """
+    normalised = normalise_topic(topic)
+    for decision in decisions:
+        if decision.stage not in _STAGE_TWO or decision.topic != normalised:
+            continue
+        outcome = decision.resolved_outcome
+        if outcome == OUTCOME_JUDGED:
+            return True
+        if outcome == OUTCOME_TOO_LARGE and (not model or decision.model == model):
+            return True
+    return False
+
+
+def rejection_in(decisions: Sequence[DecisionRow], topic: str) -> DecisionRow | None:
+    """Gate 2: the judgement that currently declines this video for this topic.
+
+    Read through `current_verdicts`, so it is a **judgement** — a search-stage
+    row is the gate's own bookkeeping and an unjudged stage-2 row decided
+    nothing — and the latest stage that read the video wins. Gate 2 used to take
+    any `no` row for the topic, which included the `no` rows Gate 1 and Gate 2
+    write themselves.
+    """
+    normalised = normalise_topic(topic)
+    current = current_verdicts([d for d in decisions if d.topic == normalised]).get(normalised)
+    if current is not None and current.verdict == VERDICT_NO:
+        return current
+    return None
+
+
 def current_verdicts(decisions: Sequence[DecisionRow]) -> dict[str, DecisionRow]:
-    """Per topic, the verdict of the latest stage that ran.
+    """Per topic, the verdict of the latest stage that judged.
 
     **For one video and one topic, a later stage supersedes an earlier one.**
     Stage 2 read the transcript; stage 1 read the title. When they disagree the
@@ -603,9 +744,15 @@ def current_verdicts(decisions: Sequence[DecisionRow]) -> dict[str, DecisionRow]
     video is excellent evidence. Both judgements were right; they answer
     different questions, and only one of them is about whether a transcript can
     be read.
+
+    **Judgements only.** A search-stage row records a gate, not a verdict, and a
+    stage-2 row whose call failed decided nothing — letting either supersede a
+    real verdict would let bookkeeping, or a provider blip, overrule a judge.
     """
     latest: dict[str, DecisionRow] = {}
     for decision in decisions:
+        if not decision.is_judgement:
+            continue
         rank = _STAGE_ORDER.get(decision.stage, 0)
         seen = latest.get(decision.topic)
         if seen is None or rank >= _STAGE_ORDER.get(seen.stage, 0):
@@ -679,11 +826,20 @@ class Ledger:
             # SQLite enforces this one: a write raises instead of landing.
             self._conn = sqlite3.connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True)
             self._conn.row_factory = sqlite3.Row
-            self._check_schema()
+            self._check_schema(allow_additive_gaps=True)
             return
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row
+        # A ledger this version will refuse must be refused *before* anything
+        # below writes to it. The refusal used to come last, after the additive
+        # columns, the new tables and the status rename had already landed — so
+        # an older version could no longer read the file it was told to go back
+        # to, which is the one recovery the message recommends.
+        for name in sorted(_LEGACY_TABLES):
+            if name in self._tables():
+                self._conn.close()
+                raise self._stale(f"it still has the `{name}` table ({_LEGACY_TABLES[name]})")
         # Migration first: _SCHEMA indexes columns that an older ledger does
         # not have yet, so CREATE INDEX would fail before the guard could
         # produce a readable message.
@@ -1056,8 +1212,15 @@ class Ledger:
         evidence: str | None = None,
         prompt_version: str | None = None,
         relevant: str | None = None,
+        outcome: str | None = None,
+        said: str | None = None,
     ) -> DecisionRow:
         """Record one verdict. ``topic`` is normalised on the way in.
+
+        ``outcome`` says whether a judge stage decided anything, and ``said`` is
+        the judge's own verdict word when the stored one is a resolution of it.
+        Every judge stage in production passes ``outcome``; ``None`` is read as
+        a row from before the column existed (`legacy_outcome`).
 
         ``model`` is recorded because the provider is temporary. When it
         changes and judging quality shifts, the only way to work out why is to
@@ -1078,6 +1241,14 @@ class Ledger:
             raise ValueError(
                 f"unknown evidence {evidence!r}; expected one of {sorted(_EVIDENCE)}"
             )
+        if outcome is not None and outcome not in DECISION_OUTCOMES:
+            raise ValueError(
+                f"unknown outcome {outcome!r}; expected one of {sorted(DECISION_OUTCOMES)}"
+            )
+        if outcome is not None and stage == STAGE_SEARCH:
+            raise ValueError("a search-stage row records a gate, not a judgement outcome")
+        if said is not None and said not in _VERDICTS:
+            raise ValueError(f"unknown verdict word {said!r}; expected one of {sorted(_VERDICTS)}")
 
         row = DecisionRow(
             video_id=video_id,
@@ -1091,14 +1262,16 @@ class Ledger:
             evidence=evidence,
             prompt_version=prompt_version,
             relevant=relevant,
+            outcome=outcome,
+            said=said,
         )
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO decisions
                     (video_id, topic, stage, verdict, reason, decided_at, run_id,
-                     model, evidence, prompt_version, relevant)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     model, evidence, prompt_version, relevant, outcome, said)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row.video_id,
@@ -1112,6 +1285,8 @@ class Ledger:
                     row.evidence,
                     row.prompt_version,
                     row.relevant,
+                    row.outcome,
+                    row.said,
                 ),
             )
         log.info("decision: %s %s/%s for %r", video_id, stage, verdict, row.topic)
@@ -1373,6 +1548,16 @@ class Ledger:
         row = self._conn.execute(sql, params).fetchone()
         return DecisionRow.from_sqlite(row) if row is not None else None
 
+    def topic_rejection(self, video_id: str, topic: str) -> DecisionRow | None:
+        """Gate 2, read from the ledger. See `rejection_in`."""
+        normalised = normalise_topic(topic)
+        rows = self._conn.execute(
+            "SELECT * FROM decisions WHERE video_id = ? AND topic = ? "
+            "ORDER BY decided_at, rowid",
+            (video_id, normalised),
+        ).fetchall()
+        return rejection_in([DecisionRow.from_sqlite(row) for row in rows], normalised)
+
     def decisions_for(self, video_id: str) -> list[DecisionRow]:
         rows = self._conn.execute(
             "SELECT * FROM decisions WHERE video_id = ? ORDER BY decided_at, rowid",
@@ -1519,7 +1704,7 @@ class Ledger:
             with self._conn:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
-    def _check_schema(self) -> None:
+    def _check_schema(self, *, allow_additive_gaps: bool = False) -> None:
         """Fail loudly on a ledger written by an older version.
 
         ``CREATE TABLE IF NOT EXISTS`` silently leaves an existing table alone,
@@ -1527,6 +1712,12 @@ class Ledger:
         with an opaque ``IndexError`` from row unpacking, or — worse — keep
         writing verdicts into a table nothing reads. There is no migration
         path yet, so the message must say exactly what to do instead.
+
+        ``allow_additive_gaps`` is the read-only path. A write-mode open adds a
+        missing additive column before checking; a read-only one may not, and
+        refusing then made `marg doctor` unusable on exactly the ledger a new
+        version had not yet touched. An additive column reads as NULL when it is
+        absent, so its absence is not drift. Anything else still is.
         """
         tables = self._tables()
 
@@ -1534,9 +1725,18 @@ class Ledger:
             if name in tables:
                 raise self._stale(f"it still has the `{name}` table ({_LEGACY_TABLES[name]})")
 
+        additive = {(table, column) for table, column, _ in _ADDITIVE_COLUMNS}
         for table, expected in _EXPECTED_COLUMNS.items():
             present = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
-            missing = sorted(expected - present)
+            if allow_additive_gaps and not present:
+                # A table a newer version created. A read-only open cannot create
+                # it, and nothing here reads a table that is not there.
+                continue
+            missing = sorted(
+                column
+                for column in expected - present
+                if not (allow_additive_gaps and (table, column) in additive)
+            )
             if missing:
                 raise self._stale(
                     f"table `{table}` is missing column(s): {', '.join(missing)}"

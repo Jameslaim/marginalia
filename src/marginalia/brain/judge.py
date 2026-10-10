@@ -28,6 +28,11 @@ from ..contracts import (
     EVIDENCE_DEGRADED,
     RELEVANT_NONE,
     RELEVANT_UNAVAILABLE,
+    OUTCOME_CALL_FAILED,
+    OUTCOME_JUDGED,
+    OUTCOME_NO_VERDICT,
+    OUTCOME_TOO_LARGE,
+    OUTCOME_TRUNCATED,
     UNJUDGED_CALL_FAILED,
     UNJUDGED_NO_VERDICT,
     UNJUDGED_TOO_LARGE,
@@ -419,21 +424,24 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         problems.append(f"{extra_lines} line(s) outside the format")
 
     word = re.search(r"\b(YES|NO|MAYBE)\b", found.get("VERDICT", ""), re.IGNORECASE)
+    said = _VERDICT_WORDS[word.group(1).upper()] if word is not None else None
     if word is None:
-        verdict = VERDICT_YES
+        verdict = VERDICT_MAYBE
         problems.append("no readable verdict")
     else:
-        spoken = _VERDICT_WORDS[word.group(1).upper()]
-        # There is no stage 3. A MAYBE has nowhere to go, so it resolves the
-        # way the asymmetry points.
-        verdict = VERDICT_YES if spoken == VERDICT_MAYBE else spoken
-        if spoken == VERDICT_MAYBE:
-            # Flagged, not changed. The format allows YES or NO and nothing
-            # else, so a MAYBE is the reply breaking it — and until this line
-            # it was the one path to YES that left no trace: not counted in
-            # `unparsed`, and indistinguishable from a real YES in `decisions`.
-            # Rule 14. The verdict stays YES; only the count moves.
-            problems.append("VERDICT MAYBE is not allowed at stage 2; kept as YES")
+        verdict = said
+        if said == VERDICT_MAYBE:
+            # The format allows YES or NO, so a MAYBE is the reply breaking it
+            # and is counted in `unparsed` (rule 14). It is **kept as MAYBE**:
+            # stored, noted, and not coverage.
+            #
+            # It used to be resolved to YES, on the reasoning that "there is no
+            # stage 3, so a MAYBE has nowhere to go". A kept-but-not-coverage
+            # state now exists for exactly this, and a YES is the one stage-2
+            # error rule 8 says hides — the planner counted an unsure reading as
+            # a satisfied part of the brief and could stop on it. Keeping the
+            # video never needed the YES; claiming coverage did.
+            problems.append("VERDICT MAYBE is not allowed at stage 2; kept as MAYBE")
 
     evidence = (
         EVIDENCE_DEGRADED
@@ -484,7 +492,13 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         # reversible, while the alternative is a permanent rejection made on
         # evidence nobody could see. A damaged transcript is not evidence the
         # content is bad — it is evidence of nothing at all.
-        verdict = VERDICT_YES
+        #
+        # **MAYBE, not YES.** Nobody read the content, so nothing can be said
+        # about its relevance either way: not a rejection (Gate 2 must not
+        # stop the topic), and not an acceptance. It was stored as `yes`, so
+        # the ledger said the judge accepted a video it had refused; `said`
+        # now keeps the judge's own word beside the resolution.
+        verdict = VERDICT_MAYBE
         evidence = EVIDENCE_DEGRADED
 
     if unjustified_degraded:
@@ -516,6 +530,7 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
             relevant=relevant,
             concepts=concepts,
             parsed=True,
+            said=said,
             unmarked_currency=unmarked_currency,
             relevant_text=relevant_text,
         )
@@ -545,7 +560,7 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
             relevant=relevant,
             concepts=concepts,
             parsed=False,
-            judged=False,
+            outcome=OUTCOME_NO_VERDICT,
             problem=problem,
             unmarked_currency=unmarked_currency,
             relevant_text=relevant_text,
@@ -558,6 +573,7 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         relevant=relevant,
         concepts=concepts,
         parsed=False,
+        said=said,
         problem=problem,
         unmarked_currency=unmarked_currency,
         relevant_text=relevant_text,
@@ -854,13 +870,27 @@ class Judge:
                 len(chunk),
             )
             return [
-                MetadataVerdict(c.video_id, VERDICT_MAYBE, "batch call failed", parsed=False)
+                MetadataVerdict(
+                    c.video_id,
+                    VERDICT_MAYBE,
+                    "batch call failed",
+                    parsed=False,
+                    outcome=OUTCOME_CALL_FAILED,
+                )
                 for c in chunk
             ]
 
         parsed = parse_batch(reply.text, len(chunk))
         return [
-            MetadataVerdict(candidate.video_id, verdict, reason, was_parsed)
+            MetadataVerdict(
+                candidate.video_id,
+                verdict,
+                reason,
+                was_parsed,
+                # `parse_batch` marks a position unparsed only when the reply
+                # gave it no verdict at all.
+                outcome=OUTCOME_JUDGED if was_parsed else OUTCOME_NO_VERDICT,
+            )
             for candidate, (verdict, reason, was_parsed) in zip(chunk, parsed)
         ]
 
@@ -909,14 +939,21 @@ class Judge:
             # Kept, like any call that judged nothing — and named, so the round
             # does not report a length problem as a provider blip.
             log.warning("judge: %s is too large for stage 2 — kept unread", candidate.video_id)
-            return _unjudged(candidate.video_id, UNJUDGED_TOO_LARGE, "too large for the context window")
+            return _unjudged(
+                candidate.video_id,
+                UNJUDGED_TOO_LARGE,
+                "too large for the context window",
+                OUTCOME_TOO_LARGE,
+            )
         except Exception as exc:  # noqa: BLE001 - a failed call must not reject
             log.warning(
                 "judge: stage-2 call failed for %s (%s) — keeping, unjudged",
                 candidate.video_id,
                 safe_reason(exc),
             )
-            return _unjudged(candidate.video_id, UNJUDGED_CALL_FAILED, "call failed")
+            return _unjudged(
+                candidate.video_id, UNJUDGED_CALL_FAILED, "call failed", OUTCOME_CALL_FAILED
+            )
 
         if reply.finish_reason == "length":
             # Not a judgement — a fragment. Parsing it would read whichever of
@@ -927,12 +964,14 @@ class Judge:
                 candidate.video_id,
                 reply.usage.output_tokens,
             )
-            return _unjudged(candidate.video_id, UNJUDGED_TRUNCATED, "truncated reply")
+            return _unjudged(
+                candidate.video_id, UNJUDGED_TRUNCATED, "truncated reply", OUTCOME_TRUNCATED
+            )
 
         return parse_full(reply.text, candidate.video_id)
 
 
-def _unjudged(video_id: str, reason: str, problem: str) -> FullVerdict:
+def _unjudged(video_id: str, reason: str, problem: str, outcome: str) -> FullVerdict:
     """Stage 2 produced no verdict. Kept, and recorded as exactly that.
 
     These used to be YES — rule 8 resolving toward keeping, which is right for
@@ -943,7 +982,7 @@ def _unjudged(video_id: str, reason: str, problem: str) -> FullVerdict:
     and leaves the next run free to judge it.
     """
     return FullVerdict(
-        video_id, VERDICT_MAYBE, reason=reason, parsed=False, judged=False, problem=problem
+        video_id, VERDICT_MAYBE, reason=reason, parsed=False, outcome=outcome, problem=problem
     )
 
 

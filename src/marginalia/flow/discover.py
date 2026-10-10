@@ -67,8 +67,6 @@ from ..contracts import (
     RECOMMEND_STOP,
     REJECTED,
     STORED_THIS_RUN,
-    UNJUDGED_REASONS,
-    UNJUDGED_TOO_LARGE,
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
@@ -88,8 +86,8 @@ from ..core.ledger import (
     FAIL_TRANSIENT,
     STAGE_FULL,
     STAGE_METADATA,
-    STAGE_OPENING,
     Ledger,
+    judged_for_topic,
     normalise_topic,
 )
 from ..core.ledger import now as ledger_now
@@ -791,7 +789,10 @@ def _judge_round(
     fetched_any = False
 
     for verdict in verdicts:
-        _log(ledger, run, verdict.video_id, STAGE_METADATA, verdict.verdict, verdict.reason)
+        _log(
+            ledger, run, verdict.video_id, STAGE_METADATA, verdict.verdict, verdict.reason,
+            outcome=verdict.outcome,
+        )
         if verdict.verdict == VERDICT_YES:
             report.verdict_yes += 1
         elif verdict.verdict == VERDICT_NO:
@@ -844,7 +845,9 @@ def _judge_round(
         # from the stored file instead, below; only a video already judged for
         # this topic is skipped.
         held = library.has_transcript(candidate.video_id)
-        if held and _judged_for_topic(ledger, candidate.video_id, run.topic, model=run.model):
+        if held and judged_for_topic(
+            ledger.decisions_for(candidate.video_id), run.topic, model=run.model
+        ):
             log.info(
                 "discover: %s is on disk and already judged for this topic",
                 candidate.video_id,
@@ -970,6 +973,10 @@ def _judge_round(
             evidence=judgement.evidence,
             prompt_version=judge.prompt(FULL_PROMPT).version,
             relevant=judgement.relevant_text,
+            outcome=judgement.outcome,
+            # Only where it differs: a resolution the ledger must not present
+            # as the judge's own word.
+            said=judgement.said if judgement.said != judgement.verdict else None,
         )
         if not judgement.parsed:
             report.unparsed += 1
@@ -978,6 +985,11 @@ def _judge_round(
             # brief. The planner is shown it apart, and the next run on this
             # topic judges it again.
             report.unjudged += 1
+        elif judgement.verdict == VERDICT_MAYBE and judgement.evidence != EVIDENCE_DEGRADED:
+            # Read, and the judge would not commit. Kept and noted, not coverage,
+            # and not asked again — asking again buys a second opinion on the
+            # same text, which is a sampling strategy, not a retry.
+            report.uncertain += 1
         if judgement.unmarked_currency:
             # Its own counter, and nothing else happens. The verdict stands —
             # dating an API is usually a correct judgement and the marker is
@@ -1084,29 +1096,6 @@ class _Material:
 
 
 _STORED_CUE_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2}\.\d{3}) --> [^\]]*\] ?", re.MULTILINE)
-
-
-def _judged_for_topic(ledger: Ledger, video_id: str, topic: str, *, model: str = "") -> bool:
-    """Has stage 2 already given this video a verdict for this topic?
-
-    A verdict, not a call. A stage-2 call that failed, was cut off or carried
-    no verdict recorded a row too — as MAYBE now, and as a plain YES before —
-    and counting that row as a judgement meant one provider blip stopped the
-    topic from ever reading the video again.
-
-    The one unjudged row that does stand is a transcript too large for the
-    model that refused it: asking the same model again is refused again, so it
-    waits for a different model rather than spending a call every run.
-    """
-    for decision in ledger.decisions_for(video_id):
-        if decision.stage not in (STAGE_FULL, STAGE_OPENING) or decision.topic != topic:
-            continue
-        unjudged = decision.verdict == VERDICT_MAYBE or (decision.reason or "") in UNJUDGED_REASONS
-        if not unjudged:
-            return True
-        if decision.reason == UNJUDGED_TOO_LARGE and (not model or decision.model == model):
-            return True
-    return False
 
 
 def _held_material(library: Library, ledger: Ledger, video_id: str) -> _Material:
@@ -1269,11 +1258,16 @@ def _log(
     evidence: str | None = None,
     prompt_version: str | None = None,
     relevant: str | None = None,
+    outcome: str,
+    said: str | None = None,
 ) -> None:
     """Every verdict at every stage, unless this is a dry run.
 
     A dry run records nothing: writing `no` rows would poison Gate 2 for the
     real run that follows, so tuning the judge would shrink the library.
+
+    ``outcome`` is required here: every judgement row discovery writes says
+    whether a judge decided anything, so no later reader has to infer it.
     """
     if run.dry_run:
         return
@@ -1288,6 +1282,8 @@ def _log(
         relevant=relevant,
         run_id=run.run_id,
         model=run.model,
+        outcome=outcome,
+        said=said,
     )
 
 

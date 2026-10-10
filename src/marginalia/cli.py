@@ -373,6 +373,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.judged_from_disk, "of them judged from disk"),
             (report.reconciled, "of them repaired from an interrupted store"),
             (report.unjudged, "kept without a stage-2 verdict"),
+            (report.uncertain, "kept on a stage-2 MAYBE, not coverage"),
             (report.known_this_run, "stored in an earlier round"),
             (report.flipped_to_no, "kept on disk, declined here"),
             # Its own line, and the one worth reading. This is stage 1 having
@@ -672,6 +673,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "judged_from_disk": report.judged_from_disk,
                 "reconciled": report.reconciled,
                 "unjudged": report.unjudged,
+                "uncertain": report.uncertain,
                 "no_captions": report.no_captions,
                 "degraded": report.degraded,
                 "too_long_to_note": report.too_long_to_note,

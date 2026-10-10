@@ -565,7 +565,10 @@ def render_round(
     cumulative = list(kept_so_far) or [(report.number, video) for video in report.kept]
     readable = [(number, v) for number, v in cumulative if v.covers]
     unreadable = [(number, v) for number, v in cumulative if not v.answerable]
-    unjudged = [(number, v) for number, v in cumulative if v.answerable and not v.judged]
+    # Answerable but not coverage: no verdict at all, or a MAYBE the judge
+    # would not turn into a YES. Both are kept and both get notes; neither is
+    # evidence that a part of the brief is served.
+    unjudged = [(number, v) for number, v in cumulative if v.answerable and not v.covers]
 
     lines.append("")
     lines.append(
@@ -590,9 +593,9 @@ def render_round(
     lines.append(
         f"KEPT BUT NOT JUDGED ({len(unjudged)}) — stored, but stage 2 produced no "
         "verdict on these (the call failed, the transcript was too large for the "
-        "model, or the reply was cut off), so nothing has read them against the "
-        "brief. They do NOT count toward coverage; the next run on this topic will "
-        "judge them again."
+        "model, or the reply was cut off) or answered only MAYBE, so nothing has "
+        "confirmed them against the brief. They do NOT count toward coverage; the "
+        "ones with no verdict will be judged again by the next run on this topic."
     )
     lines.extend(_marked_video_lines(unjudged) or ["- none"])
 

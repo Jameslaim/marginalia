@@ -394,6 +394,19 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "UNJUDGED_TRUNCATED",
         "UNJUDGED_NO_VERDICT",
         "UNJUDGED_REASONS",
+        # whether a judge stage decided anything — stored, never inferred
+        "OUTCOME_JUDGED",
+        "OUTCOME_CALL_FAILED",
+        "OUTCOME_TOO_LARGE",
+        "OUTCOME_TRUNCATED",
+        "OUTCOME_NO_VERDICT",
+        "DECISION_OUTCOMES",
+        # acquisition: one path, four outcomes
+        "ACQUIRED",
+        "ACQUIRE_NO_CAPTIONS",
+        "ACQUIRE_FAILED_PERMANENT",
+        "ACQUIRE_FAILED_TRANSIENT",
+        "Acquisition",
         # transcripts and search
         "TranscriptLine",
         "TranscriptResult",

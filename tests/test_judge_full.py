@@ -18,6 +18,7 @@ import logging
 import pytest
 
 from marginalia.brain.judge import Judge, parse_full
+from marginalia.contracts import JudgedVideo
 from marginalia.llm import LlmClient
 from marginalia.contracts import (
     EVIDENCE_CLEAR,
@@ -88,41 +89,50 @@ def test_the_shapes_a_model_reaches_for(body: str, expected: list[str]) -> None:
     assert parse_full(reply(RELEVANT=body), VIDEO).relevant == expected
 
 
-def test_maybe_resolves_to_keeping() -> None:
-    """There is no stage 3. A MAYBE has nowhere to route to, so it resolves the
-    way the asymmetry points."""
-    assert parse_full(reply(VERDICT="MAYBE"), VIDEO).verdict == VERDICT_YES
+def test_a_maybe_is_kept_as_maybe_and_is_not_coverage() -> None:
+    """A MAYBE used to resolve to YES — "there is no stage 3, so it has nowhere
+    to go". It has somewhere now: kept, noted, and not coverage. Resolving it to
+    YES is the stage-2 error rule 8 says hides — the planner counted an unsure
+    reading as a satisfied part of the brief. It is still a judgement (the judge
+    read the video), so the next run does not ask again."""
+    verdict = parse_full(reply(VERDICT="MAYBE"), VIDEO)
+
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.judged is True
+    assert verdict.said == VERDICT_MAYBE
+    shown = JudgedVideo(VIDEO, "t", "full", verdict.verdict, verdict.reason, verdict.evidence)
+    assert shown.covers is False
 
 
 def test_maybe_is_flagged_as_breaking_the_format() -> None:
-    """The format allows YES or NO. A MAYBE is the reply breaking it, and it was
-    the one path to YES that left no trace — not counted, and identical to a
-    real YES in the decision log. Flagged now; the verdict is unchanged."""
+    """The format allows YES or NO. A MAYBE is the reply breaking it, and is
+    counted in `unparsed` (rule 14)."""
     verdict = parse_full(reply(VERDICT="MAYBE"), VIDEO)
 
-    assert verdict.verdict == VERDICT_YES
+    assert verdict.verdict == VERDICT_MAYBE
     assert verdict.parsed is False
     assert "VERDICT MAYBE is not allowed at stage 2" in verdict.problem
 
 
-def test_flagging_a_maybe_changes_nothing_but_the_flag() -> None:
-    """Same verdict, evidence, reason, ranges and concepts as the YES it used to
-    be indistinguishable from — only `parsed` and `problem` differ."""
+def test_flagging_a_maybe_changes_nothing_but_the_verdict_and_the_flag() -> None:
+    """Same evidence, reason, ranges and concepts as the YES it used to be
+    indistinguishable from — only the verdict, `parsed` and `problem` differ."""
     maybe = parse_full(reply(VERDICT="MAYBE"), VIDEO)
     yes = parse_full(reply(VERDICT="YES"), VIDEO)
 
-    for field in ("verdict", "evidence", "reason", "relevant", "concepts",
+    for field in ("evidence", "reason", "relevant", "concepts",
                   "relevant_text", "unmarked_currency"):
         assert getattr(maybe, field) == getattr(yes, field), field
+    assert (yes.verdict, maybe.verdict) == (VERDICT_YES, VERDICT_MAYBE)
     assert (yes.parsed, maybe.parsed) == (True, False)
 
 
 def test_a_maybe_keeps_its_other_problems() -> None:
-    """Problems combine; the MAYBE flag does not hide the consistency rules."""
-    verdict = parse_full(reply(VERDICT="MAYBE", RELEVANT="NONE"), VIDEO)
+    """Problems combine; the MAYBE flag does not hide the other rules."""
+    verdict = parse_full(reply(VERDICT="MAYBE", RELEVANT="somewhere in the middle"), VIDEO)
 
     assert "VERDICT MAYBE" in verdict.problem
-    assert "named no relevant range" in verdict.problem
+    assert "relevant ranges were neither" in verdict.problem
 
 
 def test_unavailable_is_not_the_same_absence_as_none() -> None:
@@ -173,8 +183,13 @@ def test_a_no_on_degraded_evidence_keeps_the_video() -> None:
         VIDEO,
     )
 
-    assert verdict.verdict == VERDICT_YES
+    # Kept as MAYBE, not YES: nobody read the content, so it is neither a
+    # rejection nor coverage. It was stored as `yes`, so the ledger claimed the
+    # judge accepted a video it had refused; `said` keeps the judge's word.
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.said == VERDICT_NO
     assert verdict.evidence == EVIDENCE_DEGRADED
+    assert verdict.judged is True
 
 
 # -- rule: DEGRADED is about evidence, not uncertainty ----------------------
@@ -209,13 +224,17 @@ def test_an_unsupported_degraded_does_not_take_the_video_out_of_the_library() ->
 
 def test_a_no_on_an_unsupported_degraded_is_kept_on_clear_evidence() -> None:
     """The NO rule still keeps the video, and the label it rested on is the
-    unsupported one, so the grade is CLEAR rather than DEGRADED."""
+    unsupported one, so the grade is CLEAR rather than DEGRADED.
+
+    Kept as MAYBE. It used to become YES on CLEAR evidence — a reply whose own
+    reason was "no bearing on the brief" counted as coverage of the brief."""
     verdict = parse_full(
         reply(VERDICT="NO", EVIDENCE="DEGRADED", REASON="A cooking tutorial with no bearing on the brief."),
         VIDEO,
     )
 
-    assert verdict.verdict == VERDICT_YES
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.said == VERDICT_NO
     assert verdict.evidence == EVIDENCE_CLEAR
     assert "rejected on degraded evidence" in verdict.problem
     assert "degraded without naming an evidence problem" in verdict.problem
@@ -258,7 +277,8 @@ def test_a_real_evidence_problem_passes(reason: str) -> None:
 def test_a_no_that_says_the_transcript_is_damaged_is_still_kept_degraded(reason: str) -> None:
     verdict = parse_full(reply(VERDICT="NO", REASON=reason, RELEVANT="NONE"), VIDEO)
 
-    assert verdict.verdict == VERDICT_YES
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.said == VERDICT_NO
     assert verdict.evidence == EVIDENCE_DEGRADED
     assert "rejected while calling the transcript unreadable" in verdict.problem
 
@@ -297,7 +317,7 @@ def test_a_no_about_subject_matter_stays_a_no(reason: str) -> None:
 def test_damage_said_of_the_transcript_text_is_still_damage(reason: str) -> None:
     verdict = parse_full(reply(VERDICT="NO", REASON=reason, RELEVANT="NONE"), VIDEO)
 
-    assert verdict.verdict == VERDICT_YES
+    assert verdict.verdict == VERDICT_MAYBE
     assert verdict.evidence == EVIDENCE_DEGRADED
 
 
