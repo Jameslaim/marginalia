@@ -880,3 +880,23 @@ def test_a_failed_call_records_no_provider_text_in_the_result_or_the_log(tmp_pat
     assert marker not in run.results[0].detail
     assert "Unclassified" in run.results[0].detail, "the classification survives"
     assert marker not in caplog.text
+
+
+def test_a_transcript_quoting_template_syntax_is_noted(tmp_path, caplog):
+    """The renderer refused a transcript containing `{{ name }}` before any model
+    call, recorded it as a transient failure, and retried and failed it on every
+    run — with the transcript's text in the failure detail and the log."""
+    import logging
+
+    source = r'the template is {{ zqsourcetokenqz }} with {"k": 1} and \1'
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", text=FIXTURE_TRANSCRIPT + source)
+    writer = client(GOOD_NOTE)
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        run = write_notes(config, ledger, library, writer)  # the real write_note prompt
+
+    assert [r.outcome for r in run.results] == [NOTED]
+    assert len(writer.sent) == 1
+    assert source in writer.sent[0]["messages"][1]["content"], "the transcript, exactly as stored"
+    assert all("zqsourcetokenqz" not in r.detail for r in run.results)
+    assert "zqsourcetokenqz" not in caplog.text

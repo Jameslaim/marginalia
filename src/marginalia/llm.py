@@ -151,14 +151,37 @@ class Prompt:
         Deliberately not ``str.format``: prompts contain literal braces in
         their output examples, and escaping every one of them is a trap that
         only springs when someone edits a prompt months later.
+
+        **One pass over the template, and the values are never read again.**
+        This used to replace placeholders one at a time and then scan the whole
+        result for anything still shaped like one — which included the notes,
+        transcripts and descriptions just inserted. A note about a templating
+        language that quoted ``{{ name }}`` failed every answer that loaded it,
+        before any model call, and its contents came back out in the error; a
+        note containing ``{{ escalation }}`` had the escalation text pasted into
+        it by the next replacement. Placeholders are now found in the template
+        alone, each is filled by a callback (so nothing in a value is read as a
+        regex replacement escape), and a missing one names only the template's
+        own placeholder.
         """
-        text = self.text
-        for key, value in values.items():
-            text = text.replace("{{ " + key + " }}", str(value))
-        leftover = re.findall(r"\{\{\s*(\w+)\s*\}\}", text)
-        if leftover:
-            raise LlmError(f"prompt {self.name!r} has unfilled placeholder(s): {leftover}")
+        missing: list[str] = []
+
+        def fill(match: re.Match[str]) -> str:
+            key = match.group(1)
+            if key in values:
+                return str(values[key])
+            missing.append(key)
+            return match.group(0)
+
+        text = _PLACEHOLDER_RE.sub(fill, self.text)
+        if missing:
+            raise LlmError(f"prompt {self.name!r} has unfilled placeholder(s): {missing}")
         return text
+
+
+# A placeholder in a prompt file. Matched in the template only, never in what
+# is substituted into it.
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*(\w+)\s*\}\}")
 
 
 _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?(.*)\Z", re.DOTALL)
@@ -696,10 +719,15 @@ def _identifiers(exc: Exception) -> str:
 def safe_reason(exc: BaseException) -> str:
     """What a log line or a failure record may say about any exception.
 
-    An `LlmError` is built by `_classify` from status, code and request id
-    only, so its text is safe to repeat. Anything else is named by class: its
-    message is unknown text, and the exceptions that reach a catch-all around a
-    model call are exactly the ones nobody classified.
+    An `LlmError`'s text is repeated, because every one is raised in this
+    module from application-owned values: `_classify` uses status, error code
+    and request id; `Prompt.render` names the template's own missing
+    placeholders, never anything substituted into it; the rest name a prompt
+    path, a model or an attempt count. That provenance is what makes this safe,
+    not the class — a new `LlmError` built from a response body, a note or a
+    transcript would break it. Anything else is named by class: its message is
+    unknown text, and the exceptions that reach a catch-all around a model call
+    are exactly the ones nobody classified.
     """
     if isinstance(exc, LlmError):
         return " ".join(str(exc).split())

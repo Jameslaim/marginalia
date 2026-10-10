@@ -27,6 +27,7 @@ from marginalia.llm import (
     LlmRateLimited,
     LlmError,
     LlmUnavailable,
+    Prompt,
     RateLimiter,
     batched,
     load_prompt,
@@ -1013,3 +1014,77 @@ def test_a_failed_answer_saves_no_provider_text(tmp_path) -> None:
         assert answer.failed
         assert _MARKER not in answer.text
         assert _MARKER not in render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+
+# -- source values are inert ----------------------------------------------------
+#
+# `render` replaced placeholders one at a time and then scanned the whole result,
+# inserted values included, for anything shaped like a placeholder. A note that
+# quoted `{{ name }}` (2 of 719 archived notes do) failed every answer that loaded
+# it before any model call, and the source text came back out in the error;
+# and a value containing `{{ other }}` was rewritten by the next replacement.
+
+_TOKEN = "{{ zqsourcetokenqz }}"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        _TOKEN,
+        "{{zqsourcetokenqz}} and {{ topic }} and {{ count }}",
+        'JSON {"a": {"b": [1, 2]}} and {{ "quoted" }}',
+        "line one\nline two\r\n\ttabbed",
+        r"back\slash \1 \g<0> \g<topic> $1 \n",
+        "Unicode — café, 日本語, العربية, 🙂",
+        "",
+    ],
+    ids=["template-token", "other-placeholders", "json", "newlines", "regex-escapes", "unicode", "empty"],
+)
+def test_an_inserted_value_is_preserved_exactly(value) -> None:
+    prompt = Prompt(name="p", version="1", text="A {{ topic }} B {{ count }} C")
+
+    assert prompt.render(topic=value, count=7) == f"A {value} B 7 C"
+
+
+def test_a_value_is_never_reinterpreted_by_a_later_placeholder() -> None:
+    prompt = Prompt(
+        name="p", version="1", text="Q: {{ question }}\nN: {{ notes }}\nE: {{ escalation }}"
+    )
+
+    rendered = prompt.render(
+        question="ask about {{ notes }}", notes="a note {{ escalation }}", escalation="ESC"
+    )
+
+    assert rendered == "Q: ask about {{ notes }}\nN: a note {{ escalation }}\nE: ESC"
+
+
+def test_a_missing_template_placeholder_names_only_the_template() -> None:
+    prompt = Prompt(name="p", version="1", text="{{ topic }} then {{ brief }} then {{ brief }}")
+
+    with pytest.raises(LlmError) as caught:
+        prompt.render(topic=f"a source value carrying {_TOKEN}")
+
+    message = str(caught.value)
+    assert "'brief'" in message and "'p'" in message
+    assert "zqsourcetokenqz" not in message
+
+
+def test_every_prompt_file_renders_as_it_did_before_with_ordinary_values() -> None:
+    """Compatibility: for values with no braces in them, the one-pass renderer
+    produces exactly what sequential replacement did, for every prompt."""
+    import re as _re
+
+    names = sorted(
+        str(path.relative_to(prompts_dir()).with_suffix("")).replace("\\", "/")
+        for path in prompts_dir().rglob("*.md")
+    )
+    assert names, "the prompt directory was found"
+    for name in names:
+        prompt = load_prompt(name)
+        keys = sorted(set(_re.findall(r"\{\{\s*(\w+)\s*\}\}", prompt.text)))
+        values = {key: f"value of {key}\nwith a second line" for key in keys}
+        expected = prompt.text
+        for key, value in values.items():
+            expected = expected.replace("{{ " + key + " }}", value)
+
+        assert prompt.render(**values) == expected, name

@@ -1068,3 +1068,88 @@ def test_a_failed_stage_two_call_logs_no_provider_text(tmp_path, caplog) -> None
     assert marker not in caplog.text
     assert marker not in verdict.reason
     assert "RuntimeError" in caplog.text, "the classification is still logged"
+
+
+# -- template-shaped source text reaches the model, unchanged -------------------
+#
+# The renderer used to scan inserted values for `{{ name }}` and refuse the
+# request. Every stage that renders source text is checked here: stage 2 (the
+# transcript), stage 1 (a description), the brief (the topic) and query
+# expansion (the brief).
+
+_SOURCE = r'uses {{ zqsourcetokenqz }} and {"json": {{ 1 }}} with \1 and \g<0>'
+
+
+def _recording_judge(*texts):
+    from conftest import make_llm_config
+
+    script = list(texts)
+    sent: list[str] = []
+
+    def transport(**kwargs):
+        sent.append(kwargs["messages"][1]["content"])
+        return _BriefResponse(script.pop(0))
+
+    return Judge(LlmClient(make_llm_config(), transport=transport, sleep=lambda _: None)), sent
+
+
+def _candidate(description: str = ""):
+    from marginalia.contracts import SearchResult
+
+    return SearchResult(
+        video_id=VIDEO, title="t", channel="c", description=description, duration_s=60,
+        published_at="20260101", view_count=None,
+    )
+
+
+def _brief():
+    from marginalia.contracts import Brief
+
+    return Brief(topic="prompt caching", text=_DRAFT, version="1/1")
+
+
+def test_stage_two_judges_a_transcript_that_quotes_template_syntax(caplog) -> None:
+    judge, sent = _recording_judge(reply())
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        verdict = judge.judge_full(_brief(), _candidate(), transcript=f"[00:00:01] {_SOURCE}")
+
+    assert verdict.judged is True and verdict.verdict == VERDICT_YES
+    assert len(sent) == 1 and _SOURCE in sent[0], "sent to the model exactly as stored"
+    assert "zqsourcetokenqz" not in caplog.text
+
+
+def test_stage_one_judges_a_description_that_quotes_template_syntax(caplog) -> None:
+    judge, sent = _recording_judge("1: YES - on topic")
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        verdicts = judge.judge_metadata(_brief(), [_candidate(_SOURCE)], batch_size=10)
+
+    assert [v.verdict for v in verdicts] == [VERDICT_YES], "the model's verdict, not a failed batch"
+    assert len(sent) == 1 and _SOURCE in sent[0]
+    assert "zqsourcetokenqz" not in caplog.text
+
+
+def test_a_brief_is_written_for_a_topic_that_quotes_template_syntax(caplog) -> None:
+    judge, sent = _recording_judge(_DRAFT, _DRAFT)
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        brief = judge.write_brief(_SOURCE)
+
+    assert brief.text == _DRAFT.strip()
+    assert len(sent) == 2 and all(_SOURCE in request for request in sent)
+    assert "zqsourcetokenqz" not in caplog.text
+
+
+def test_queries_are_expanded_from_a_brief_that_quotes_template_syntax(caplog) -> None:
+    from marginalia.contracts import Brief
+
+    judge, sent = _recording_judge("first query\nsecond query")
+    brief = Brief(topic="t", text=f"{_DRAFT}\n{_SOURCE}", version="1/1")
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        queries = judge.expand_queries(brief, count=2, concepts=[_SOURCE])
+
+    assert queries == ["first query", "second query"]
+    assert len(sent) == 1 and sent[0].count(_SOURCE) == 2, "the brief and the concept, once each"
+    assert "zqsourcetokenqz" not in caplog.text

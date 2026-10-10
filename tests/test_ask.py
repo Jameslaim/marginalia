@@ -1669,3 +1669,38 @@ def test_a_near_exact_quote_among_decoys_is_loose_not_unverified(tmp_path):
 
     flagged = list(grounding.unverified_speech) + list(grounding.unverified_phrases)
     assert [entry.loose for entry in flagged] == [True]
+
+
+# -- a note that quotes template syntax --------------------------------------
+#
+# The renderer scanned inserted notes for `{{ name }}` and refused the request:
+# the answer failed before any model call, and the note's text came back out in
+# the failure text and the saved answer record.
+
+_TEMPLATED = r'the view renders {{ zqsourcetokenqz }}, {"a": {"b": 1}}, \1 and \g<0>'
+
+
+def test_a_note_quoting_template_syntax_is_answered_from(tmp_path, caplog):
+    config, library = build(tmp_path, {A: f"## Claims\n- {_TEMPLATED}\n", B: "note B"})
+    spoken = client(["An answer."])
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        answer = answer_question(config, library, spoken, "q")
+
+    assert answer.failed is False and answer.text == "An answer."
+    assert len(spoken.sent) == 1
+    assert _TEMPLATED in spoken.sent[0]["messages"][1]["content"], "the note, exactly as stored"
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+    assert "zqsourcetokenqz" not in rendered
+    assert "zqsourcetokenqz" not in caplog.text
+
+
+def test_a_question_naming_a_placeholder_is_not_expanded(tmp_path):
+    config, library = build(tmp_path, {A: "a note qqsentinelqq"})
+    spoken = client(["An answer."])
+
+    answer_question(config, library, spoken, "what does {{ notes }} mean in {{ escalation }}?")
+
+    request = spoken.sent[0]["messages"][1]["content"]
+    assert "what does {{ notes }} mean in {{ escalation }}?" in request
+    assert request.count("qqsentinelqq") == 1, "the notes appear once, where the template puts them"
