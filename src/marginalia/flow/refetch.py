@@ -30,6 +30,8 @@ from typing import Callable
 
 from ..config import Config
 from ..contracts import (
+    ACQUIRE_FAILED_PERMANENT,
+    ACQUIRE_NO_CAPTIONS,
     GONE,
     NO_CAPTIONS,
     RECOVERED,
@@ -39,12 +41,10 @@ from ..contracts import (
     STOP_THROTTLED,
     RefetchResult,
     RefetchRun,
-    SearchResult,
 )
 from ..core.ledger import Ledger
 from ..core.library import Library
-from ..providers import get_provider
-from ..providers.base import PermanentError, TransientError
+from .acquire import acquire, transcript_providers
 from .store import reconcile_stored, store_transcript
 
 log = logging.getLogger(__name__)
@@ -88,7 +88,10 @@ def refetch(
         return run
 
     pause = sleep or time.sleep
-    provider = get_provider(config.transcript_order[0])
+    # The whole configured chain, as ingest and discovery use it. This used to
+    # be `transcript_order[0]` alone, so a second provider added for exactly
+    # these failures was never asked.
+    providers = transcript_providers(config)
     delay = config.discover.fetch_delay_s
     streak = 0
 
@@ -102,10 +105,14 @@ def refetch(
                 # heard. Fetching again could only hit the immutable file.
                 result, outcome, detail = None, RECOVERED, "already on disk; row recorded"
             else:
-                result, outcome, detail = _try(ledger, provider, row.video_id)
-
-            if outcome == RECOVERED and result is not None:
-                _store(library, ledger, config, provider, row.video_id, result)
+                acquisition = acquire(ledger, row.video_id, providers)
+                outcome, detail = _outcome(acquisition)
+                if acquisition.acquired:
+                    assert acquisition.result is not None
+                    store_transcript(
+                        library, ledger, row.video_id, acquisition.result,
+                        provider=acquisition.provider or "unknown",
+                    )
 
             run.results.append(
                 RefetchResult(
@@ -136,30 +143,17 @@ def refetch(
     return run
 
 
-def _try(ledger: Ledger, provider, video_id: str):
-    """One fetch, with the ledger row written before it. Rule 6."""
-    ledger.mark_pending(video_id)
-    try:
-        result = provider.fetch(video_id)
-    except PermanentError as exc:
-        # The only place this run may condemn a video, and it is the provider's
-        # claim rather than ours: deleted, private, region-locked.
-        log.info("refetch: %s is permanently unavailable (%s)", video_id, exc)
-        ledger.mark_failed(video_id, "permanent", provider=provider.name)
-        return None, GONE, str(exc)[:120]
-    except TransientError as exc:
-        log.info("refetch: %s failed again (%s)", video_id, exc)
-        ledger.mark_failed(video_id, "transient", provider=provider.name)
-        return None, STILL_FAILING, str(exc)[:120]
+def _outcome(acquisition) -> tuple[str, str]:
+    """Refetch's four words for the shared acquisition outcomes.
 
-    if result is None:
-        # Not a failure — a route. The fetch worked and the video has no
-        # captions, which is M4's queue rather than this one's.
-        ledger.mark_needs_asr(video_id, provider=provider.name)
-        return None, NO_CAPTIONS, "no caption track"
-    return result, RECOVERED, ""
-
-
-def _store(library: Library, ledger: Ledger, config: Config, provider, video_id: str, result):
-    """The one store path, with refetch's provenance. See `flow/store.py`."""
-    store_transcript(library, ledger, video_id, result, provider=config.transcript_order[0])
+    The only place this run may condemn a video is a provider's own permanent
+    claim — deleted, private, region-locked — and that is `acquire`'s call.
+    No captions is a route (M4's queue), not a failure.
+    """
+    if acquisition.acquired:
+        return RECOVERED, ""
+    if acquisition.outcome == ACQUIRE_FAILED_PERMANENT:
+        return GONE, acquisition.detail[:120]
+    if acquisition.outcome == ACQUIRE_NO_CAPTIONS:
+        return NO_CAPTIONS, "no caption track"
+    return STILL_FAILING, acquisition.detail[:120]

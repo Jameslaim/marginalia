@@ -1117,7 +1117,9 @@ class Ledger:
             rows = [row for row in rows if not row.note_is_current(version)]
         return rows[:limit] if limit is not None else rows
 
-    def videos_to_refetch(self, *, limit: int | None = None) -> list[VideoRow]:
+    def videos_to_refetch(
+        self, *, limit: int | None = None, stale_after_s: float = 600.0
+    ) -> list[VideoRow]:
         """Transient failures, the known-wanted ones first.
 
         **Ordering is the whole of the policy here.** A video some run judged
@@ -1131,8 +1133,20 @@ class Ledger:
         video is gone, and re-asking about it is how a rule-8 error gets made
         twice: nothing here promotes a transient failure to permanent, so this
         list can only shrink by videos actually coming back.
+
+        **And `pending` rows older than ``stale_after_s``.** `pending` means a
+        fetch started and did not finish (rule 6) — an interrupt, a crash, a
+        killed process. That is the most retryable state there is, and nothing
+        read it back: refetch took only `failed/transient`, so an interrupted
+        fetch was stranded until someone re-ingested the video by hand. The age
+        floor keeps a refetch from racing a fetch another process is making
+        right now.
         """
         rows = [row for row in self.list_by_status(STATUS_FAILED) if row.fail_kind == FAIL_TRANSIENT]
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=stale_after_s)).isoformat(
+            timespec="seconds"
+        )
+        rows += [row for row in self.list_by_status(STATUS_PENDING) if row.last_updated <= cutoff]
         wanted = {
             row.video_id
             for row in rows

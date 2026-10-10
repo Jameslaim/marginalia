@@ -79,7 +79,8 @@ def root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 @pytest.fixture()
 def fake_provider(monkeypatch: pytest.MonkeyPatch) -> FakeProvider:
     provider = FakeProvider(_result())
-    monkeypatch.setattr(cli, "get_provider", lambda _name: provider)
+    # Ingest resolves its providers through the shared acquisition path now.
+    monkeypatch.setattr("marginalia.flow.acquire.get_provider", lambda _name: provider)
     return provider
 
 

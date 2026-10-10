@@ -84,12 +84,14 @@ def build(tmp_path: Path, failed, wanted=()):
 def run(config, ledger, library, provider, **kwargs):
     import marginalia.flow.refetch as module
 
-    original = module.get_provider
-    module.get_provider = lambda _name: provider
+    # The seam is the resolved provider chain (`flow/acquire.py`), which refetch
+    # now shares with ingest and discovery.
+    original = module.transcript_providers
+    module.transcript_providers = lambda _config: [provider]
     try:
         return refetch(config, ledger, library, sleep=lambda _: None, **kwargs)
     finally:
-        module.get_provider = original
+        module.transcript_providers = original
 
 
 def test_a_dry_run_lists_wanted_first_and_touches_nothing(tmp_path):

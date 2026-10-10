@@ -64,8 +64,10 @@ from ..contracts import (
     NEW,
     ORIGIN_BRIEF,
     ORIGIN_THREAD,
+    ACQUIRE_NO_CAPTIONS,
     RECOMMEND_STOP,
     REJECTED,
+    STATUS_FAILED,
     STORED_THIS_RUN,
     VERDICT_MAYBE,
     VERDICT_NO,
@@ -79,11 +81,11 @@ from ..contracts import (
     SearchFilters,
     SearchResult,
     TranscriptResult,
+    Acquisition,
 )
 from ..core.ids import extract_video_id
 from ..core.ledger import (
     FAIL_PERMANENT,
-    FAIL_TRANSIENT,
     STAGE_FULL,
     STAGE_METADATA,
     Ledger,
@@ -94,8 +96,9 @@ from ..core.ledger import now as ledger_now
 from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
 from ..core.library import Library, format_timestamp, render_transcript
 from ..llm import LlmClient
-from ..providers import PermanentError, TransientError, get_provider
+from ..providers import PermanentError, TransientError
 from ..providers.base import TranscriptProvider
+from .acquire import acquire, transcript_providers
 from .search import quota_headroom, run_search
 from .store import reconcile_stored, store_transcript
 
@@ -162,6 +165,9 @@ def discover(
     max_requests = max_requests if max_requests is not None else limits.max_requests
 
     normalised = normalise_topic(topic)
+    # Resolved before anything is written: a provider name the registry does
+    # not know is a configuration error, not a fact about the first video.
+    providers = [provider] if provider is not None else transcript_providers(config)
     judge = judge or Judge(client)
     mapper = mapper or Mapper(client)
     planner = planner or Planner(client)
@@ -220,7 +226,7 @@ def discover(
 
     try:
         _loop(
-            config, ledger, library, client, judge, planner, run, provider,
+            config, ledger, library, client, judge, planner, run, providers,
             max_rounds=max_rounds, max_videos=max_videos, max_requests=max_requests,
         )
     finally:
@@ -249,7 +255,7 @@ def _loop(
     judge: Judge,
     planner: Planner,
     run: DiscoverRun,
-    provider: TranscriptProvider | None,
+    providers: Sequence[TranscriptProvider],
     *,
     max_rounds: int,
     max_videos: int,
@@ -333,7 +339,7 @@ def _loop(
             return
 
         threads = _judge_round(
-            config, ledger, library, client, judge, run, report, candidates, provider,
+            config, ledger, library, client, judge, run, report, candidates, providers,
             max_videos=max_videos, max_requests=max_requests,
         )
         # Recorded on the round that *produced* them, so a later reader can ask
@@ -767,7 +773,7 @@ def _judge_round(
     run: DiscoverRun,
     report: RoundReport,
     candidates: Sequence[SearchResult],
-    provider: TranscriptProvider | None,
+    providers: Sequence[TranscriptProvider],
     *,
     max_videos: int,
     max_requests: int,
@@ -786,6 +792,14 @@ def _judge_round(
     held: list[SearchResult] = []
     to_screen: list[SearchResult] = []
     for candidate in candidates:
+        row = ledger.get(candidate.video_id)
+        if row is not None and row.status == STATUS_FAILED and row.fail_kind == FAIL_PERMANENT:
+            # The provider said this video is gone — deleted, private,
+            # members-only. Ingest has always honoured that (`skip_reason`);
+            # discovery screened it, fetched it again and counted another
+            # failure every round it resurfaced in search results.
+            report.unavailable += 1
+            continue
         if not library.has_transcript(candidate.video_id):
             to_screen.append(candidate)
         elif judged_for_topic(
@@ -914,10 +928,17 @@ def _judge_round(
         else:
             _pace(config, fetched_any)
             fetched_any = True
-            fetched = _fetch(ledger, candidate.video_id, provider, config)
-            if fetched is None:
+            acquisition = acquire(ledger, candidate.video_id, providers)
+            if acquisition.outcome == ACQUIRE_NO_CAPTIONS:
+                # A route, not a failure — counted as one in discovery alone,
+                # so a round with captionless videos reported fetch failures.
+                report.no_captions += 1
+                continue
+            if not acquisition.acquired:
                 report.failed += 1
                 continue
+            fetched = acquisition.result
+            assert fetched is not None
 
             # **Stored before it is judged.** Rule 12 stores the transcript
             # whatever stage 2 says, so nothing about storing waits on the
@@ -925,7 +946,7 @@ def _judge_round(
             # rejected key, an interrupt) leaves the bytes on disk and the row
             # `has_transcript`, instead of a fetched transcript lost with the
             # process. The next run then judges it from disk, above.
-            _store(library, ledger, candidate, fetched, config)
+            _store(library, ledger, candidate, acquisition)
             material = _Material(
                 text=_transcript_text(fetched),
                 chapters=[chapter.get("title", "") for chapter in fetched.chapters][:12],
@@ -1141,43 +1162,21 @@ def _held_material(library: Library, ledger: Ledger, video_id: str) -> _Material
     )
 
 
-def _fetch(
-    ledger: Ledger, video_id: str, provider: TranscriptProvider | None, config: Config
-) -> TranscriptResult | None:
-    """Fetch a transcript, ledger row first. Returns None on any non-result."""
-    provider = provider or get_provider(config.transcript_order[0])
-    ledger.mark_pending(video_id)
-    try:
-        result = provider.fetch(video_id)
-    except PermanentError as exc:
-        log.info("discover: %s permanently unavailable (%s)", video_id, exc)
-        ledger.mark_failed(video_id, FAIL_PERMANENT, provider=provider.name)
-        return None
-    except TransientError as exc:
-        log.info("discover: %s failed transiently (%s)", video_id, exc)
-        ledger.mark_failed(video_id, FAIL_TRANSIENT, provider=provider.name)
-        return None
-
-    if result is None:
-        # No captions is a route, not a failure. M4 picks these up.
-        ledger.mark_needs_asr(video_id, provider=provider.name)
-        return None
-    return result
-
-
 def _store(
     library: Library,
     ledger: Ledger,
     candidate: SearchResult,
-    result: TranscriptResult,
-    config: Config,
+    acquisition: Acquisition,
 ) -> None:
+    """The one store path, with the provenance of the provider that answered —
+    not `transcript_order[0]`, which this used to record whoever fetched."""
+    assert acquisition.result is not None
     store_transcript(
         library,
         ledger,
         candidate.video_id,
-        result,
-        provider=config.transcript_order[0],
+        acquisition.result,
+        provider=acquisition.provider or "unknown",
         title=candidate.title,
         channel=candidate.channel,
     )

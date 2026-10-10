@@ -38,6 +38,9 @@ from typing import Any, Sequence
 from . import __version__
 from .config import Config, ConfigError, library_root, load_config
 from .contracts import (
+    ACQUIRE_FAILED_PERMANENT,
+    ACQUIRE_FAILED_TRANSIENT,
+    ACQUIRE_NO_CAPTIONS,
     GONE,
     NO_CAPTIONS,
     RECOVERED,
@@ -71,6 +74,7 @@ from .contracts import (
     VideoRow,
 )
 from .core.ids import extract_video_id, is_video_id
+from .flow.acquire import acquire, transcript_providers
 from .flow.discover import discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
@@ -91,7 +95,7 @@ from .ask import (
     render_links,
 )
 from .enrich.timestamps import snap_library
-from .providers import PermanentError, TransientError, get_provider
+from .providers import PermanentError
 from .providers.base import TranscriptProvider
 from .flow.search import run_search
 
@@ -202,36 +206,54 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
         if reconcile_stored(library, ledger, video_id):
             _report("reconciled", video_id, "transcript was on disk; ledger row recorded")
             return EXIT_OK
-        reason = skip_reason(
-            existing, transcript_present=library.has_transcript(video_id)
-        )
+        held = library.has_transcript(video_id)
+        if existing is None and held:
+            # Bytes on disk that no row records: written without the CLI (rule
+            # 2). Fetching could only collide with the immutable file — it used
+            # to make the network call anyway, then die on `FileExistsError` and
+            # leave a `pending` row behind. Adopting the file silently would
+            # launder the violation into the ledger, so it is reported instead.
+            return _error(
+                f"{video_id}: transcript.txt is on disk with no ledger row (written "
+                "without the CLI); nothing was fetched — see `marg doctor`",
+                EXIT_FAILED,
+            )
+        reason = skip_reason(existing, transcript_present=held)
         if reason is not None:
             _report("skipped", video_id, reason)
             return EXIT_OK
         if existing is not None:
             log.info("re-attempting %s (ledger status %s)", video_id, existing.status)
 
-        # Ledger row before the network call, always. A crash after this point
-        # leaves `pending`, which is exactly what the next run needs to know.
-        row = ledger.mark_pending(video_id)
+        # Resolved before the row is written: an unknown provider name is a
+        # configuration error. It used to be recorded as the video's own
+        # permanent failure, and fixing the typo then skipped it forever.
+        providers = transcript_providers(config)
+        # Ledger row before the network call, always (inside `acquire`). A
+        # crash after that point leaves `pending`, which is exactly what the
+        # next run needs to know.
+        acquisition = acquire(ledger, video_id, providers)
+        row = ledger.get(video_id)  # `acquire` wrote it before fetching
+        attempts = row.attempts if row is not None else 1
 
-        provider, result, failure = _fetch(config, video_id)
-
-        if failure is not None:
-            kind, message = failure
-            ledger.mark_failed(video_id, kind, provider=provider.name if provider else None)
-            _report("failed", video_id, f"{kind}: {message} (attempt {row.attempts})")
+        if acquisition.outcome in (ACQUIRE_FAILED_PERMANENT, ACQUIRE_FAILED_TRANSIENT):
+            kind = FAIL_PERMANENT if acquisition.outcome == ACQUIRE_FAILED_PERMANENT else FAIL_TRANSIENT
+            _report("failed", video_id, f"{kind}: {acquisition.detail} (attempt {attempts})")
             return EXIT_FAILED
 
-        if result is None:
-            ledger.mark_needs_asr(video_id, provider=provider.name if provider else None)
-            title = _title_of(_metadata(provider, video_id))
+        if acquisition.outcome == ACQUIRE_NO_CAPTIONS:
+            answering = next(
+                (p for p in providers if p.name == acquisition.provider), providers[0]
+            )
+            title = _title_of(_metadata(answering, video_id))
             _report("needs-asr", video_id, _quoted(title), "no captions available")
             return EXIT_OK
 
-        assert provider is not None
+        result = acquisition.result
+        assert result is not None
         count, _digest = store_transcript(
-            library, ledger, video_id, result, provider=provider.name, original_url=args.url
+            library, ledger, video_id, result,
+            provider=acquisition.provider or "unknown", original_url=args.url,
         )
         _report(
             "has-transcript",
@@ -367,6 +389,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         notes = [
             (report.failed, "fetch failed"),
             (report.no_captions, "no captions, sent to ASR"),
+            (report.unavailable, "already recorded as unavailable, skipped"),
             (report.already_held, "already on disk"),
             # Of those, the ones read from disk because nothing had judged them
             # for this topic. A verdict happened; a download did not.
@@ -675,6 +698,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "unjudged": report.unjudged,
                 "uncertain": report.uncertain,
                 "no_captions": report.no_captions,
+                "unavailable": report.unavailable,
                 "degraded": report.degraded,
                 "too_long_to_note": report.too_long_to_note,
                 "unparsed": report.unparsed,
@@ -1451,41 +1475,6 @@ def _comparable(path: Path) -> str:
 
 
 # -- ingest helpers --------------------------------------------------------
-
-
-def _fetch(
-    config: Config, video_id: str
-) -> tuple[TranscriptProvider | None, TranscriptResult | None, tuple[str, str] | None]:
-    """Try each configured provider in order.
-
-    Returns ``(provider, result, failure)``. ``result is None`` with no failure
-    means no captions exist — the needs_asr route, not an error. A transient
-    failure outranks "no captions": if any provider errored we do not yet know
-    that captions are absent, so the video stays retryable.
-    """
-    provider: TranscriptProvider | None = None
-    last_failure: tuple[str, str] | None = None
-
-    for name in config.transcript_order:
-        try:
-            provider = get_provider(name)
-        except KeyError:
-            return None, None, (FAIL_PERMANENT, f"unknown provider {name!r}")
-
-        try:
-            result = provider.fetch(video_id)
-        except PermanentError as exc:
-            return provider, None, (FAIL_PERMANENT, str(exc))
-        except TransientError as exc:
-            log.info("provider %s failed transiently: %s", name, exc)
-            last_failure = (FAIL_TRANSIENT, str(exc))
-            continue
-
-        if result is not None:
-            return provider, result, None
-        log.info("provider %s reports no captions for %s", name, video_id)
-
-    return provider, None, last_failure
 
 
 def _metadata(provider: TranscriptProvider | None, video_id: str) -> dict[str, Any] | None:

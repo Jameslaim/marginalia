@@ -2209,9 +2209,13 @@ def test_a_provider_that_reports_no_channel_id_does_not_erase_one(
     )
     ledger.mark_pending("aaaaaaaaaaa")
 
+    from marginalia.contracts import ACQUIRED, Acquisition
     from marginalia.flow import discover as flow
 
-    flow._store(library, ledger, result("aaaaaaaaaaa"), transcript_without_channel(), config)
+    flow._store(
+        library, ledger, result("aaaaaaaaaaa"),
+        Acquisition(ACQUIRED, result=transcript_without_channel(), provider="ytdlp"),
+    )
 
     assert ledger.get("aaaaaaaaaaa").channel_id == "UCearlier"
 
@@ -3219,3 +3223,50 @@ def test_three_long_transcripts_in_a_row_do_not_end_the_run(
     assert judge.opening_calls == ids, "every video reached stage 2"
     assert outcome.rounds[0].unjudged == 4
     assert outcome.stopped_because != "incomplete"
+
+
+# -- acquisition through discovery ----------------------------------------------
+
+
+def test_a_captionless_video_is_counted_as_a_route_not_a_failure(
+    config, ledger, library, client, searches
+) -> None:
+    """R1 probe P3: `needs_asr, failed=1, no_captions=0`. The planner read a
+    round with captionless videos as a round of fetch failures."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts(missing=("aaaaaaaaaaa",))
+
+    outcome = run(config, ledger, library, client, FakeJudge(), provider=provider, max_rounds=1)
+
+    assert (outcome.rounds[0].no_captions, outcome.rounds[0].failed) == (1, 0)
+
+
+def test_a_video_already_recorded_as_gone_is_not_screened_or_fetched(
+    config, ledger, library, client, searches
+) -> None:
+    """Ingest has always honoured a provider's permanent claim; discovery
+    screened, fetched and counted a fresh failure every round."""
+    from marginalia.core.ledger import FAIL_PERMANENT
+
+    ledger.mark_pending("aaaaaaaaaaa")
+    ledger.mark_failed("aaaaaaaaaaa", FAIL_PERMANENT)
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+    judge = FakeJudge()
+
+    outcome = run(config, ledger, library, client, judge, provider=provider, max_rounds=1)
+
+    assert provider.fetched == [] and judge.batch_sizes == []
+    assert (outcome.rounds[0].unavailable, outcome.rounds[0].failed) == (1, 0)
+
+
+def test_discovery_records_the_provider_that_answered(
+    config, ledger, library, client, searches
+) -> None:
+    """It recorded `transcript_order[0]` whichever provider fetched."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert ledger.get("aaaaaaaaaaa").provider == FakeTranscripts.name
+    assert library.read_meta("aaaaaaaaaaa")["provider"] == FakeTranscripts.name

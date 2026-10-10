@@ -1362,6 +1362,9 @@ class RoundReport:
     # counter because "nothing decided" and "decided it was unsure" are two
     # findings, and a MAYBE used to be counted as a YES under neither.
     uncertain: int = 0
+    # Candidates the ledger already records as permanently unavailable, skipped
+    # before stage 1. Not a fetch failure — no fetch was made.
+    unavailable: int = 0
     # Kept, but stage 2 could not read the transcript well enough to be sure.
     # Not a rejection and not a clean keep — and it suppresses the note, which
     # is a consequence nobody should have to infer from a silent counter.
