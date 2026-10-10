@@ -45,6 +45,7 @@ from .contracts import (
     NO_CAPTIONS,
     RECOVERED,
     STILL_FAILING,
+    STOP_REFUSED,
     STOP_THROTTLED,
     FAILED,
     HARD_FILTERS,
@@ -830,6 +831,12 @@ def _cmd_note(args: argparse.Namespace) -> int:
             f"{sum(r.verbatim_unfound for r in run.results)} of {checked} verbatim "
             f"quote(s) not found in the transcript, marked in the note"
         )
+    # A refusal stopped the drain before it reached the rest of the queue, and
+    # it records no result for the video it was on (rule 24) — so `failed`
+    # stays 0 and this used to exit 0, which a script reads as "every note is
+    # written". The refusal is the user's to fix, and the exit code says so.
+    if run.stopped_because == STOP_REFUSED:
+        return EXIT_FAILED
     return EXIT_FAILED if run.count(FAILED) else EXIT_OK
 
 

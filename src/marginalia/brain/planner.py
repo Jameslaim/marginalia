@@ -61,7 +61,7 @@ from ..contracts import (
     TerritoryMap,
     TerritoryRevision,
 )
-from ..llm import LlmClient, Prompt, load_prompt, safe_reason
+from ..llm import LlmClient, LlmConfigError, Prompt, load_prompt, safe_reason
 from .territory import parse_filters, tidy, validate
 
 log = logging.getLogger(__name__)
@@ -745,6 +745,8 @@ class Planner:
                 task="assess_library",
                 max_tokens=max_tokens,
             )
+        except LlmConfigError:
+            raise  # a refusal, not a failed assessment — rule 24
         except Exception as exc:  # noqa: BLE001 - must not end the run
             log.warning(
                 "planner: library assessment failed (%s) — assuming nothing is covered",
@@ -831,6 +833,8 @@ class Planner:
                 # 68% of its ceiling, and a truncated plan is discarded whole.
                 max_tokens=max_tokens,
             )
+        except LlmConfigError:
+            raise  # a refusal, not a failed plan — rule 24
         except Exception as exc:  # noqa: BLE001 - a failed plan must not end the run
             log.warning(
                 "planner: call failed (%s) — the round falls back to expansion", safe_reason(exc)

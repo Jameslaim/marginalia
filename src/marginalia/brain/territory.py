@@ -58,7 +58,7 @@ from ..contracts import (
     TerritoryMap,
     Usage,
 )
-from ..llm import LlmClient, Prompt, load_prompt, safe_reason
+from ..llm import LlmClient, LlmConfigError, Prompt, load_prompt, safe_reason
 
 log = logging.getLogger(__name__)
 
@@ -1075,6 +1075,13 @@ class Mapper:
                 # so the ceiling is what was left to raise.
                 max_tokens=max_tokens,
             )
+        except LlmConfigError:
+            # A refusal — a 402, a rejected key, an hour-long rate limit — is
+            # not a failed map. Every later call fails identically, and
+            # swallowing it here spent the other two samples on the same
+            # refusal, stored "mapping call failed" against the map, and let
+            # the run die one call later as `incomplete` (rule 24).
+            raise
         except Exception as exc:  # noqa: BLE001 - a failed map must not end the run
             log.warning(
                 "territory: mapping call failed (%s) — searching from the brief alone",

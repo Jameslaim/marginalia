@@ -66,6 +66,7 @@ from ..contracts import (
     ORIGIN_THREAD,
     ACQUIRE_NO_CAPTIONS,
     RECOMMEND_STOP,
+    STOP_REFUSED,
     REJECTED,
     STATUS_FAILED,
     STORED_THIS_RUN,
@@ -95,7 +96,7 @@ from ..core.ledger import (
 from ..core.ledger import now as ledger_now
 from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
 from ..core.library import Library, format_timestamp, render_transcript
-from ..llm import LlmClient
+from ..llm import LlmClient, LlmConfigError
 from ..providers import PermanentError, TransientError
 from ..providers.base import TranscriptProvider
 from .acquire import acquire, transcript_providers
@@ -135,6 +136,7 @@ STOP_REASONS = (
     STOP_DRY_RUN,
     STOP_COVERAGE_SATISFIED,
     STOP_QUOTA,
+    STOP_REFUSED,
 )
 
 # Requests a round needs beyond judging: query expansion. Checked before the
@@ -195,40 +197,49 @@ def discover(
         dry_run=dry_run,
     )
 
-    # After the run row exists, so a crash mid-mapping leaves a run with no
-    # `finished_at` rather than nothing at all — the same ordering rule the
-    # brief follows, applied to the second thing that costs a request.
-    run.territory = mapper.map(
-        brief,
-        count=config.discover.territory_queries,
-        max_tokens=config.discover.territory_max_tokens,
-    )
-    ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
-
-    # What the library *already* answers, before a single search runs.
-    #
-    # The planner cannot see this any other way. Gate 1 drops videos that have
-    # notes before they become candidates, and the fetch-step disk check skips
-    # stored-but-unnoted ones — so neither reaches `report.kept`, and "no kept
-    # video covers X" has always meant "no video this run newly fetched covers
-    # X". Measured: a run called retrieval-scoring a gap while a note written
-    # the previous day gave the exact formula the gap asked for, and the next
-    # round spent five of six queries re-finding it.
-    #
-    # Skipped on a dry run and on an empty library — the first plans nothing,
-    # and the second has nothing to assess.
-    run.baseline = _assess_library(config, ledger, library, planner, run)
-    if run.territory.rejected:
-        log.info(
-            "discover: %d proposed filter(s) rejected before any search ran",
-            len(run.territory.rejected),
-        )
-
     try:
+        # After the run row exists, so a crash mid-mapping leaves a run on the
+        # ledger rather than nothing at all — the same ordering rule the brief
+        # follows, applied to the second thing that costs a request. Inside the
+        # `try`, so a refusal here is recorded as one rather than leaving the
+        # run unfinished as though the process had died.
+        run.territory = mapper.map(
+            brief,
+            count=config.discover.territory_queries,
+            max_tokens=config.discover.territory_max_tokens,
+        )
+        ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
+
+        # What the library *already* answers, before a single search runs.
+        #
+        # The planner cannot see this any other way. Gate 1 drops videos that
+        # have notes before they become candidates, and the fetch-step disk
+        # check skips stored-but-unnoted ones — so neither reaches
+        # `report.kept`, and "no kept video covers X" has always meant "no
+        # video this run newly fetched covers X". Measured: a run called
+        # retrieval-scoring a gap while a note written the previous day gave
+        # the exact formula the gap asked for, and the next round spent five of
+        # six queries re-finding it.
+        #
+        # Skipped on a dry run and on an empty library — the first plans
+        # nothing, and the second has nothing to assess.
+        run.baseline = _assess_library(config, ledger, library, planner, run)
+        if run.territory.rejected:
+            log.info(
+                "discover: %d proposed filter(s) rejected before any search ran",
+                len(run.territory.rejected),
+            )
+
         _loop(
             config, ledger, library, client, judge, planner, run, providers,
             max_rounds=max_rounds, max_videos=max_videos, max_requests=max_requests,
         )
+    except LlmConfigError:
+        # The provider refused — billing, a rejected key, a wait longer than the
+        # run. Its own stop reason, the note drain's word for the same thing:
+        # recorded as `incomplete` it read exactly like a crash.
+        run.stopped_because = STOP_REFUSED
+        raise
     finally:
         run.requests = client.usage.requests
         run.input_tokens = client.usage.input_tokens
