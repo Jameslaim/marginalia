@@ -138,20 +138,29 @@ class YtDlpProvider:
         with yt_dlp.YoutubeDL(self._options()) as ydl:
             info = self._extract(ydl, video_id)
 
-            track = self._select_track(info)
-            if track is None:
+            candidates = self._candidate_tracks(info)
+            if not candidates:
                 log.info("%s: no caption tracks available", video_id)
                 return None
 
-            language, kind, entry = track
-            try:
-                raw = ydl.urlopen(entry["url"]).read()
-            except Exception as exc:  # noqa: BLE001 - classified below
-                raise _classify(exc) from exc
+            # The preferred track first; the next only if that one parsed to
+            # nothing. A manual track that parsed to zero lines used to send the
+            # video to `needs_asr` — a queue with no worker — while a perfectly
+            # good automatic track sat beside it (R1 F2).
+            lines = []
+            for language, kind, entry in candidates:
+                try:
+                    raw = ydl.urlopen(entry["url"]).read()
+                except Exception as exc:  # noqa: BLE001 - classified below
+                    raise _classify(exc) from exc
+                lines = _parse_captions(entry.get("ext", ""), raw)
+                if lines:
+                    break
+                log.info(
+                    "%s: caption track %s/%s parsed to zero lines", video_id, kind, language
+                )
 
-        lines = _parse_captions(entry.get("ext", ""), raw)
         if not lines:
-            log.info("%s: caption track %s/%s parsed to zero lines", video_id, kind, language)
             return None
 
         return TranscriptResult(
@@ -211,10 +220,18 @@ class YtDlpProvider:
         self, info: dict[str, Any]
     ) -> tuple[str, str, dict[str, Any]] | None:
         """Pick (language, kind, format entry). Manual captions win over auto."""
-        hint = info.get("language")
-        manual = info.get("subtitles") or {}
-        automatic = info.get("automatic_captions") or {}
+        candidates = self._candidate_tracks(info)
+        return candidates[0] if candidates else None
 
+    def _candidate_tracks(self, info: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
+        """Every track worth trying, best first: the chosen manual track, then
+        the chosen automatic one. The preference order is unchanged; what is
+        new is that a second choice exists when the first parses to nothing."""
+        hint = info.get("language")
+        manual = _languages_only(info.get("subtitles") or {})
+        automatic = _languages_only(info.get("automatic_captions") or {})
+
+        found: list[tuple[str, str, dict[str, Any]]] = []
         for kind, table, allow_any in (
             ("manual", manual, True),
             ("auto", automatic, False),
@@ -225,8 +242,8 @@ class YtDlpProvider:
             entry = _pick_format(table.get(language) or [])
             if entry is None:
                 continue
-            return language, kind, entry
-        return None
+            found.append((language, kind, entry))
+        return found
 
     def _pick_language(
         self, table: dict[str, Any], hint: str | None, *, allow_any: bool
@@ -260,6 +277,16 @@ class YtDlpProvider:
 
 
 # -- parsing ---------------------------------------------------------------
+
+
+# Keys yt-dlp lists beside the caption languages that are not captions. A
+# livestream's chat replay sits in `subtitles` as `live_chat`, and as the only
+# "manual" entry it beat a real automatic track, then parsed to nothing (R1 F2).
+_NOT_A_LANGUAGE = frozenset({"live_chat", "rechat"})
+
+
+def _languages_only(table: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in table.items() if key not in _NOT_A_LANGUAGE}
 
 
 def _pick_format(entries: Iterable[dict[str, Any]]) -> dict[str, Any] | None:

@@ -123,7 +123,16 @@ def reconcile_stored(library: Library, ledger: Ledger, video_id: str) -> bool:
         return False
     digest = library.transcript_digest(video_id)
     meta = library.read_meta(video_id)
-    if meta is None:
+    if meta is None and library.meta_path(video_id).is_file():
+        # Present and unreadable — hand-edited, or cut off mid-write. It is
+        # left exactly as it is: it used to be overwritten with "unknown"
+        # provenance, destroying whatever it held, by the one command whose
+        # promise is that it only records what is already there.
+        log.warning(
+            "store: %s has a meta.json that could not be read; left untouched", video_id
+        )
+        meta = {}
+    elif meta is None:
         meta = {
             "video_id": video_id,
             "title": video_id,

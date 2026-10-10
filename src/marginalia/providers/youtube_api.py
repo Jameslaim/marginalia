@@ -66,13 +66,22 @@ _DURATION_RE = re.compile(
 
 # Google's error `reason` strings, and what each one means for the chain.
 # Falling through on the wrong one hides a mistake the user has to fix.
-_QUOTA_REASONS = frozenset({"quotaExceeded", "dailyLimitExceeded", "userRateLimitExceeded"})
-_TRANSIENT_REASONS = frozenset({"rateLimitExceeded", "backendError", "internalError"})
+_QUOTA_REASONS = frozenset({"quotaExceeded", "dailyLimitExceeded"})
+# `userRateLimitExceeded` is Google's *per-user rate* limit — a per-interval
+# ceiling that clears on its own — and it used to sit with the daily caps, so
+# one burst locked the API for the rest of the Pacific day and every later
+# search fell to the overflow provider, which applies no filters (R1 F8;
+# classification from Google's documented reason strings, not observed here).
+_TRANSIENT_REASONS = frozenset(
+    {"rateLimitExceeded", "userRateLimitExceeded", "backendError", "internalError"}
+)
 
 # Google's daily-cap message, e.g. "Quota exceeded for quota metric 'Search
 # Queries' and limit 'Search Queries per day'". Matched on the message because
-# the `reason` field does not distinguish it from ordinary throttling.
-_MENTIONS_DAILY_QUOTA = re.compile(r"quota exceeded|per day|daily limit", re.IGNORECASE)
+# the `reason` field does not distinguish it from ordinary throttling — and on
+# the *day*, not on "quota exceeded", which Google also writes for its
+# per-minute limits ("… limit 'Queries per minute per user'").
+_MENTIONS_DAILY_QUOTA = re.compile(r"per day|daily limit", re.IGNORECASE)
 
 
 class HttpStatusError(Exception):
