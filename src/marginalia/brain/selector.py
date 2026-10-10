@@ -125,12 +125,20 @@ def parse_selection(text: str, *, known: Sequence[str], most: int | None = None)
             problem="no DROPPED line",
         )
 
+    # Everything from the DROPPED label to the WHY line (or the end), not the
+    # label's own line: `\s*` after the colon swallowed the newline, so a list
+    # written one id per line dropped only its first id and still parsed clean
+    # (R2 F13) — a quota of five honoured as one, and the shortfall trimmed by
+    # position downstream.
+    why = _WHY_RE.search(text or "", body.start(1))
+    listed = (text or "")[body.start(1) : why.start() if why else None]
+
     offered = set(known)
     named: list[str] = []
-    for video_id in _ID_RE.findall(body.group(1)):
+    for video_id in _ID_RE.findall(listed):
         if video_id in offered and video_id not in named:
             named.append(video_id)
-    unknown = len({v for v in _ID_RE.findall(body.group(1))}) - len(named)
+    unknown = len({v for v in _ID_RE.findall(listed)}) - len(named)
 
     why = _WHY_RE.search(text or "")
     reason = " ".join((why.group(1) if why else "").split())[:_MAX_WHY]

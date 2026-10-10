@@ -994,6 +994,15 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                         {"video_id": video_id, "why": why}
                         for video_id, why in answer.deep_skipped
                     ],
+                    "escalations_refused": [
+                        {"video_id": video_id, "why": why}
+                        for video_id, why in answer.escalations_refused
+                    ],
+                    "transcripts_cut": [
+                        {"video_id": video_id, "given_chars": given, "total_chars": total}
+                        for video_id, given, total in answer.transcripts_cut
+                    ],
+                    "transcript_tokens": answer.transcript_tokens,
                     "citation_shaped": len(answer.citations) + len(answer.unparsed),
                     "unparsed": answer.unparsed,
                     "citations": [
@@ -1043,9 +1052,19 @@ def _cmd_ask(args: argparse.Namespace) -> int:
         for line in links:
             print(f"  {line}")
 
+    cut = {video_id: (given, total) for video_id, given, total in answer.transcripts_cut}
     if answer.opened:
         print("\nopened transcripts:")
         for video_id, why in answer.opened:
+            extent = (
+                f"  (cut: first {cut[video_id][0]:,} of {cut[video_id][1]:,} chars)"
+                if video_id in cut
+                else ""
+            )
+            print(f"  {video_id}  {why}{extent}")
+    if answer.escalations_refused:
+        print("\nasked for and not opened:")
+        for video_id, why in answer.escalations_refused:
             print(f"  {video_id}  {why}")
     if answer.deep_skipped:
         print("\n--deep not honoured:")

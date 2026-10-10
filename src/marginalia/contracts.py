@@ -1795,11 +1795,22 @@ class Selection:
 
 @dataclass(frozen=True)
 class Opened:
-    """A transcript read for one question, and why it was read."""
+    """A transcript read for one question, and why it was read.
+
+    ``total_chars`` is the stored transcript's length; when it is larger than
+    ``text`` the transcript was cut, and both the model and the record are told
+    so. A cut used to be silent, mid-line, and invisible to both — so the model
+    could say "he never says X" about the half it was not given.
+    """
 
     video_id: str
     why: str
     text: str
+    total_chars: int = 0
+
+    @property
+    def cut(self) -> bool:
+        return self.total_chars > len(self.text)
 
 
 @dataclass(frozen=True)
@@ -1901,6 +1912,20 @@ class Answer:
     # `--deep` ids that could not be honoured, each with the reason. Printed and
     # saved: a request silently dropped reads as one that was carried out.
     deep_skipped: list[tuple[str, str]] = field(default_factory=list)
+    # Transcripts the model asked for and did not get, each with the reason —
+    # not in the library, no transcript on disk, over the limit, or no room
+    # under the context ceiling. The record used to say "the notes were enough"
+    # when the model had asked and been refused.
+    escalations_refused: list[tuple[str, str]] = field(default_factory=list)
+    # Opened transcripts that were cut: (video_id, characters given, characters
+    # stored). The model is told in the transcript's own header; this is the
+    # same fact for the reader of the record.
+    transcripts_cut: list[tuple[str, int, int]] = field(default_factory=list)
+    # The estimated tokens of the opened transcripts, on top of the notes'
+    # `estimated_input_tokens`. The size guard used to see the notes only, so a
+    # second call carrying transcripts could pass 100% of the ceiling after the
+    # first call had already been paid for.
+    transcript_tokens: int = 0
     citations: list[AnswerCitation] = field(default_factory=list)
     # Citation-shaped strings the parser could not read. Reported rather than
     # discarded: a parser that drops most of its input must say so.

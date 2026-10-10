@@ -143,6 +143,7 @@ __all__ = [
     "parse_citations",
     "scan_citations",
     "parse_escalations",
+    "escalation_requests",
     "render_answer",
     "has_grounding",
     "shuffle_for_reading",
@@ -264,6 +265,25 @@ ESCALATION_SPENT = (
 )
 
 NO_TRANSCRIPTS = "(none — you have not asked for any)"
+
+
+def _escalation_line(allow: bool, opened: Sequence[Opened], limit: int) -> str:
+    """What the model is told about asking for transcripts.
+
+    `--deep` used to switch escalation off and tell the model "you already have
+    the transcripts you asked for" — it had asked for none — so a user forcing
+    one transcript open stopped the model from opening the second video that
+    held the wording. Room is now what is left of `[ask] max_transcripts`.
+    """
+    if not allow:
+        return ESCALATION_SPENT
+    if not opened:
+        return ESCALATION_ALLOWED
+    left = max(0, limit - len(opened))
+    return (
+        f"allowed — the user opened {len(opened)} transcript(s) for you, shown below; "
+        f"you may ask for up to {left} more"
+    )
 
 
 # -- parsing -----------------------------------------------------------------
@@ -635,48 +655,69 @@ def parse_citations(text: str, known: Sequence[str] | None = None) -> list[Answe
     return scan_citations(text, known).citations
 
 
-def parse_escalations(text: str, *, known: Sequence[str], limit: int) -> list[tuple[str, str]]:
-    """Transcript requests the model made. Unknown IDs are dropped, not fetched.
+def escalation_requests(
+    text: str, *, known: Sequence[str], limit: int
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """``(granted, refused)`` transcript requests, each ``(video_id, why)``.
 
     A reply that is *mostly* an answer is treated as an answer even if it
     contains the marker: the prompt asks for escalation lines alone, and acting
     on a stray marker inside real prose would throw away an answer that was
     already written.
-    """
-    matches = list(_ESCALATE_RE.finditer(text))
-    if not matches or limit <= 0:
-        # `limit` is what is left of `[ask] max_transcripts` after `--deep`.
-        # At zero the loop below would still take one before checking it.
-        return []
 
-    remainder = _ESCALATE_RE.sub("", text).strip()
-    if len(remainder) > 400:
-        log.info("ask: ignoring an ESCALATE marker inside what is already an answer")
-        return []
+    Read through `normalise_dashes`, and each id resolved by `_find_id` against
+    the library — the same repair a citation gets. The model writes U+2011
+    inside ids (that is why citations are normalised), and an `ESCALATE` line
+    carrying one matched neither this parser nor the escalation-only check, so
+    the request itself was printed and saved as the library's answer, exit 0.
+
+    A refused request is returned, not only logged: the answer record used to
+    say "the notes were enough" when the model had asked for a transcript it
+    could not have.
+    """
+    text = normalise_dashes(text)
+    matches = list(_ESCALATE_RE.finditer(text))
+    if not matches or not _only_escalates(text):
+        if matches:
+            log.info("ask: ignoring an ESCALATE marker inside what is already an answer")
+        return [], []
 
     seen: set[str] = set()
-    out: list[tuple[str, str]] = []
+    granted: list[tuple[str, str]] = []
+    refused: list[tuple[str, str]] = []
     for match in matches:
-        video_id, why = match.group(1), " ".join(match.group(2).split())
+        raw, why = match.group(1), " ".join(match.group(2).split()) or "no reason given"
+        video_id, _repaired = _find_id(raw, known)
+        if video_id is None:
+            if raw not in seen:
+                seen.add(raw)
+                log.info("ask: model asked for %s, which is not in the library", raw)
+                refused.append((raw, "not in the library"))
+            continue
         if video_id in seen:
             continue
         seen.add(video_id)
-        if video_id not in known:
-            log.info("ask: model asked for %s, which is not in the library", video_id)
+        if len(granted) >= max(0, limit):
+            # `limit` is what is left of `[ask] max_transcripts` after `--deep`.
+            refused.append((video_id, "over the [ask] max_transcripts limit"))
             continue
-        out.append((video_id, why or "no reason given"))
-        if len(out) >= limit:
-            break
-    return out
+        granted.append((video_id, why))
+    return granted, refused
+
+
+def parse_escalations(text: str, *, known: Sequence[str], limit: int) -> list[tuple[str, str]]:
+    """Transcript requests the model made. Unknown IDs are dropped, not fetched."""
+    return escalation_requests(text, known=known, limit=limit)[0]
 
 
 def _only_escalates(text: str) -> bool:
     """Is this reply a transcript request rather than an answer?
 
-    The same test `parse_escalations` applies before acting on a marker, and
+    The same test `escalation_requests` applies before acting on a marker, and
     deliberately independent of whether the ids named are in the library: a
     request for an unknown video is still not an answer.
     """
+    text = normalise_dashes(text)
     return bool(_ESCALATE_RE.search(text)) and len(_ESCALATE_RE.sub("", text).strip()) <= 400
 
 
@@ -999,17 +1040,27 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         lines.append("(none)")
 
     lines.extend(["", "## Transcripts opened", ""])
+    cut = {video_id: (given, total) for video_id, given, total in answer.transcripts_cut}
     if answer.opened:
         unselected = set(answer.deep_unselected)
         lines.extend(
             f"- {video_id} — {why}"
             + (" (its note was not among those selected)" if video_id in unselected else "")
+            + (
+                f" (cut: the first {cut[video_id][0]:,} of {cut[video_id][1]:,} characters)"
+                if video_id in cut
+                else ""
+            )
             for video_id, why in answer.opened
         )
-    elif not answer.deep_skipped:
+    elif not answer.deep_skipped and not answer.escalations_refused:
         lines.append("(none — the notes were enough)")
     lines.extend(
         f"- {video_id} — not opened (--deep): {why}" for video_id, why in answer.deep_skipped
+    )
+    lines.extend(
+        f"- {video_id} — asked for and not opened: {why}"
+        for video_id, why in answer.escalations_refused
     )
 
     return "\n".join(lines) + "\n"
@@ -1212,6 +1263,12 @@ def choose_notes(
 
     wanted = {note.video_id: note for note in notes}
     chosen = [wanted[video_id] for video_id in decision.video_ids if video_id in wanted]
+    # Shuffled before the budget trims it. The selector keeps notes in the
+    # library's order, which is video-id order, so a trim always fell on the ids
+    # that sort last (REVIEW C8, reproduced) — the alphabetical bias
+    # `shuffle_for_reading` was written to remove, re-entering one step
+    # earlier. Unseeded for the same reason that one is.
+    random.shuffle(chosen)
     packed, dropped = fill_to_budget(chosen, budget)
     if dropped:
         log.warning(
@@ -1317,13 +1374,23 @@ def render_notes(notes: Sequence[LoadedNote]) -> str:
     )
 
 
-def _transcripts_block(opened: Sequence[tuple[str, str]]) -> str:
+def _transcripts_block(opened: Sequence[Opened]) -> str:
     if not opened:
         return NO_TRANSCRIPTS
-    return "\n\n".join(
-        f"===== TRANSCRIPT {video_id} (each line carries its start and end) =====\n{text}"
-        for video_id, text in opened
-    )
+    blocks = []
+    for item in opened:
+        extent = (
+            f"PARTIAL: the first {len(item.text):,} of {item.total_chars:,} characters; "
+            "the rest was NOT given to you, so do not say the video lacks anything "
+            "past the last line here"
+            if item.cut
+            else "complete"
+        )
+        blocks.append(
+            f"===== TRANSCRIPT {item.video_id} (each line carries its start and end; "
+            f"{extent}) =====\n{item.text}"
+        )
+    return "\n\n".join(blocks)
 
 
 # -- the run -----------------------------------------------------------------
@@ -1406,32 +1473,50 @@ def answer_question(
     # `--deep` forces a transcript open; it never prevents one being opened. The
     # model can still ask for more on top of what was forced.
     opened: list[Opened] = []
+
+    def room_chars() -> int | None:
+        # What is left under the ceiling once the notes and every transcript
+        # already opened are counted. The guard above saw the notes alone, so a
+        # second call carrying transcripts could pass 100% of the ceiling after
+        # the first, whole-library call had already been paid for.
+        if not ceiling:
+            return None
+        used = result.estimated_input_tokens + sum(len(o.text) for o in opened) / _CHARS_PER_TOKEN
+        return max(0, int((ceiling - used) * _CHARS_PER_TOKEN))
+
     for video_id in dict.fromkeys(deep):
         if video_id not in known:
             # After the loop above, only a video with no note at all.
             result.deep_skipped.append((video_id, "no note in the library"))
             log.warning("ask: --deep %s has no note in the library; not opened", video_id)
             continue
-        text = _read_transcript(config, library, ledger, video_id)
-        if text is None:
-            result.deep_skipped.append((video_id, "no transcript on disk"))
-            log.warning("ask: --deep %s has no transcript on disk; not opened", video_id)
+        got = _read_transcript(
+            config, library, ledger, video_id, "opened by request", room_chars=room_chars()
+        )
+        if isinstance(got, str):
+            result.deep_skipped.append((video_id, got))
+            log.warning("ask: --deep %s not opened (%s)", video_id, got)
             continue
-        opened.append(Opened(video_id, "opened by request", text))
+        opened.append(got)
 
     try:
         reply = _call(
             config, client, prompt, question, notes, opened,
-            allow=not opened, total=len(everything),
+            allow=len(opened) < config.ask.max_transcripts, total=len(everything),
         )
-        wanted = parse_escalations(
+        wanted, refused = escalation_requests(
             reply.text, known=known, limit=config.ask.max_transcripts - len(opened)
         )
-        if wanted:
+        result.escalations_refused.extend(refused)
+        if wanted or refused:
             for video_id, why in wanted:
-                text = _read_transcript(config, library, ledger, video_id)
-                if text is not None:
-                    opened.append(Opened(video_id, why, text))
+                got = _read_transcript(
+                    config, library, ledger, video_id, why, room_chars=room_chars()
+                )
+                if isinstance(got, str):
+                    result.escalations_refused.append((video_id, got))
+                else:
+                    opened.append(got)
             # Second call happens even if nothing could be opened: the first
             # reply was a request, not an answer, so returning it would hand the
             # user an ESCALATE line instead of prose.
@@ -1448,13 +1533,13 @@ def answer_question(
         # printed and saved to `answers/`, and the message is a response body.
         result.text = f"The model call failed: {safe_reason(exc)}"
         result.failed = True
-        result.opened = [(item.video_id, item.why) for item in opened]
+        _record_opened(result, opened)
         result.elapsed_s = time.monotonic() - started
         _account(result, client, config)
         return result
 
     result.text = reply.text.strip()
-    result.opened = [(item.video_id, item.why) for item in opened]
+    _record_opened(result, opened)
     # Measured from why the model stopped, not from whether text came back: a
     # reply cut off mid-sentence is truncated and not empty, and an empty
     # reply that terminated is empty and not truncated.
@@ -1505,6 +1590,14 @@ def answer_question(
     _account(result, client, config)
     result.elapsed_s = time.monotonic() - started
     return result
+
+
+def _record_opened(result: Answer, opened: Sequence[Opened]) -> None:
+    result.opened = [(item.video_id, item.why) for item in opened]
+    result.transcripts_cut = [
+        (item.video_id, len(item.text), item.total_chars) for item in opened if item.cut
+    ]
+    result.transcript_tokens = int(sum(len(item.text) for item in opened) / _CHARS_PER_TOKEN)
 
 
 def _transcripts_for(
@@ -1561,8 +1654,8 @@ def _call(
             scope=library_scope(len(notes), len(notes) if total is None else total),
             count=len(notes),
             notes=render_notes(notes),
-            transcripts=_transcripts_block([(item.video_id, item.text) for item in opened]),
-            escalation=ESCALATION_ALLOWED if allow else ESCALATION_SPENT,
+            transcripts=_transcripts_block(opened),
+            escalation=_escalation_line(allow, opened, config.ask.max_transcripts),
         ),
         max_tokens=config.ask.max_tokens,
         task="answer",
@@ -1591,22 +1684,49 @@ def library_scope(loaded: int, total: int) -> str:
     )
 
 
+# Below this many characters of room, a transcript is not opened at all: a few
+# lines of one would be read as the whole of it far more readily than nothing.
+_MIN_TRANSCRIPT_ROOM = 2_000
+
+
 def _read_transcript(
-    config: Config, library: Library, ledger: Ledger | None, video_id: str
-) -> str | None:
+    config: Config,
+    library: Library,
+    ledger: Ledger | None,
+    video_id: str,
+    why: str,
+    *,
+    room_chars: int | None = None,
+) -> Opened | str:
+    """The transcript to open, or the reason it cannot be.
+
+    Cut, when it must be, **at a line boundary and never silently**. Truncated
+    rather than skipped: half of a transcript still answers a wording question
+    about the half it contains, and the alternative is that the longest videos
+    can never be escalated into at all. But the cut used to land mid-line, with
+    no word to the model that anything was missing.
+
+    ``room_chars`` is what is left under `[ask] max_input_tokens` once the notes
+    and any transcript already opened are counted; the per-transcript
+    `[ask] max_transcript_chars` applies as well.
+    """
     if not library.has_transcript(video_id):
         log.info("ask: %s has a note but no transcript on disk", video_id)
-        return None
+        return "no transcript on disk"
     text = library.read_transcript(video_id)
     _touch(ledger, video_id)
-    ceiling = config.ask.max_transcript_chars
-    if len(text) > ceiling:
-        # Truncated rather than skipped: half of a transcript still answers a
-        # wording question about the half it contains, and the alternative is
-        # that the longest videos can never be escalated into at all.
-        log.info("ask: %s is %d chars, truncating to %d", video_id, len(text), ceiling)
-        text = text[:ceiling]
-    return text
+    allowed = config.ask.max_transcript_chars
+    if room_chars is not None:
+        allowed = min(allowed, room_chars)
+    if allowed < min(_MIN_TRANSCRIPT_ROOM, len(text)):
+        log.info("ask: no room under the input ceiling to open %s", video_id)
+        return "no room under [ask] max_input_tokens"
+    total = len(text)
+    if total > allowed:
+        cut = text.rfind("\n", 0, allowed)
+        text = text[: cut + 1] if cut > 0 else text[:allowed]
+        log.info("ask: %s is %d chars, giving the first %d", video_id, total, len(text))
+    return Opened(video_id, why, text, total_chars=total)
 
 
 def _account(result: Answer, client: LlmClient, config: Config) -> None:
