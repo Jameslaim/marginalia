@@ -158,7 +158,8 @@ def test_modifying_a_stored_transcript_is_detected(
     assert code == EXIT_FAILED
     assert CHECK_TRANSCRIPT_MODIFIED in out
     assert f"  {A}" in out
-    assert "hashes:   1 verified, 0 unrecorded" in out
+    # The only video changed: a finding, so nothing is verified.
+    assert "hashes:   0 verified, 0 unrecorded" in out
     assert SENTINEL not in out
     assert "porcupine" not in out
 
