@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import difflib
 import re
+from typing import Iterable, Sequence
 
 __all__ = [
     "QUOTE_RE",
@@ -49,11 +50,26 @@ _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 _VERBATIM_RE = re.compile(r"^## Verbatim\s*$", re.MULTILINE)
 _SECTION_RE = re.compile(r"^#{1,4}\s", re.MULTILINE)
 
-# Candidate alignments scored per quote. The best window is the one sharing the
-# most words with the quote, so it is always near the top of the vote; twenty is
-# headroom, and it is what lets a whole transcript be searched in milliseconds
-# where scoring every window took minutes.
+# Candidate passages scored per quote, once the vote has been taken. Twenty is
+# what lets a whole transcript be searched in milliseconds where scoring every
+# window took minutes.
 _ALIGNMENTS = 20
+
+# How far, in words, one passage's alignments may spread and still be counted
+# as one passage. **An inserted or dropped word shifts every later word's
+# alignment by one**, so a near-exact rendering splits its votes between
+# neighbouring starts: an eight-word quote with one extra word in the middle
+# polls 4 and 4. Twenty repeats of a five-word fragment elsewhere then held all
+# twenty slots on 5 votes each, and the real passage — 0.8 by the exhaustive
+# measure — scored 0.5 and was reported as a quote the transcript does not
+# hold. Votes are pooled over this neighbourhood before ranking, and each
+# passage takes one slot however many of its starts polled.
+_SPREAD = 3
+
+# Below this many words, every window is scored. The vote is a speed-up for
+# transcripts; on a Verbatim section or a short video exhaustive scoring costs
+# milliseconds and cannot be outvoted by anything.
+_EXHAUSTIVE_MAX = 1_000
 
 
 def flatten(text: str) -> str:
@@ -102,11 +118,13 @@ class Words:
 def closeness(quote: str, hay: Words) -> float:
     """Best word-sequence similarity of ``quote`` against any window of ``hay``.
 
-    Only windows that line up with the quote's own words are scored: each word
-    the two share votes for the alignment it implies, and the best-voted few are
-    compared with ``SequenceMatcher``. Exhaustive scoring gives the same answer
-    on a 150-word Verbatim section and takes minutes on a transcript. ``difflib``
-    is stdlib, so this adds no dependency.
+    A short text — a Verbatim section, a brief video — is scored at every
+    window. A transcript is scored only where the quote's own words line up:
+    each word the two share votes for the alignment it implies, votes are
+    pooled over a few words either side so an edit cannot split one passage's
+    support, and the best-supported passages are compared with
+    ``SequenceMatcher`` (see `_candidate_starts`). Exhaustive scoring takes
+    minutes on a transcript. ``difflib`` is stdlib, so this adds no dependency.
 
     A number about closeness and nothing else: it never says where the match
     was or what it read, which is what lets a caller report it under rule 1.
@@ -114,13 +132,46 @@ def closeness(quote: str, hay: Words) -> float:
     needle = _WORD_RE.findall(quote.casefold())
     if not needle or not hay.words:
         return 0.0
+    if len(hay.words) <= _EXHAUSTIVE_MAX:
+        starts: Iterable[int] = range(max(1, len(hay.words) - len(needle) + 1))
+    else:
+        starts = _candidate_starts(needle, hay)
+    best = 0.0
+    for start in starts:
+        window = hay.words[start : start + len(needle) + 4]
+        best = max(best, difflib.SequenceMatcher(None, needle, window).ratio())
+    return best
+
+
+def _candidate_starts(needle: Sequence[str], hay: Words) -> list[int]:
+    """The window starts worth scoring: the best-supported passages, each whole.
+
+    Each shared word votes for the alignment it implies; a passage's support is
+    the votes within `_SPREAD` of its start, so one edit cannot halve it; and a
+    passage already chosen suppresses its neighbours, so twenty slots are
+    twenty different places. Every start in a chosen passage's neighbourhood is
+    then scored, because the best window may sit either side of the peak.
+    """
     votes: dict[int, int] = {}
     for offset, word in enumerate(needle):
         for position in hay.positions.get(word, ()):
             start = max(0, position - offset)
             votes[start] = votes.get(start, 0) + 1
-    best = 0.0
-    for start in sorted(votes, key=lambda key: (-votes[key], key))[:_ALIGNMENTS]:
-        window = hay.words[start : start + len(needle) + 4]
-        best = max(best, difflib.SequenceMatcher(None, needle, window).ratio())
-    return best
+    pooled = {
+        start: sum(votes.get(near, 0) for near in range(start - _SPREAD, start + _SPREAD + 1))
+        for start in votes
+    }
+    chosen: list[int] = []
+    for start in sorted(votes, key=lambda key: (-pooled[key], -votes[key], key)):
+        if any(abs(start - other) <= _SPREAD for other in chosen):
+            continue
+        chosen.append(start)
+        if len(chosen) == _ALIGNMENTS:
+            break
+    return sorted(
+        {
+            near
+            for start in chosen
+            for near in range(max(0, start - _SPREAD), start + _SPREAD + 1)
+        }
+    )

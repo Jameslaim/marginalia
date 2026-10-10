@@ -729,7 +729,8 @@ def test_a_failed_mapping_call_leaves_the_run_narrower_not_dead() -> None:
 
     assert not territory.parsed
     assert not territory.queries
-    assert "boom" in territory.problem
+    assert "RuntimeError" in territory.problem, "named by class"
+    assert "boom" not in territory.problem, "an unclassified exception's text is not stored"
 
 
 def test_a_truncated_reply_is_not_parsed_at_all() -> None:

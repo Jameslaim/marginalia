@@ -2890,3 +2890,163 @@ def test_a_query_is_stamped_before_the_decisions_its_search_wrote(
     query = ledger.queries_for_run(outcome.run_id)[0]
     gate = [d for d in ledger.decisions_for_run(outcome.run_id) if d.stage == STAGE_SEARCH]
     assert gate and all(query.ran_at <= decision.decided_at for decision in gate)
+
+
+# -- what the planner may count as coverage ------------------------------------
+#
+# The planner's KEPT SO FAR list is what it judges coverage against, and a video
+# on it reads as "this part of the brief is satisfied". Two kinds of keeper were
+# landing there that satisfy nothing: a transcript past the note ceiling (the
+# counter was incremented and the flag never reached the planner), and a video
+# stage 2 never gave a verdict (a failed call kept as a plain YES).
+
+
+def _sections_shown(planner, title: str) -> list[str]:
+    """Which of the planner's kept headings ``title`` was rendered under."""
+    from marginalia.brain.planner import render_round
+
+    rendered = render_round(planner.seen[-1], kept_so_far=planner.kept_so_far_seen[-1])
+    cut = {
+        "KEPT SO FAR": rendered.split("KEPT SO FAR IN THIS RUN")[1].split("KEPT BUT NOT ANSWERABLE")[0],
+        "NOT ANSWERABLE": rendered.split("KEPT BUT NOT ANSWERABLE")[1]
+        .split("KEPT BUT NOT JUDGED")[0]
+        .split("REJECTED (")[0],
+    }
+    return [name for name, body in cut.items() if title in body]
+
+
+class _RealStageTwo(FakeJudge):
+    """Stage 1 scripted, stage 2 the real judge over a transport that raises."""
+
+    def __init__(self, failure, **kwargs) -> None:
+        super().__init__(**kwargs)
+        from marginalia.brain.judge import Judge
+
+        def transport(**_):
+            raise failure
+
+        self._real = Judge(LlmClient(make_config(Path(".")).llm, transport=transport, sleep=lambda _: None))
+
+    def judge_full(self, brief, candidate, **kwargs):
+        self.opening_calls.append(candidate.video_id)
+        return self._real.judge_full(brief, candidate, **kwargs)
+
+
+class _Overflow(Exception):
+    status_code = 400
+
+    def __str__(self) -> str:
+        return "This model's maximum context length is 8192 tokens"
+
+
+def test_a_video_too_long_to_note_is_not_coverage_for_the_planner(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    config = replace(config, note=replace(config.note, max_transcript_chars=10))
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client, FakeJudge(), planner=planner, max_rounds=2)
+
+    assert outcome.rounds[0].too_long_to_note == 1
+    kept = planner.kept_so_far_seen[-1]
+    assert [video.too_long for _, video in kept] == [True]
+    assert _sections_shown(planner, result("aaaaaaaaaaa").title) == ["NOT ANSWERABLE"]
+
+
+@pytest.mark.parametrize(
+    "failure", [ConnectionError("reset"), _Overflow()], ids=["call-failed", "context-window"]
+)
+def test_a_stage_two_call_with_no_verdict_is_not_coverage(
+    failure, config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client, _RealStageTwo(failure), planner=planner, max_rounds=2)
+
+    assert [video.video_id for video in outcome.rounds[0].kept] == ["aaaaaaaaaaa"], "still kept"
+    assert library.has_transcript("aaaaaaaaaaa"), "and its transcript stored"
+    assert _sections_shown(planner, result("aaaaaaaaaaa").title) == []
+    full = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_FULL]
+    assert [d.verdict for d in full] == [VERDICT_MAYBE], "recorded as no verdict, not as a YES"
+
+
+def test_an_unjudged_keeper_is_listed_apart_for_the_planner(
+    config, ledger, library, client, searches
+) -> None:
+    from marginalia.brain.planner import render_round
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client, _RealStageTwo(ConnectionError("x")), planner=planner, max_rounds=2)
+
+    rendered = render_round(planner.seen[-1], kept_so_far=planner.kept_so_far_seen[-1])
+    assert "KEPT BUT NOT JUDGED (1)" in rendered
+    assert outcome.rounds[0].unjudged == 1
+
+
+def test_a_failed_judgement_is_retried_by_the_next_run_on_the_topic(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    run(config, ledger, library, client, _RealStageTwo(ConnectionError("reset")), max_rounds=1)
+
+    provider = FakeTranscripts()
+    judge = FakeJudge()
+    outcome = run(config, ledger, library, client, judge, provider=provider, max_rounds=1)
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"], "judged again, from disk"
+    assert provider.fetched == []
+    assert [video.video_id for video in outcome.rounds[0].kept] == ["aaaaaaaaaaa"]
+
+
+def test_a_legacy_failed_yes_row_does_not_block_rejudging(
+    config, ledger, library, client, searches
+) -> None:
+    """Rows written before unjudged calls were recorded as MAYBE are plain YES
+    rows carrying the failure's reason. They must not count as a verdict."""
+    _hold(library, ledger, "aaaaaaaaaaa")
+    ledger.log_decision(
+        "aaaaaaaaaaa", TOPIC, stage=STAGE_FULL, verdict=VERDICT_YES,
+        reason="stage-2 judge failed, kept",
+    )
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge()
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+
+
+def test_a_transcript_too_large_for_the_model_is_not_retried_by_the_same_model(
+    config, ledger, library, client, searches
+) -> None:
+    """The same request to the same model is refused the same way; retrying it
+    every run would spend a call to learn nothing."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    run(config, ledger, library, client, _RealStageTwo(_Overflow()), max_rounds=1)
+
+    judge = FakeJudge()
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == []
+
+
+def test_a_transcript_left_by_an_interrupted_store_is_reconciled_when_judged_from_disk(
+    config, ledger, library, client, searches
+) -> None:
+    """The file landed and the row stayed `pending`. Judged from disk, it was
+    counted as coverage while nothing would ever note a `pending` video."""
+    ledger.mark_pending("aaaaaaaaaaa")
+    library.write_transcript("aaaaaaaaaaa", [TranscriptLine(5000, 9000, "a stored sentence")])
+    before = library.transcript_path("aaaaaaaaaaa").read_bytes()
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    row = ledger.get("aaaaaaaaaaa")
+    assert row.status == STATUS_HAS_TRANSCRIPT
+    assert row.content_hash == library.transcript_digest("aaaaaaaaaaa")
+    assert library.transcript_path("aaaaaaaaaaa").read_bytes() == before, "bytes untouched"

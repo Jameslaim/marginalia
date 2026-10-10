@@ -82,6 +82,11 @@ __all__ = [
     "VERDICT_YES",
     "VERDICT_NO",
     "VERDICT_MAYBE",
+    "UNJUDGED_CALL_FAILED",
+    "UNJUDGED_TOO_LARGE",
+    "UNJUDGED_TRUNCATED",
+    "UNJUDGED_NO_VERDICT",
+    "UNJUDGED_REASONS",
     # transcripts and search
     "TranscriptLine",
     "TranscriptResult",
@@ -145,6 +150,7 @@ __all__ = [
     "CHECK_NOTE_UNRECORDED",
     "CHECK_NOTE_INVALID",
     "CHECK_TRANSCRIPT_MODIFIED",
+    "CHECK_TRANSCRIPT_UNRECORDED",
     "CHECK_RUN_UNFINISHED",
     "DOCTOR_CHECKS",
     "DOCTOR_PROBLEMS",
@@ -737,6 +743,11 @@ class JudgedVideo:
     # will summarise are two findings, and one field holding both would report a
     # ceiling as a caption failure.
     too_long: bool = False
+    # False when stage 2 produced no verdict (`FullVerdict.judged`). Kept and
+    # stored, and a note may still be written — but nothing has read it against
+    # the brief, so it is not evidence that any part of the brief is covered.
+    # Rule 8's stage-2 paragraph: the error that hides here is a wrong YES.
+    judged: bool = True
 
     @property
     def unreadable(self) -> bool:
@@ -750,6 +761,15 @@ class JudgedVideo:
         note satisfies no part of the brief however good it looked.
         """
         return not self.unreadable and not self.too_long
+
+    @property
+    def covers(self) -> bool:
+        """May the planner count this video as coverage?
+
+        Answerable *and* judged: a note must be able to exist, and stage 2 must
+        actually have read the video against the brief.
+        """
+        return self.answerable and self.judged
 
 
 @dataclass(frozen=True)
@@ -932,6 +952,19 @@ VERDICT_YES = "yes"
 VERDICT_NO = "no"
 VERDICT_MAYBE = "maybe"
 
+# The reasons stage 2 records when it produced no verdict at all — a call that
+# failed, a transcript over the model's window, a reply cut off before its
+# verdict. Named here because two sides read them: the judge writes them, and
+# discovery recognises them in `decisions` rows written before such a call was
+# recorded as MAYBE, when it was an ordinary-looking YES.
+UNJUDGED_CALL_FAILED = "stage-2 judge failed, kept"
+UNJUDGED_TOO_LARGE = "transcript too large for the model's context window, kept unread"
+UNJUDGED_TRUNCATED = "reply hit the token ceiling before finishing, kept"
+UNJUDGED_NO_VERDICT = "the reply carried no readable verdict, kept"
+UNJUDGED_REASONS = frozenset(
+    {UNJUDGED_CALL_FAILED, UNJUDGED_TOO_LARGE, UNJUDGED_TRUNCATED, UNJUDGED_NO_VERDICT}
+)
+
 
 # -- transcripts ------------------------------------------------------------
 
@@ -1069,6 +1102,12 @@ class FullVerdict:
     relevant: list[str] = field(default_factory=list)
     concepts: list[str] = field(default_factory=list)
     parsed: bool = True
+    # False when stage 2 produced no verdict: the call failed, the transcript
+    # was over the model's window, the reply was cut off, or it carried no
+    # verdict word. The video is kept — rule 8 — but kept is not judged
+    # relevant, and the verdict is then MAYBE. Narrower than ``parsed``, which
+    # is also False for a well-formed verdict with a stray line beside it.
+    judged: bool = True
     # Set when a consistency rule fired, for the log line. The verdict is still
     # usable — a violation resolves toward keeping — but it was not the reply
     # the contract asked for, and silently accepting it is how a broken output
@@ -1206,6 +1245,13 @@ class RoundReport:
     # had judged them for this topic. Their own counter: no fetch happened,
     # and a verdict did.
     judged_from_disk: int = 0
+    # Of `judged_from_disk`, the transcripts whose store had been interrupted
+    # between the file and the ledger row, and whose row this run repaired.
+    reconciled: int = 0
+    # Kept with no stage-2 verdict: the call failed, the transcript was over the
+    # model's window, or the reply was cut off or carried no verdict. A subset
+    # of `unparsed`, and the part of it that is not coverage.
+    unjudged: int = 0
     # Kept, but stage 2 could not read the transcript well enough to be sure.
     # Not a rejection and not a clean keep — and it suppresses the note, which
     # is a consequence nobody should have to infer from a silent counter.
@@ -1714,6 +1760,13 @@ class Answer:
     estimated_input_tokens: int = 0
     headroom: float | None = None
     opened: list[tuple[str, str]] = field(default_factory=list)  # video_id, why
+    # `--deep` ids whose notes selection had left out. Their transcripts were
+    # opened anyway, because they were asked for by name: a direct request
+    # outranks the selector's ranking.
+    deep_unselected: list[str] = field(default_factory=list)
+    # `--deep` ids that could not be honoured, each with the reason. Printed and
+    # saved: a request silently dropped reads as one that was carried out.
+    deep_skipped: list[tuple[str, str]] = field(default_factory=list)
     citations: list[AnswerCitation] = field(default_factory=list)
     # Citation-shaped strings the parser could not read. Reported rather than
     # discarded: a parser that drops most of its input must say so.
@@ -1902,7 +1955,7 @@ class ExportedRun:
 # `marg doctor` compares the library on disk against the ledger. Rule 2 cannot
 # be enforced from inside a program — only the OS could stop another process
 # writing into the folder, and it does not — so what the rule gets instead is
-# detection after the fact. These are the seven disagreements it looks for, and
+# detection after the fact. These are the eight disagreements it looks for, and
 # every one is its own counter (rule 14): a directory nobody recorded and a
 # note nobody recorded are both "something wrote without the CLI", and summing
 # them would hide which surface it came through.
@@ -1913,6 +1966,8 @@ CHECK_NOTE_MISSING = "note_missing"  # noted_at set, note.md gone
 CHECK_NOTE_UNRECORDED = "note_unrecorded"  # note.md present, noted_at NULL
 CHECK_NOTE_INVALID = "note_invalid"  # stored note fails validate_note
 CHECK_TRANSCRIPT_MODIFIED = "transcript_modified"  # content_hash disagrees: rule 3
+# transcript.txt on disk, row not `has_transcript`: an interrupted store
+CHECK_TRANSCRIPT_UNRECORDED = "transcript_unrecorded"
 CHECK_RUN_UNFINISHED = "run_unfinished"  # a run with no finished_at: rule 6's signal
 
 DOCTOR_CHECKS: tuple[str, ...] = (
@@ -1922,6 +1977,7 @@ DOCTOR_CHECKS: tuple[str, ...] = (
     CHECK_NOTE_UNRECORDED,
     CHECK_NOTE_INVALID,
     CHECK_TRANSCRIPT_MODIFIED,
+    CHECK_TRANSCRIPT_UNRECORDED,
     CHECK_RUN_UNFINISHED,
 )
 

@@ -119,6 +119,8 @@ marg ask "<question>"              answer from the notes; --deep <id>, --json,
                                    exits 1 when no answer was produced
 marg run export <run_id>           write exports/<run_id>/ from the ledger
 marg doctor                        compare disk against ledger; read-only; --json
+marg reconcile [<id>...]           record transcripts an interrupted store left on
+                                   disk; no network, bytes untouched
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list [--status S]             list videos by asset state (default has_transcript)

@@ -836,3 +836,47 @@ def test_oversized_transcripts_at_the_head_of_the_queue_do_not_stop_the_drain(tm
 
     assert [r.outcome for r in run.results] == [SKIPPED, SKIPPED, SKIPPED, NOTED]
     assert run.stopped_because != STOP_REFUSED
+
+
+def test_the_note_worker_keeps_a_correct_citation_whose_quote_opens_with_common_words(tmp_path):
+    """The snapper runs on every note written, so its one systematic error ran
+    on every note too: a quote opening with common words had its correct
+    citation moved to its first rare word."""
+    config = make_config(tmp_path)
+    library = Library(config.library_path)
+    library.ensure()
+    ledger = Ledger(library.ledger_path)
+    lines = [TranscriptLine(start * 1000, start * 1000 + 2000, "so here we go") for start in (0, 2, 4, 6, 20)]
+    lines.append(TranscriptLine(23_000, 25_000, "quorum fencing tokens expire"))
+    lines.append(TranscriptLine(30_000, 40_000, FIXTURE_TRANSCRIPT))
+    library.write_transcript("aaaaaaaaaaa", lines)
+    library.write_meta("aaaaaaaaaaa", {"video_id": "aaaaaaaaaaa", "title": "A video"})
+    ledger.mark_pending("aaaaaaaaaaa")
+    ledger.mark_has_transcript("aaaaaaaaaaa", source="captions", provider="ytdlp")
+    note = _note_with_verbatim('- "so here we go quorum fencing tokens expire" (00:00:20)')
+
+    write_notes(config, ledger, library, client(note), prompts_directory=prompts(tmp_path))
+
+    assert '"so here we go quorum fencing tokens expire" (00:00:20)' in library.read_note("aaaaaaaaaaa")
+
+
+def test_a_failed_call_records_no_provider_text_in_the_result_or_the_log(tmp_path, caplog):
+    """The failure detail is printed by `marg note` and the log line lands in
+    `logs/`. Both carried the provider's message, which is a response body."""
+    import logging
+
+    marker = "ZZ-provider-body-ZZ"
+
+    class Unclassified(Exception):
+        pass
+
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa")
+    failing = client(Unclassified(f"connection reset; echoed {marker}"))
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        run = write_notes(config, ledger, library, failing, prompts_directory=prompts(tmp_path))
+
+    assert [r.outcome for r in run.results] == [FAILED]
+    assert marker not in run.results[0].detail
+    assert "Unclassified" in run.results[0].detail, "the classification survives"
+    assert marker not in caplog.text

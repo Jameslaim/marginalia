@@ -481,9 +481,9 @@ def test_pure_checks_take_rows_and_names() -> None:
 
 
 def test_every_check_is_its_own_counter() -> None:
-    """Rule 14. Seven names, seven counters, and the only one that is not a
+    """Rule 14. Eight names, eight counters, and the only one that is not a
     problem is the one rule 6 leaves on purpose."""
-    assert len(set(DOCTOR_CHECKS)) == 7
+    assert len(set(DOCTOR_CHECKS)) == 8
     assert DOCTOR_PROBLEMS == set(DOCTOR_CHECKS) - {CHECK_RUN_UNFINISHED}
 
 

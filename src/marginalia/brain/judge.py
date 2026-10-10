@@ -28,6 +28,10 @@ from ..contracts import (
     EVIDENCE_DEGRADED,
     RELEVANT_NONE,
     RELEVANT_UNAVAILABLE,
+    UNJUDGED_CALL_FAILED,
+    UNJUDGED_NO_VERDICT,
+    UNJUDGED_TOO_LARGE,
+    UNJUDGED_TRUNCATED,
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
@@ -45,6 +49,7 @@ from ..llm import (
     Reply,
     batched,
     load_prompt,
+    safe_reason,
 )
 
 log = logging.getLogger(__name__)
@@ -528,6 +533,23 @@ def parse_full(text: str, video_id: str) -> FullVerdict:
         len(text),
         sorted(found) or "none",
     )
+    if word is None:
+        # No verdict at all is no judgement at all — the same case as a call
+        # that failed, and recorded the same way. Every other contract break
+        # above still carries a verdict the judge actually gave.
+        return FullVerdict(
+            video_id=video_id,
+            verdict=VERDICT_MAYBE,
+            evidence=evidence,
+            reason=UNJUDGED_NO_VERDICT,
+            relevant=relevant,
+            concepts=concepts,
+            parsed=False,
+            judged=False,
+            problem=problem,
+            unmarked_currency=unmarked_currency,
+            relevant_text=relevant_text,
+        )
     return FullVerdict(
         video_id=video_id,
         verdict=verdict,
@@ -826,7 +848,11 @@ class Judge:
         except Exception as exc:  # noqa: BLE001 - a failed batch must not reject
             # The asymmetry again: a batch that errored has judged nothing, and
             # treating "no answer" as NO would delete videos on a network blip.
-            log.warning("judge: stage-1 batch failed (%s) — all %d kept as MAYBE", exc, len(chunk))
+            log.warning(
+                "judge: stage-1 batch failed (%s) — all %d kept as MAYBE",
+                safe_reason(exc),
+                len(chunk),
+            )
             return [
                 MetadataVerdict(c.video_id, VERDICT_MAYBE, "batch call failed", parsed=False)
                 for c in chunk
@@ -883,22 +909,14 @@ class Judge:
             # Kept, like any call that judged nothing — and named, so the round
             # does not report a length problem as a provider blip.
             log.warning("judge: %s is too large for stage 2 — kept unread", candidate.video_id)
-            return FullVerdict(
-                candidate.video_id,
-                VERDICT_YES,
-                reason="transcript too large for the model's context window, kept unread",
-                parsed=False,
-                problem="too large for the context window",
-            )
+            return _unjudged(candidate.video_id, UNJUDGED_TOO_LARGE, "too large for the context window")
         except Exception as exc:  # noqa: BLE001 - a failed call must not reject
-            log.warning("judge: stage-2 call failed for %s (%s) — keeping", candidate.video_id, exc)
-            return FullVerdict(
+            log.warning(
+                "judge: stage-2 call failed for %s (%s) — keeping, unjudged",
                 candidate.video_id,
-                VERDICT_YES,
-                reason="stage-2 judge failed, kept",
-                parsed=False,
-                problem="call failed",
+                safe_reason(exc),
             )
+            return _unjudged(candidate.video_id, UNJUDGED_CALL_FAILED, "call failed")
 
         if reply.finish_reason == "length":
             # Not a judgement — a fragment. Parsing it would read whichever of
@@ -909,15 +927,24 @@ class Judge:
                 candidate.video_id,
                 reply.usage.output_tokens,
             )
-            return FullVerdict(
-                candidate.video_id,
-                VERDICT_YES,
-                reason="reply hit the token ceiling before finishing, kept",
-                parsed=False,
-                problem="truncated reply",
-            )
+            return _unjudged(candidate.video_id, UNJUDGED_TRUNCATED, "truncated reply")
 
         return parse_full(reply.text, candidate.video_id)
+
+
+def _unjudged(video_id: str, reason: str, problem: str) -> FullVerdict:
+    """Stage 2 produced no verdict. Kept, and recorded as exactly that.
+
+    These used to be YES — rule 8 resolving toward keeping, which is right for
+    the video — and a YES is also what the planner counts as coverage and what
+    discovery read as "already judged for this topic". So a provider blip both
+    claimed a part of the brief was satisfied and stopped the same topic from
+    ever asking again. MAYBE keeps the video, claims nothing about relevance,
+    and leaves the next run free to judge it.
+    """
+    return FullVerdict(
+        video_id, VERDICT_MAYBE, reason=reason, parsed=False, judged=False, problem=problem
+    )
 
 
 # The sections every later judgement reads, as `write_brief` asks for them. A
@@ -925,22 +952,49 @@ class Judge:
 # CASES and ALSO WANTED break ties and are not required.
 _BRIEF_HEADINGS = ("INTENT", "MUST CONTAIN", "EXCLUDED")
 
+# Every heading `write_brief` asks for, so a section's body ends where the next
+# one begins. A heading is the name alone on its line, or the name followed by a
+# separator and the body: `INTENT`, `## Intent`, `**EXCLUDED:**`, `Intent: ...`.
+# **The name followed by a word is prose**, not a heading — `Intent is clear.`
+# opens a critique, and matching it as a heading let one replace a brief.
+_BRIEF_HEADING_RE = re.compile(
+    r"^[ \t#*_>-]*(INTENT|MUST[ \t]+CONTAIN|ALSO[ \t]+WANTED|EXCLUDED|EDGE[ \t]+CASES)\b"
+    r"[ \t*_]*(?:\([^)\n]*\)[ \t*_]*)?(?:[:：—–-](?P<inline>.*))?$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _brief_sections(text: str) -> dict[str, str]:
+    """Each heading's body, by canonical name. The first occurrence wins."""
+    matches = list(_BRIEF_HEADING_RE.finditer(text))
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        name = " ".join(match.group(1).upper().split())
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = (match.group("inline") or "") + "\n" + text[match.end() : end]
+        sections.setdefault(name, body)
+    return sections
+
 
 def _brief_problem(reply: Reply) -> str:
     """Why this reply cannot serve as a brief, or ``""`` if it can.
 
-    A heading counts at the start of a line, decorated or not, with its body on
-    the same line or the next — `INTENT`, `## Intent`, `**EXCLUDED:**`.
+    Three ways to fail: cut off, a required section missing, or a required
+    section present and empty. The last is the one a heading check alone let
+    through — `INTENT\\nMUST CONTAIN\\nEXCLUDED`, twenty-eight characters,
+    replaced a whole draft, where the eighty-character guard it superseded had
+    refused it. Every verdict in a run is measured against this text, so a
+    skeleton of one is worse than the unreviewed draft.
     """
     if reply.finish_reason == "length":
         return "cut off at the token ceiling"
-    missing = [
-        heading
-        for heading in _BRIEF_HEADINGS
-        if not re.search(rf"^[\s#*_>-]*{heading}\b", reply.text, re.IGNORECASE | re.MULTILINE)
-    ]
+    sections = _brief_sections(reply.text)
+    missing = [heading for heading in _BRIEF_HEADINGS if heading not in sections]
     if missing:
         return "no " + ", ".join(missing) + " section"
+    empty = [heading for heading in _BRIEF_HEADINGS if not re.search(r"\w", sections[heading])]
+    if empty:
+        return "empty " + ", ".join(empty) + " section"
     return ""
 
 

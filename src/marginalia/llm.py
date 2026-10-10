@@ -54,6 +54,7 @@ __all__ = [
     "RateLimiter",
     "load_prompt",
     "prompts_dir",
+    "safe_reason",
 ]
 
 
@@ -524,20 +525,24 @@ class LlmClient:
                 )
             if status in _RETRY_STATUSES:
                 return LlmError(f"transient HTTP {status}")
+            # Status, the provider's error code and the request id — never the
+            # message. These errors are printed, saved into a failed answer and
+            # recorded as a note's failure detail, and the message is the
+            # provider's response body, which can echo the request.
             if status in _BILLING_STATUSES:
                 return LlmBillingError(
                     f"{self.config.provider} refused the request (HTTP {status}): "
-                    f"the account cannot pay for it — {_brief(exc)}"
+                    f"the account cannot pay for it{_identifiers(exc)}"
                 )
             if status in _CONFIG_STATUSES:
                 return LlmConfigError(
                     f"{self.config.provider} rejected the request (HTTP {status}): "
-                    f"check llm.api_key and llm.model={self.config.model!r} — {_brief(exc)}"
+                    f"check llm.api_key and llm.model={self.config.model!r}{_identifiers(exc)}"
                 )
             if 400 <= status < 500:
                 return LlmConfigError(
                     f"{self.config.provider} refused the request (HTTP {status}): "
-                    f"retrying it unchanged cannot help — {_brief(exc)}"
+                    f"retrying it unchanged cannot help{_identifiers(exc)}"
                 )
 
         name = type(exc).__name__
@@ -546,7 +551,11 @@ class LlmClient:
                 f"{self.config.provider} rejected the request ({name}): "
                 f"check llm.api_key and llm.model={self.config.model!r}"
             )
-        return LlmError(f"{name}: {_brief(exc)}")
+        # The exception's class and nothing it says. `str(exc)` here was the
+        # one path where the body reached the log: `_safe` formats this error,
+        # so the retry line carried whatever an unrecognised exception held.
+        status_part = f" (HTTP {status})" if isinstance(status, int) else ""
+        return LlmError(f"{name}{status_part}{_code_part(exc)}")
 
 
 # A rate limit is the one failure where the provider states the answer, so
@@ -665,8 +674,36 @@ def _call_id() -> str:
     return f"marginalia-{uuid.uuid4().hex}"
 
 
-def _brief(exc: Exception) -> str:
-    return " ".join(str(exc).split())[:200]
+# A provider's machine-readable error code — `insufficient_quota`,
+# `model_not_found`. An identifier, never prose, and only kept when it looks
+# like one: anything else is treated as part of the body.
+_SAFE_CODE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+
+
+def _code_part(exc: Exception) -> str:
+    code = getattr(exc, "code", None)
+    if isinstance(code, str) and _SAFE_CODE_RE.match(code):
+        return f" [code: {code}]"
+    return ""
+
+
+def _identifiers(exc: Exception) -> str:
+    """The safe fields of a refusal: its error code and request id, if any."""
+    request_id = _request_id(exc)
+    return _code_part(exc) + (f" [request id: {request_id}]" if request_id else "")
+
+
+def safe_reason(exc: BaseException) -> str:
+    """What a log line or a failure record may say about any exception.
+
+    An `LlmError` is built by `_classify` from status, code and request id
+    only, so its text is safe to repeat. Anything else is named by class: its
+    message is unknown text, and the exceptions that reach a catch-all around a
+    model call are exactly the ones nobody classified.
+    """
+    if isinstance(exc, LlmError):
+        return " ".join(str(exc).split())
+    return type(exc).__name__
 
 
 def _safe(error: Exception, exc: Exception) -> str:

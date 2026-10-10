@@ -388,6 +388,12 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "VERDICT_YES",
         "VERDICT_NO",
         "VERDICT_MAYBE",
+        # what stage 2 records when it produced no verdict
+        "UNJUDGED_CALL_FAILED",
+        "UNJUDGED_TOO_LARGE",
+        "UNJUDGED_TRUNCATED",
+        "UNJUDGED_NO_VERDICT",
+        "UNJUDGED_REASONS",
         # transcripts and search
         "TranscriptLine",
         "TranscriptResult",
@@ -460,6 +466,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "CHECK_NOTE_UNRECORDED",
         "CHECK_NOTE_INVALID",
         "CHECK_TRANSCRIPT_MODIFIED",
+        "CHECK_TRANSCRIPT_UNRECORDED",
         "CHECK_RUN_UNFINISHED",
         "DOCTOR_CHECKS",
         "DOCTOR_PROBLEMS",

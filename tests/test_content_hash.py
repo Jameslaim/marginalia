@@ -187,3 +187,95 @@ def test_a_transcript_with_no_recorded_hash_is_unrecorded_not_a_fault(
     assert data["hashes_verified"] == 0
     assert data["hashes_unrecorded"] == 1
     assert data["checks"][CHECK_TRANSCRIPT_MODIFIED]["count"] == 0
+
+
+# -- an interrupted store, and the way back from it ------------------------------
+#
+# `store_transcript` writes the file, then `meta.json`, then the row. A crash
+# between the file and the row left `pending` beside immutable bytes: the note
+# queue skips `pending`, `marg note <id>` refused it, `marg ingest` failed every
+# time on the existing file, `refetch` never asked, and doctor called it clean.
+
+
+def _interrupt_ingest(monkeypatch: pytest.MonkeyPatch, video_id: str = A) -> None:
+    def crash(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    # `main` turns a Ctrl-C into an exit code, as it does for a user.
+    with monkeypatch.context() as patched:
+        patched.setattr(Ledger, "mark_has_transcript", crash)
+        assert main(["ingest", video_id]) != EXIT_OK
+
+
+def test_doctor_reports_a_transcript_its_row_does_not_record(
+    root: Path, fake_provider: FakeProvider, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _interrupt_ingest(monkeypatch)
+    capsys.readouterr()
+
+    code = main(["doctor"])
+
+    out = capsys.readouterr().out
+    assert code == EXIT_FAILED
+    assert "transcript_unrecorded" in out and A in out
+    assert SENTINEL not in out
+
+
+def test_ingest_after_an_interrupted_store_records_the_file_without_fetching(
+    root: Path, fake_provider: FakeProvider, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _interrupt_ingest(monkeypatch)
+    library = Library(root)
+    before = library.transcript_path(A).read_bytes()
+    fetched: list[str] = []
+    monkeypatch.setattr(fake_provider, "fetch", lambda video_id: fetched.append(video_id))
+
+    first = main(["ingest", A])
+    second = main(["ingest", A])
+
+    assert (first, second) == (EXIT_OK, EXIT_OK)
+    assert fetched == [], "the bytes were already there"
+    with Ledger(library.ledger_path) as ledger:
+        row = ledger.get(A)
+        assert row.status == STATUS_HAS_TRANSCRIPT
+        assert row.content_hash == library.transcript_digest(A)
+        assert [r.video_id for r in ledger.videos_needing_note(version="x")] == [A]
+    assert library.transcript_path(A).read_bytes() == before
+    out = capsys.readouterr().out
+    assert "reconciled" in out and "already have the transcript" in out
+    assert SENTINEL not in out
+
+
+def test_marg_reconcile_records_every_stranded_transcript_once(
+    root: Path, fake_provider: FakeProvider, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    _interrupt_ingest(monkeypatch, A)
+    _interrupt_ingest(monkeypatch, B)
+    capsys.readouterr()
+
+    assert main(["reconcile"]) == EXIT_OK
+    assert "2 row(s) recorded" in capsys.readouterr().out
+    assert main(["reconcile"]) == EXIT_OK
+    assert "0 row(s) recorded" in capsys.readouterr().out
+    assert main(["doctor"]) == EXIT_OK
+
+
+def test_reconcile_writes_what_the_file_can_tell_when_meta_never_landed(
+    root: Path, fake_provider: FakeProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crash(*_args, **_kwargs):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patched:
+        patched.setattr(Library, "write_meta", crash)
+        assert main(["ingest", A]) != EXIT_OK
+    library = Library(root)
+    assert library.read_meta(A) is None
+
+    assert main(["reconcile", A]) == EXIT_OK
+
+    meta = library.read_meta(A)
+    assert meta["video_id"] == A and meta["line_count"] == 1
+    assert meta["source"] == "unknown", "provenance nobody recorded is not guessed"
+    with Ledger(library.ledger_path) as ledger:
+        assert ledger.get(A).status == STATUS_HAS_TRANSCRIPT

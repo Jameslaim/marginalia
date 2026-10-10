@@ -61,7 +61,7 @@ from ..contracts import (
     TerritoryMap,
     TerritoryRevision,
 )
-from ..llm import LlmClient, Prompt, load_prompt
+from ..llm import LlmClient, Prompt, load_prompt, safe_reason
 from .territory import parse_filters, tidy, validate
 
 log = logging.getLogger(__name__)
@@ -556,9 +556,16 @@ def render_round(
     # satisfied it. Two headings say what one adjective inside a list does not.
     # Falls back to this round alone when the caller gave nothing, so a direct
     # call to this function still renders something coherent.
+    #
+    # And a third heading for a keeper stage 2 never gave a verdict — a failed
+    # call, a transcript over the model's window, a cut-off reply. It may well
+    # get a note; what it lacks is anyone having read it against the brief, so
+    # it is not evidence of coverage either. Listed under KEPT it was: rule 8's
+    # stage-2 paragraph names a wrong YES as the error that hides here.
     cumulative = list(kept_so_far) or [(report.number, video) for video in report.kept]
-    readable = [(number, v) for number, v in cumulative if v.answerable]
+    readable = [(number, v) for number, v in cumulative if v.covers]
     unreadable = [(number, v) for number, v in cumulative if not v.answerable]
+    unjudged = [(number, v) for number, v in cumulative if v.answerable and not v.judged]
 
     lines.append("")
     lines.append(
@@ -578,6 +585,16 @@ def render_round(
         "they look like they cover as still unmet."
     )
     lines.extend(_marked_video_lines(unreadable) or ["- none"])
+
+    lines.append("")
+    lines.append(
+        f"KEPT BUT NOT JUDGED ({len(unjudged)}) — stored, but stage 2 produced no "
+        "verdict on these (the call failed, the transcript was too large for the "
+        "model, or the reply was cut off), so nothing has read them against the "
+        "brief. They do NOT count toward coverage; the next run on this topic will "
+        "judge them again."
+    )
+    lines.extend(_marked_video_lines(unjudged) or ["- none"])
 
     lines.append("")
     # Stage-2 rejections first, here and only here. The loop appends every
@@ -726,8 +743,13 @@ class Planner:
                 max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 - must not end the run
-            log.warning("planner: library assessment failed (%s) — assuming nothing is covered", exc)
-            return LibraryCoverage(parsed=False, problem=f"assessment call failed: {exc}")
+            log.warning(
+                "planner: library assessment failed (%s) — assuming nothing is covered",
+                safe_reason(exc),
+            )
+            return LibraryCoverage(
+                parsed=False, problem=f"assessment call failed: {safe_reason(exc)}"
+            )
 
         if reply.finish_reason == "length":
             # Same guard as the map and the plan. A half-read assessment is
@@ -807,11 +829,13 @@ class Planner:
                 max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 - a failed plan must not end the run
-            log.warning("planner: call failed (%s) — the round falls back to expansion", exc)
+            log.warning(
+                "planner: call failed (%s) — the round falls back to expansion", safe_reason(exc)
+            )
             return RoundPlan(
                 round_number=report.number,
                 parsed=False,
-                problem=f"planning call failed: {exc}",
+                problem=f"planning call failed: {safe_reason(exc)}",
             )
 
         if reply.finish_reason == "length":

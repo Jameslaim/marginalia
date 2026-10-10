@@ -925,3 +925,91 @@ def test_an_error_body_never_reaches_the_log(caplog) -> None:
     assert "req_xyz" in caplog.text, "the id is there"
     assert secret not in caplog.text, "and the transcript is not"
     assert "echo" not in caplog.text
+
+
+# -- no provider text in errors, whatever the class -------------------------------
+#
+# `_safe` kept the body out of the retry line for a status the classifier knew,
+# and only those: an unclassified exception became `LlmError("<Name>: <text>")`
+# and `_safe` formatted that error, so its text reached every retry line, and a
+# 402, 401 or other 4xx carried the body into the error that `marg ask` prints
+# and saves into `answers/`.
+
+_MARKER = "ZZ-provider-body-ZZ"
+
+
+class _Unclassified(Exception):
+    pass
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        _Unclassified(f"connection reset; echoed {_MARKER}"),
+        HttpErrorWithHeaders(503, {"x-request-id": "req_1"}, body=_MARKER),
+        HttpErrorWithHeaders(402, {"x-request-id": "req_1"}, body=_MARKER),
+        HttpErrorWithHeaders(401, {"x-request-id": "req_1"}, body=_MARKER),
+        HttpErrorWithHeaders(418, {"x-request-id": "req_1"}, body=_MARKER),
+        HttpErrorWithHeaders(400, {"x-request-id": "req_1"}, body=f"maximum context length {_MARKER}"),
+    ],
+    ids=["unclassified", "503", "402", "401", "418", "400-overflow"],
+)
+def test_no_provider_text_reaches_the_error_or_the_log(failure, caplog) -> None:
+    instance, _ = client(failure, failure, failure, failure)
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        with pytest.raises(LlmError) as raised:
+            instance.complete("s", "u")
+
+    assert _MARKER not in str(raised.value)
+    assert _MARKER not in caplog.text
+
+
+def test_a_refusal_keeps_its_status_code_and_request_id() -> None:
+    """What is safe to say is still said: enough to match a support ticket."""
+    failure = HttpErrorWithHeaders(402, {"x-request-id": "req_abc"}, body=_MARKER)
+    failure.code = "insufficient_quota"
+    instance, _ = client(failure)
+
+    with pytest.raises(LlmBillingError) as raised:
+        instance.complete("s", "u")
+
+    message = str(raised.value)
+    assert "HTTP 402" in message
+    assert "insufficient_quota" in message
+    assert "req_abc" in message
+
+
+def test_an_error_code_that_is_prose_is_not_repeated() -> None:
+    failure = HttpErrorWithHeaders(401, {}, body="x")
+    failure.code = f"the request said {_MARKER}"
+    instance, _ = client(failure)
+
+    with pytest.raises(LlmError) as raised:
+        instance.complete("s", "u")
+
+    assert _MARKER not in str(raised.value)
+
+
+def test_a_failed_answer_saves_no_provider_text(tmp_path) -> None:
+    from conftest import make_config
+
+    from marginalia.ask import answer_question, render_answer
+    from marginalia.core.library import Library
+
+    config = make_config(tmp_path)
+    library = Library(config.library_path)
+    library.ensure()
+    library.video_dir("aaaaaaaaaaa").mkdir(parents=True, exist_ok=True)
+    library.write_note("aaaaaaaaaaa", "a note")
+    for failure in (
+        HttpErrorWithHeaders(402, {}, body=_MARKER),
+        _Unclassified(f"reset {_MARKER}"),
+    ):
+        instance, _ = client(failure, failure, failure, failure)
+
+        answer = answer_question(config, library, instance, "q")
+
+        assert answer.failed
+        assert _MARKER not in answer.text
+        assert _MARKER not in render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")

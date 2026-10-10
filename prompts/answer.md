@@ -1,8 +1,12 @@
 ---
 name: answer
-version: "6"
+version: "7"
 stage: ask
-note: "v6 makes the quoting rule agree with the rest of this prompt and with
+note: "v7 says how much of the library the model was given. Above the budget a
+  selector loads only some notes, and v6 still said 'You have all of them', so
+  a model shown a tenth of the library was told that what it could not find
+  was not there.
+  v6 makes the quoting rule agree with the rest of this prompt and with
   the code. v5 sent the model to the transcript for exact wording and then
   said quotation marks could only hold Verbatim text, so a correct quote from
   an escalated transcript broke the rule. It also says what a Verbatim line
@@ -13,7 +17,7 @@ note: "v6 makes the quoting rule agree with the rest of this prompt and with
 ---
 
 You are answering a question from a library of understanding notes. Each note
-was written by reading one video end to end. You have all of them.
+was written by reading one video end to end. {{ scope }}
 
 QUESTION: {{ question }}
 

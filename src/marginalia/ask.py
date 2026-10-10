@@ -53,7 +53,7 @@ from .contracts import (
 from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
 from .core.library import Library
-from .llm import LlmClient, LlmError, Prompt, load_prompt
+from .llm import LlmClient, LlmError, Prompt, load_prompt, safe_reason
 from .quotes import QUOTE_RE, Words, closeness, flatten, spoken_text, verbatim_of
 
 log = logging.getLogger(__name__)
@@ -984,20 +984,33 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         for item in answer.uncited_quotes:
             lines.append(f"- quoted, uncited: {item}")
 
+    # The notes the answering call was given — `selection.video_ids`, which
+    # follows the shuffle and any `--deep` additions. It listed every title in
+    # the library, which under selection named notes the model never saw
+    # beneath a header saying how few it had read.
     lines.extend(["", "## Notes read", ""])
-    if answer.titles:
+    supplied = sorted(answer.selection.video_ids)
+    if supplied:
         lines.extend(
             f"- {video_id}  {answer.titles.get(video_id, '')}".rstrip()
-            for video_id in sorted(answer.titles)
+            for video_id in supplied
         )
     else:
         lines.append("(none)")
 
     lines.extend(["", "## Transcripts opened", ""])
     if answer.opened:
-        lines.extend(f"- {video_id} — {why}" for video_id, why in answer.opened)
-    else:
+        unselected = set(answer.deep_unselected)
+        lines.extend(
+            f"- {video_id} — {why}"
+            + (" (its note was not among those selected)" if video_id in unselected else "")
+            for video_id, why in answer.opened
+        )
+    elif not answer.deep_skipped:
         lines.append("(none — the notes were enough)")
+    lines.extend(
+        f"- {video_id} — not opened (--deep): {why}" for video_id, why in answer.deep_skipped
+    )
 
     return "\n".join(lines) + "\n"
 
@@ -1376,19 +1389,40 @@ def answer_question(
     _guard_input_size(result, ceiling)
 
     known = [note.video_id for note in notes]
+    # `--deep` names a video outright, so selection does not get to drop it.
+    # Its transcript is opened even when the selector left its note out — the
+    # transcript, not the note, because the transcript is what was asked for and
+    # it is bounded by `[ask] max_transcript_chars`, where adding the note could
+    # push a budgeted request over the ceiling it was selected to fit. The id
+    # joins `known` so the answer can cite it and the citation resolves. It used
+    # to be skipped here with a line calling the video "not in the library".
+    in_library = {note.video_id for note in everything}
+    for video_id in dict.fromkeys(deep):
+        if video_id in in_library and video_id not in known:
+            known.append(video_id)
+            result.deep_unselected.append(video_id)
+            log.info("ask: --deep %s was not selected; opening its transcript as asked", video_id)
     # `--deep` forces a transcript open; it never prevents one being opened. The
     # model can still ask for more on top of what was forced.
     opened: list[Opened] = []
     for video_id in dict.fromkeys(deep):
         if video_id not in known:
-            log.info("ask: --deep %s is not in the library", video_id)
+            # After the loop above, only a video with no note at all.
+            result.deep_skipped.append((video_id, "no note in the library"))
+            log.warning("ask: --deep %s has no note in the library; not opened", video_id)
             continue
         text = _read_transcript(config, library, ledger, video_id)
-        if text is not None:
-            opened.append(Opened(video_id, "opened by request", text))
+        if text is None:
+            result.deep_skipped.append((video_id, "no transcript on disk"))
+            log.warning("ask: --deep %s has no transcript on disk; not opened", video_id)
+            continue
+        opened.append(Opened(video_id, "opened by request", text))
 
     try:
-        reply = _call(config, client, prompt, question, notes, opened, allow=not opened)
+        reply = _call(
+            config, client, prompt, question, notes, opened,
+            allow=not opened, total=len(everything),
+        )
         wanted = parse_escalations(
             reply.text, known=known, limit=config.ask.max_transcripts - len(opened)
         )
@@ -1400,13 +1434,18 @@ def answer_question(
             # Second call happens even if nothing could be opened: the first
             # reply was a request, not an answer, so returning it would hand the
             # user an ESCALATE line instead of prose.
-            reply = _call(config, client, prompt, question, notes, opened, allow=False)
+            reply = _call(
+                config, client, prompt, question, notes, opened,
+                allow=False, total=len(everything),
+            )
     except LlmError as exc:
         # Marked as a failure, not passed off as an answer. The text is still
         # recorded — a failed answer is the one you most want a record of — but
         # `failed` is what lets the CLI exit non-zero, so a skill reading the
         # exit code does not relay an error message as the library's answer.
-        result.text = f"The model call failed: {exc}"
+        # The classification, never the provider's message: this text is
+        # printed and saved to `answers/`, and the message is a response body.
+        result.text = f"The model call failed: {safe_reason(exc)}"
         result.failed = True
         result.opened = [(item.video_id, item.why) for item in opened]
         result.elapsed_s = time.monotonic() - started
@@ -1512,11 +1551,13 @@ def _call(
     opened: Sequence[Opened],
     *,
     allow: bool,
+    total: int | None = None,
 ):
     return client.complete(
         "You answer questions from a library of notes about videos, and you cite everything.",
         prompt.render(
             question=question,
+            scope=library_scope(len(notes), len(notes) if total is None else total),
             count=len(notes),
             notes=render_notes(notes),
             transcripts=_transcripts_block([(item.video_id, item.text) for item in opened]),
@@ -1524,6 +1565,28 @@ def _call(
         ),
         max_tokens=config.ask.max_tokens,
         task="answer",
+    )
+
+
+def library_scope(loaded: int, total: int) -> str:
+    """What the answering model is told about how much of the library it has.
+
+    Two cases, because they call for different honesty. Given everything, "the
+    library does not cover this" is a claim the model can make. Given a
+    selection, it cannot: the note it needed may be one it was not shown, and
+    the prompt's own advice to say plainly when the library lacks something
+    would turn a selection miss into a confident false negative.
+    """
+    if loaded >= total:
+        return "You have all of them."
+    left_out = total - loaded
+    return (
+        f"You have {loaded} of the library's {total} notes, not all of them: the "
+        f"library is too large to send whole, so the notes most likely to bear on "
+        f"this question were chosen and the other {left_out} were not given to you. "
+        "If these notes do not cover something, say that the notes you were given "
+        "do not cover it — not that the library does not, because it may be in a "
+        "note you were not shown."
     )
 
 

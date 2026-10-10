@@ -644,7 +644,8 @@ def test_a_failed_planning_call_leaves_the_round_as_it_was() -> None:
     assert not plan.parsed
     assert not plan.queries
     assert not plan.wants_to_stop
-    assert "boom" in plan.problem
+    assert "RuntimeError" in plan.problem, "named by class"
+    assert "boom" not in plan.problem, "an unclassified exception's text is not stored"
 
 
 def test_a_truncated_reply_is_not_parsed_at_all() -> None:

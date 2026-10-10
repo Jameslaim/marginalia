@@ -24,6 +24,7 @@ from marginalia.contracts import (
     EVIDENCE_DEGRADED,
     RELEVANT_UNAVAILABLE,
     VERDICT_NO,
+    VERDICT_MAYBE,
     VERDICT_YES,
 )
 
@@ -420,10 +421,13 @@ def test_markdown_bold_around_labels_survives() -> None:
 
 
 def test_an_unreadable_reply_keeps_the_video() -> None:
+    """Kept — never NO — and no longer a YES: a reply with no verdict word is
+    no judgement, and a YES is what the planner counts as coverage."""
     verdict = parse_full("I'm sorry, I can't help with that.", VIDEO)
 
     assert verdict.parsed is False
-    assert verdict.verdict == VERDICT_YES
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.judged is False
     assert verdict.evidence == EVIDENCE_CLEAR
 
 
@@ -433,7 +437,8 @@ def test_an_empty_reply_keeps_the_video() -> None:
     verdict = parse_full("", VIDEO)
 
     assert verdict.parsed is False
-    assert verdict.verdict == VERDICT_YES
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.judged is False
 
 
 def test_an_unreadable_reply_is_not_marked_degraded() -> None:
@@ -753,8 +758,9 @@ class _ContextOverflow(Exception):
 
 def test_a_transcript_over_the_window_keeps_the_video_and_the_run(tmp_path) -> None:
     """One long video used to end the discovery run here, because every 400 was
-    a config error. The transcript is already stored; nothing read it, so the
-    verdict is the keep any unanswered call gets, named for what happened."""
+    a config error. The transcript is already stored; nothing read it, so it is
+    kept unjudged — MAYBE, not the YES that counted as coverage — and named for
+    what happened."""
     from marginalia.contracts import Brief, SearchResult
 
     judge = _judge_with(_ContextOverflow(), tmp_path)
@@ -766,13 +772,14 @@ def test_a_transcript_over_the_window_keeps_the_video_and_the_run(tmp_path) -> N
 
     verdict = judge.judge_full(brief, candidate, transcript="hello world")
 
-    assert verdict.verdict == VERDICT_YES
-    assert verdict.parsed is False
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.parsed is False and verdict.judged is False
     assert "context window" in verdict.problem
 
 
 def test_an_ordinary_call_failure_still_keeps(tmp_path) -> None:
-    """The rule it must not have broken. A network blip is still a blip."""
+    """The rule it must not have broken. A network blip is still a blip: the
+    video is kept (never NO), and recorded as unjudged rather than as a YES."""
     from marginalia.contracts import Brief, SearchResult
 
     judge = _judge_with(ConnectionError("connection refused"), tmp_path)
@@ -784,8 +791,8 @@ def test_an_ordinary_call_failure_still_keeps(tmp_path) -> None:
 
     verdict = judge.judge_full(brief, candidate, transcript="hello world")
 
-    assert verdict.verdict == VERDICT_YES
-    assert verdict.parsed is False
+    assert verdict.verdict == VERDICT_MAYBE
+    assert verdict.parsed is False and verdict.judged is False
 
 
 # -- the cap must not cut the marker ----------------------------------------
@@ -968,3 +975,96 @@ def test_a_whole_review_replaces_the_draft_however_its_headings_are_written(tmp_
     judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(revised), tmp_path=tmp_path)
 
     assert judge.write_brief("prompt caching").text == revised.strip()
+
+
+# -- a skeleton or a critique never replaces a draft ---------------------------
+#
+# The section check that replaced the eighty-character guard asked only whether
+# each required heading started a line. Twenty-eight characters of bare
+# headings then became the brief every verdict in the run was measured against,
+# and so did a critique whose sentences happened to begin with the heading words.
+
+
+@pytest.mark.parametrize(
+    "review",
+    [
+        "INTENT\nMUST CONTAIN\nEXCLUDED",
+        "INTENT:\nMUST CONTAIN:\nEXCLUDED:\n",
+        "## Intent\n\n## Must contain\n- \n## Excluded\n**",
+    ],
+    ids=["bare-headings", "colon-skeleton", "decorated-skeleton"],
+)
+def test_headings_with_nothing_under_them_do_not_replace_the_draft(review, tmp_path) -> None:
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
+
+    assert judge.write_brief("prompt caching").text == _DRAFT.strip()
+
+
+def test_a_critique_whose_lines_open_with_heading_words_does_not_replace_the_draft(tmp_path) -> None:
+    critique = (
+        "Intent is stated but too vague to judge against.\n"
+        "Must contain more detail on cache expiry.\n"
+        "Excluded items look reasonable.\n"
+        "Overall this brief needs another pass."
+    )
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(critique), tmp_path=tmp_path)
+
+    assert judge.write_brief("prompt caching").text == _DRAFT.strip()
+
+
+def test_a_review_with_one_empty_required_section_is_refused_and_named(tmp_path, caplog) -> None:
+    review = "INTENT\nDecide whether caching pays.\n\nMUST CONTAIN\n- write premium\n\nEXCLUDED\n\nEDGE CASES\n- talks\n"
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        brief = judge.write_brief("prompt caching")
+
+    assert brief.text == _DRAFT.strip()
+    assert "empty EXCLUDED section" in caplog.text
+
+
+def test_a_terse_but_whole_review_still_replaces_the_draft(tmp_path) -> None:
+    """The guard refuses empty sections, not short ones."""
+    review = "INTENT: decide if caching pays\nMUST CONTAIN (at least one): write premium\nEXCLUDED: semantic caching\n"
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
+
+    assert judge.write_brief("prompt caching").text == review.strip()
+
+
+# -- a stage-2 call that produced no verdict is not a YES -----------------------
+
+
+def test_a_reply_cut_off_before_its_verdict_is_kept_unjudged(tmp_path) -> None:
+    from marginalia.contracts import Brief, SearchResult
+
+    judge = _brief_judge(_BriefResponse("VERDICT: Y", finish_reason="length"), tmp_path=tmp_path)
+    candidate = SearchResult(
+        video_id=VIDEO, title="t", channel="c", description="", duration_s=60,
+        published_at="20260101", view_count=None,
+    )
+    brief = Brief(topic="prompt caching", text="INTENT\nCaching.", version="1/1")
+
+    verdict = judge.judge_full(brief, candidate, transcript="hello world")
+
+    assert verdict.verdict != VERDICT_NO, "kept, never rejected"
+    assert verdict.verdict != VERDICT_YES, "and not a YES the planner would count"
+    assert getattr(verdict, "judged", True) is False
+
+
+def test_a_failed_stage_two_call_logs_no_provider_text(tmp_path, caplog) -> None:
+    from marginalia.contracts import Brief, SearchResult
+
+    marker = "ZZ-provider-body-ZZ"
+    judge = _judge_with(RuntimeError(f"reset by peer; echoed {marker}"), tmp_path)
+    candidate = SearchResult(
+        video_id=VIDEO, title="t", channel="c", description="", duration_s=60,
+        published_at="20260101", view_count=None,
+    )
+    brief = Brief(topic="prompt caching", text="INTENT\nCaching.", version="1/1")
+
+    with caplog.at_level(logging.DEBUG, logger="marginalia"):
+        verdict = judge.judge_full(brief, candidate, transcript="hello world")
+
+    assert marker not in caplog.text
+    assert marker not in verdict.reason
+    assert "RuntimeError" in caplog.text, "the classification is still logged"

@@ -53,9 +53,11 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    **Prevention is impossible; detection is not.** `marg doctor` compares the library on
    disk against the ledger and reports every disagreement — a directory with no row, a
    row whose status claims a transcript that is not there, a note the ledger never
-   recorded, a transcript whose hash has changed. It fixes nothing. Finding a violation
-   after the fact is the strongest guarantee available, and it is why the rule can stay
-   an absolute rather than a hope.
+   recorded, a transcript whose hash has changed, a transcript on disk its row does not
+   record. It fixes nothing. The last of those has its own repair command, `marg
+   reconcile`, because an interrupted store leaves it and nothing else records it.
+   Finding a violation after the fact is the strongest guarantee available, and it is
+   why the rule can stay an absolute rather than a hope.
 
 3. **Never modify a stored `transcript.txt`.** It is written once and is immutable.
    Acquisition is the fragile, blockable step; everything else in the system is
@@ -158,6 +160,20 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    no longer calls a NO invisible and permanent. Stage 1 is unchanged: a metadata
    NO still means never fetched, and everything above still holds there. The
    parse-failure → YES handling in `parse_full` was **not** revisited.
+
+   **A stage-2 call that produced no verdict is MAYBE, and is not coverage**
+   (recorded 2026-10). A failed call, a transcript over the model's window, a reply
+   cut off by the ceiling, a reply with no verdict word: each used to resolve to
+   YES, which is the keep rule 8 asks for and also exactly the wrong YES the
+   paragraph above names — the planner listed it under KEPT and counted it, and
+   discovery read its `decisions` row as "already judged for this topic", so one
+   provider blip stopped the topic from ever reading the video again. Now the
+   verdict is MAYBE with `judged=False`: still kept and stored, still noted
+   (note-writing never consulted the verdict), shown to the planner under its own
+   KEPT BUT NOT JUDGED heading, and judged again by the next run on the topic. The
+   one exception is a transcript too large for the model that refused it, which
+   waits for a different model rather than spending a refused call every run. A
+   reply with a verdict and a stray line beside it is still a verdict.
 
 9. **`brain/` reasons and returns decisions; `flow/` executes them.** `brain/` performs
    no filesystem, database, network or provider access — it may call the LLM abstraction
@@ -640,6 +656,15 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     Hard rule 1's worst case is reached by the most natural implementation of this
     feature, which is why a test asserts the transcript never reaches a log record.
 
+    **And no error carries the body either** (2026-10). `_safe` formats the
+    classified error, and the classifier used to build that error from the
+    exception's own text for anything it did not recognise and for every 402, 401
+    and other 4xx — so the body reached the retry line, the judge's warning, a
+    note's failure detail, and the failed answer `marg ask` prints and saves. Errors
+    are now built from the status, the provider's error code when it is an
+    identifier, and the request id; anything else is named by its class
+    (`safe_reason`).
+
     **The failure neither this rule nor rule 13 can see: a *semantic* failure.**
     A reply that terminates cleanly, parses, fills every required field and is
     simply wrong. `_classify` reads HTTP statuses and sees success; rule 13's
@@ -886,6 +911,8 @@ marg ask "<question>"              answer from the notes; --deep <id>, --json,
                                    exits 1 when no answer was produced
 marg run export <run_id>           write exports/<run_id>/ from the ledger
 marg doctor                        compare disk against ledger; read-only; --json
+marg reconcile [<id>...]           record transcripts an interrupted store left on
+                                   disk; no network, bytes untouched
 marg llm-check                     one request to the configured provider
 marg status <url|id>               show ledger state for one video
 marg list [--status S]             list videos by asset state (default has_transcript)

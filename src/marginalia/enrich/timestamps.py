@@ -29,6 +29,7 @@ truth about it.
 
 from __future__ import annotations
 
+import difflib
 import logging
 import re
 from typing import Iterable, Sequence
@@ -169,6 +170,26 @@ def locate(
 ) -> tuple[int, int] | None:
     """Where ``anchors`` occur together. Returns ``(start_ms, matched)``.
 
+    The time of the first anchor; `_locate` returns its word position, which
+    is what `quote_start` extends back from.
+    """
+    found = _locate(anchors, index, need=need, near_ms=near_ms, drift_ms=drift_ms)
+    if found is None:
+        return None
+    position, matched = found
+    return index.times_ms[position], matched
+
+
+def _locate(
+    anchors: Sequence[str],
+    index: TranscriptIndex,
+    *,
+    need: int,
+    near_ms: int | None,
+    drift_ms: int | None = None,
+) -> tuple[int, int] | None:
+    """Where ``anchors`` occur together. Returns ``(word position, matched)``.
+
     Scans only the positions where an anchor actually occurs, so cost is set by
     how rare the anchors are rather than by transcript length.
 
@@ -184,7 +205,7 @@ def locate(
         return None
 
     starts = sorted({p for word in wanted for p in index.positions.get(word, ())})
-    best: tuple[int, int, int] | None = None  # (matched, -distance, start_ms)
+    best: tuple[int, int, int] | None = None  # (matched, -distance, -first position)
 
     for start in starts:
         window = index.words[start : start + _WINDOW]
@@ -214,13 +235,90 @@ def locate(
         # points at that word rather than at the window edge. Relocation across
         # the video is prevented by `drift_ms`, which is a bound on the search,
         # not a preference inside it — the two jobs kept separate.
-        candidate = (matched, -distance, -start_ms)
+        candidate = (matched, -distance, -first)
         if best is None or candidate > best:
             best = candidate
 
     if best is None:
         return None
-    return -best[2], best[1]
+    return -best[2], best[0]
+
+
+# How many transcript words before the first anchor `quote_start` may search
+# beyond the quote's own length. Captions drop and merge short words, so the
+# opening of a quote rarely lines up word for word.
+_LEAD_SLACK = 3
+
+
+def quote_start(quote: str, position: int, index: TranscriptIndex) -> int:
+    """Walk back from the first rare anchor to where the quote actually begins.
+
+    Anchors are the quote's *rare* words, and a quote usually opens with common
+    ones — "so the thing is", "and then you" — which the index treats as noise,
+    rightly, for finding the passage. But a citation points at where the speaker
+    starts saying the words, and the first rare word can be several seconds
+    later. Snapping to it moved correct citations into the middle of their own
+    quotes: a quote opening at 00:00:20 with its first rare word at 00:00:23 was
+    "corrected" to 00:00:23.
+
+    So once the passage is found, the words of the quote before that anchor are
+    aligned against the transcript words just before it. Only words that match
+    move the citation, and the earliest matching one is where the quote starts;
+    if too few match, the anchor stands. This is direction-neutral: it finds the
+    quote's first word, which may be before or after where the note pointed.
+    """
+    words = _WORD_RE.findall(quote.lower())
+    anchor = index.words[position]
+    if anchor not in words:
+        return position
+    lead = words[: words.index(anchor)]
+    if not lead:
+        return position
+    begin = max(0, position - len(lead) - _LEAD_SLACK)
+    # Aligned outward from the anchor, both sequences reversed, so that among
+    # equally good matches the one *adjacent* to the anchor wins. Read forward,
+    # an earlier copy of the same common opening a few words back — the words
+    # that make it common — won the tie, and a correct 00:00:20 became 00:00:06.
+    backwards = list(reversed(index.words[begin:position]))
+    blocks = [
+        block
+        for block in difflib.SequenceMatcher(
+            None, lead[::-1], backwards, autojunk=False
+        ).get_matching_blocks()
+        if block.size
+    ]
+    matched = sum(block.size for block in blocks)
+    # More than half the opening words, found in order just before the anchor.
+    # Fewer is a quote whose opening the captions do not hold, and guessing
+    # where it starts is the authoritative-looking error this module avoids.
+    if matched * 2 <= len(lead):
+        return position
+    farthest = max(block.b + block.size - 1 for block in blocks)
+    return position - 1 - farthest
+
+
+def shared_lead(description: str, position: int, index: TranscriptIndex) -> int:
+    """The same walk for a description, held to a stricter test.
+
+    A description's opening words are the note's own ("the speaker says"), so
+    they are not aligned as a quote's are. But the words immediately before the
+    anchor, when the note and the transcript agree on them word for word, are
+    the speaker's words — and a citation describing that moment points at them.
+    At least two contiguous words, or the anchor stands.
+    """
+    words = _WORD_RE.findall(description.lower())
+    anchor = index.words[position]
+    if anchor not in words:
+        return position
+    lead = words[: words.index(anchor)]
+    shared = 0
+    while (
+        shared < len(lead)
+        and position - shared - 1 >= 0
+        and lead[-1 - shared] == index.words[position - shared - 1]
+    ):
+        shared += 1
+    return position - shared if shared >= 2 else position
 
 
 # -- the note side -----------------------------------------------------------
@@ -331,12 +429,20 @@ def snap_text(note: str, index: TranscriptIndex) -> tuple[str, list[Change], lis
             left.append((label, target.raw, REASON_NO_ANCHOR))
             continue
 
-        found = locate(anchors, index, need=need, near_ms=target.ms, drift_ms=drift)
+        found = _locate(anchors, index, need=need, near_ms=target.ms, drift_ms=drift)
         if found is None:
             left.append((label, target.raw, REASON_NO_MATCH))
             continue
 
-        start_ms, _matched = found
+        position, _matched = found
+        # A quote is the video's own words, so its beginning can be found; a
+        # description's are the note's, so only words it shares exactly with
+        # the transcript right before the anchor may move it.
+        if quoted:
+            position = quote_start(text, position, index)
+        else:
+            position = shared_lead(text, position, index)
+        start_ms = index.times_ms[position]
         replacement = render_timestamp(
             start_ms, parts=target.parts, has_millis=target.has_millis
         )

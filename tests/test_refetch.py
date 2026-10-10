@@ -225,3 +225,18 @@ def test_permanent_failures_are_never_retried(tmp_path):
 
     assert outcome.considered == 0
     assert provider.asked == []
+
+
+def test_a_transcript_already_on_disk_is_recorded_not_fetched_again(tmp_path):
+    """Refetch is the third store caller. A file on disk under a failed row
+    could only make the re-fetch hit `write_transcript`'s refusal."""
+    config, ledger, library = build(tmp_path, [A])
+    library.write_transcript(A, _result(A).lines)
+    provider = FakeProvider({A: _result(A)})
+
+    outcome = run(config, ledger, library, provider)
+
+    assert outcome.count(RECOVERED) == 1
+    assert provider.asked == []
+    assert ledger.get(A).status == "has_transcript"
+    assert ledger.get(A).content_hash == library.transcript_digest(A)

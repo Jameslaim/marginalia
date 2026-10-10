@@ -258,3 +258,102 @@ def test_a_missing_transcript_is_reported_not_raised(tmp_path):
     library.write_note("dQw4w9WgXcQ", note_with("Verbatim", '- "x" (00:00:01)'))
     result = snap_video(library, "dQw4w9WgXcQ")
     assert result.error == "no transcript"
+
+
+# -- a quote that opens with common words --------------------------------------
+#
+# Anchors are a quote's rare words, and the snapper pointed the citation at the
+# first of them. A quote opening with words the transcript uses everywhere then
+# had its correct citation moved forward to the middle of itself.
+
+COMMON = "\n".join(
+    [cue(start, start + 2, "so here we go") for start in (0, 2, 4, 6)]
+    + [
+        cue(20, 22, "so here we go"),
+        cue(23, 25, "quorum fencing tokens expire"),
+        cue(40, 42, "an unrelated closing line"),
+    ]
+)
+COMMON_QUOTE = "so here we go quorum fencing tokens expire"
+
+
+@pytest.mark.parametrize("section", ["Verbatim", "Key moments"])
+def test_a_correct_citation_whose_quote_opens_with_common_words_is_left_alone(section):
+    if section == "Verbatim":
+        line = f'- "{COMMON_QUOTE}" (00:00:20)'
+    else:
+        line = f'- 00:00:20 the speaker says "{COMMON_QUOTE}"'
+    note = note_with(section, line)
+
+    updated, changes, left = snap_text(note, build_index(COMMON))
+
+    assert changes == []
+    assert updated == note
+    assert any(reason == REASON_ALREADY for _s, _r, reason in left)
+
+
+def test_a_late_citation_snaps_to_the_start_of_the_quote_not_its_first_rare_word():
+    note = note_with("Verbatim", f'- "{COMMON_QUOTE}" (00:00:26)')
+
+    _updated, changes, _left = snap_text(note, build_index(COMMON))
+
+    assert [change.after for change in changes] == ["00:00:20"]
+
+
+def test_an_early_citation_moves_later_onto_the_quote_start():
+    """Not an "only move earlier" rule: the quote's first word is the target,
+    and here it is after where the note pointed."""
+    note = note_with("Verbatim", f'- "{COMMON_QUOTE}" (00:00:12)')
+
+    _updated, changes, _left = snap_text(note, build_index(COMMON))
+
+    assert [change.after for change in changes] == ["00:00:20"]
+
+
+def test_an_opening_the_captions_do_not_hold_falls_back_to_the_anchor():
+    """The extension needs the quote's opening words in order just before the
+    anchor. When they are not there, guessing an earlier start is worse than
+    the anchor's own time."""
+    note = note_with("Verbatim", '- "whatever you might think quorum fencing tokens expire" (00:00:26)')
+
+    _updated, changes, _left = snap_text(note, build_index(COMMON))
+
+    assert [change.after for change in changes] == ["00:00:23"]
+
+
+ADJACENT = "\n".join(
+    [cue(start, start + 2, "so here we go") for start in (0, 2, 4, 6, 20)]
+    + [cue(30, 32, "quorum fencing tokens expire")]
+)
+
+
+@pytest.mark.parametrize("cited", ["00:00:20", "00:00:26"])
+def test_the_opening_nearest_the_anchor_wins_over_an_earlier_copy(cited):
+    """Every cue before the quote holds the same common words. Aligned forward,
+    the earliest full copy won the tie and 00:00:20 was moved to 00:00:06."""
+    note = note_with("Verbatim", f'- "{COMMON_QUOTE}" ({cited})')
+
+    updated, _changes, _left = snap_text(note, build_index(ADJACENT))
+
+    assert f'"{COMMON_QUOTE}" (00:00:20)' in updated
+
+
+def test_a_description_using_the_speakers_words_keeps_its_correct_citation():
+    """Unquoted, so not aligned as a quote — but the words it shares with the
+    transcript right before the anchor are the speaker's, and the citation
+    points at them."""
+    note = note_with("Key moments", f"- 00:00:20 the speaker says {COMMON_QUOTE}")
+
+    updated, changes, _left = snap_text(note, build_index(COMMON))
+
+    assert changes == [] and updated == note
+
+
+def test_a_description_shares_nothing_and_still_snaps_to_its_anchor():
+    """Without shared words the old behaviour stands: descriptions are refined
+    against their rare words, and that correction is what the snapper is for."""
+    note = note_with("Key moments", "- 00:00:26 explains why quorum fencing tokens expire")
+
+    _updated, changes, _left = snap_text(note, build_index(COMMON))
+
+    assert [change.after for change in changes] == ["00:00:23"]

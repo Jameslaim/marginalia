@@ -1,8 +1,10 @@
 ---
 name: plan_round
-version: "5"
+version: "6"
 stage: plan
-note: "v5 replaces two vendor names in an example query:
+note: "v6 names the KEPT BUT NOT JUDGED section: keepers stage 2 gave no
+  verdict were listed under KEPT and counted as coverage.
+  v5 replaces two vendor names in an example query:
   rule 7 says no prompt names a model family, and the test meant to hold
   that scanned only the top level of prompts/, so this file was never
   checked.
@@ -88,6 +90,12 @@ that is precisely the trap: the title is not the content, and here no content
 will ever be available. Treat that part of the brief as still unmet, and if the
 same subject has nothing answerable against it, say so in the gap and search for
 it again.
+
+A video under KEPT BUT NOT JUDGED was stored, but stage 2 never gave it a verdict —
+the call failed, or the transcript was too large for the model, or the reply was
+cut off. Nobody has read it against the brief, so it satisfies nothing yet, however
+apt its title. Treat the part of the brief it seems to cover as unmet; it will be
+judged again on a later run.
 
 A gap must be **specific**. "More depth needed" is not a gap. "Nothing found
 that shows cache expiry or TTL configuration" is a gap — it names a thing that

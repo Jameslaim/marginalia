@@ -49,7 +49,15 @@ from ..contracts import (
 )
 from ..core.ledger import Ledger
 from ..core.library import Library, format_duration
-from ..llm import LlmClient, LlmConfigError, LlmError, LlmRequestTooLarge, Prompt, load_prompt
+from ..llm import (
+    LlmClient,
+    LlmConfigError,
+    LlmError,
+    LlmRequestTooLarge,
+    Prompt,
+    load_prompt,
+    safe_reason,
+)
 from ..quotes import Words, closeness, flatten, quoted_spans, spoken_text
 from .timestamps import build_index, snap_note
 
@@ -388,7 +396,7 @@ def write_notes(
                 # Caught rather than raised past the report, because the notes
                 # already written are worth reporting: the drain that found
                 # this had 74 of them behind the failure.
-                log.error("note: stopping — %s", exc)
+                log.error("note: stopping — %s", safe_reason(exc))
                 run.stopped_because = STOP_REFUSED
                 break
             run.results.append(result)
@@ -516,8 +524,8 @@ def _one(
         log.warning("note: %s is too large for the model's context window — skipped", video_id)
         return NoteResult(video_id, SKIPPED, "too large for the model's context window")
     except LlmError as exc:
-        log.info("note: %s failed (%s)", video_id, exc)
-        return NoteResult(video_id, FAILED, f"transient: {_brief(exc)}")
+        log.info("note: %s failed (%s)", video_id, safe_reason(exc))
+        return NoteResult(video_id, FAILED, f"transient: {safe_reason(exc)[:120]}")
 
     if reply.finish_reason == "length":
         # A fragment, refused before it can pass for a note. `validate_note`
@@ -596,7 +604,3 @@ def _overspent(config: Config, client: LlmClient) -> bool:
         log.warning("note: estimated $%.3f spent, ceiling is $%.2f", spent, ceiling)
         return True
     return False
-
-
-def _brief(exc: Exception) -> str:
-    return " ".join(str(exc).split())[:120]

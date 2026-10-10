@@ -58,7 +58,7 @@ from ..contracts import (
     TerritoryMap,
     Usage,
 )
-from ..llm import LlmClient, Prompt, load_prompt
+from ..llm import LlmClient, Prompt, load_prompt, safe_reason
 
 log = logging.getLogger(__name__)
 
@@ -1076,12 +1076,15 @@ class Mapper:
                 max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001 - a failed map must not end the run
-            log.warning("territory: mapping call failed (%s) — searching from the brief alone", exc)
+            log.warning(
+                "territory: mapping call failed (%s) — searching from the brief alone",
+                safe_reason(exc),
+            )
             return TerritoryMap(
                 topic=brief.topic,
                 version=prompt.version,
                 parsed=False,
-                problem=f"mapping call failed: {exc}",
+                problem=f"mapping call failed: {safe_reason(exc)}",
             )
 
         if reply.finish_reason == "length":

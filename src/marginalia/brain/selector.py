@@ -32,7 +32,7 @@ from ..contracts import (
     NoteSummary,
     Selection,
 )
-from ..llm import LlmClient, LlmConfigError, Prompt, batched, load_prompt
+from ..llm import LlmClient, LlmConfigError, Prompt, batched, load_prompt, safe_reason
 
 log = logging.getLogger(__name__)
 
@@ -329,10 +329,10 @@ class Selector:
         except LlmConfigError:
             raise
         except Exception as exc:  # noqa: BLE001 - a failed batch keeps its notes
-            log.warning("select: a batch failed (%s)", exc)
+            log.warning("select: a batch failed (%s)", safe_reason(exc))
             return Selection(
                 mode=SELECTION_SELECTED, considered=len(known),
-                parsed=False, problem=f"call failed: {exc}",
+                parsed=False, problem=f"call failed: {safe_reason(exc)}",
             )
 
         if reply.finish_reason == "length":

@@ -7,7 +7,7 @@ matches four tool calls and no shell command. So the rule is kept by being
 followed, and what this module adds is the other half: a violation cannot be
 prevented, but it can be made impossible to miss.
 
-Seven disagreements, seven counters, and **nothing is fixed, written, fetched or
+Eight disagreements, eight counters, and **nothing is fixed, written, fetched or
 asked of a model**. A doctor that repaired what it found would be a second writer
 into the library with its own idea of which side is right, which is the state
 rule 2 exists to prevent.
@@ -44,6 +44,7 @@ from ..contracts import (
     CHECK_RUN_UNFINISHED,
     CHECK_TRANSCRIPT_MISSING,
     CHECK_TRANSCRIPT_MODIFIED,
+    CHECK_TRANSCRIPT_UNRECORDED,
     CHECK_UNTRACKED_DIR,
     STATUS_HAS_TRANSCRIPT,
     DoctorFinding,
@@ -53,6 +54,7 @@ from ..contracts import (
 from ..core.ledger import RunRow
 from ..core.library import Library
 from ..enrich.note import NoteInvalid, validate_note
+from .store import needs_reconciling
 
 log = logging.getLogger(__name__)
 
@@ -146,6 +148,13 @@ def _check_row(library: Library, row: VideoRow) -> tuple[list[DoctorFinding], bo
     # 2. Keyed on the claim, not on the absence of files.
     if row.status == STATUS_HAS_TRANSCRIPT and not has_transcript:
         findings.append(DoctorFinding(CHECK_TRANSCRIPT_MISSING, video_id, row.status))
+
+    # 2b. The other direction of the same claim: bytes on disk the row does not
+    # record. Not a rule-2 violation — an interrupted store leaves exactly this —
+    # but a video nothing will ever note until `marg reconcile` records it. It
+    # used to show only as one more "unrecorded" hash under a clean verdict.
+    if needs_reconciling(library, row):
+        findings.append(DoctorFinding(CHECK_TRANSCRIPT_UNRECORDED, video_id, row.status))
 
     # 3 and 4. The two directions are two findings: one says the ledger
     # recorded a note that is gone, the other that a note arrived the ledger

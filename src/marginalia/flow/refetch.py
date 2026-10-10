@@ -45,7 +45,7 @@ from ..core.ledger import Ledger
 from ..core.library import Library
 from ..providers import get_provider
 from ..providers.base import PermanentError, TransientError
-from .store import store_transcript
+from .store import reconcile_stored, store_transcript
 
 log = logging.getLogger(__name__)
 
@@ -97,7 +97,12 @@ def refetch(
             if index:
                 pause(delay)
             wanted = ledger.was_wanted(row.video_id)
-            result, outcome, detail = _try(ledger, provider, row.video_id)
+            if reconcile_stored(library, ledger, row.video_id):
+                # The bytes arrived on an earlier attempt and the row never
+                # heard. Fetching again could only hit the immutable file.
+                result, outcome, detail = None, RECOVERED, "already on disk; row recorded"
+            else:
+                result, outcome, detail = _try(ledger, provider, row.video_id)
 
             if outcome == RECOVERED and result is not None:
                 _store(library, ledger, config, provider, row.video_id, result)

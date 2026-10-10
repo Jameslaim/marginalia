@@ -58,6 +58,7 @@ from .contracts import (
     CHECK_RUN_UNFINISHED,
     CHECK_TRANSCRIPT_MISSING,
     CHECK_TRANSCRIPT_MODIFIED,
+    CHECK_TRANSCRIPT_UNRECORDED,
     CHECK_UNTRACKED_DIR,
     DOCTOR_CHECKS,
     Answer,
@@ -74,7 +75,7 @@ from .flow.discover import discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
-from .flow.store import store_transcript
+from .flow.store import reconcile_stored, store_transcript, unreconciled
 from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
@@ -195,6 +196,12 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
     with Ledger(library.ledger_path) as ledger:
         existing = ledger.get(video_id)
+        # An interrupted store left the bytes and not the row. Fetching again
+        # can only fail — `transcript.txt` is immutable — so record what is
+        # there instead. No network call, and nothing on disk changes.
+        if reconcile_stored(library, ledger, video_id):
+            _report("reconciled", video_id, "transcript was on disk; ledger row recorded")
+            return EXIT_OK
         reason = skip_reason(
             existing, transcript_present=library.has_transcript(video_id)
         )
@@ -364,6 +371,8 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             # Of those, the ones read from disk because nothing had judged them
             # for this topic. A verdict happened; a download did not.
             (report.judged_from_disk, "of them judged from disk"),
+            (report.reconciled, "of them repaired from an interrupted store"),
+            (report.unjudged, "kept without a stage-2 verdict"),
             (report.known_this_run, "stored in an earlier round"),
             (report.flipped_to_no, "kept on disk, declined here"),
             # Its own line, and the one worth reading. This is stage 1 having
@@ -661,6 +670,8 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "failed": report.failed,
                 "already_held": report.already_held,
                 "judged_from_disk": report.judged_from_disk,
+                "reconciled": report.reconciled,
+                "unjudged": report.unjudged,
                 "no_captions": report.no_captions,
                 "degraded": report.degraded,
                 "too_long_to_note": report.too_long_to_note,
@@ -943,6 +954,11 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                     "opened": [
                         {"video_id": video_id, "why": why} for video_id, why in answer.opened
                     ],
+                    "deep_unselected": answer.deep_unselected,
+                    "deep_skipped": [
+                        {"video_id": video_id, "why": why}
+                        for video_id, why in answer.deep_skipped
+                    ],
                     "citation_shaped": len(answer.citations) + len(answer.unparsed),
                     "unparsed": answer.unparsed,
                     "citations": [
@@ -995,6 +1011,10 @@ def _cmd_ask(args: argparse.Namespace) -> int:
     if answer.opened:
         print("\nopened transcripts:")
         for video_id, why in answer.opened:
+            print(f"  {video_id}  {why}")
+    if answer.deep_skipped:
+        print("\n--deep not honoured:")
+        for video_id, why in answer.deep_skipped:
             print(f"  {video_id}  {why}")
 
     print()
@@ -1157,8 +1177,45 @@ _CHECK_MEANING = {
     CHECK_NOTE_UNRECORDED: "note.md exists and noted_at is NULL: written without the CLI",
     CHECK_NOTE_INVALID: "stored note fails validate_note",
     CHECK_TRANSCRIPT_MODIFIED: "content_hash no longer matches transcript.txt (rule 3)",
+    CHECK_TRANSCRIPT_UNRECORDED: (
+        "transcript.txt is on disk and the row does not record it: an interrupted "
+        "store; `marg reconcile` records it"
+    ),
     CHECK_RUN_UNFINISHED: "run has no finished_at (rule 6's signal; reported, not an error)",
 }
+
+
+def _cmd_reconcile(args: argparse.Namespace) -> int:
+    """Record transcripts already on disk that their ledger rows do not.
+
+    The repair for an interrupted store, and the only write `marg doctor`'s
+    eighth check points at. Reads the bytes to hash them and changes none; a
+    row that already agrees is left alone, so running it twice is harmless.
+    No network call and no model call.
+    """
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+
+    with Ledger(library.ledger_path) as ledger:
+        if args.video:
+            video_ids = []
+            for value in args.video:
+                video_id = extract_video_id(value)
+                if video_id is None:
+                    return _error(f"not a YouTube URL or video ID: {value!r}", EXIT_USAGE)
+                video_ids.append(video_id)
+        else:
+            video_ids = unreconciled(library, ledger.list_by_status())
+        repaired = 0
+        for video_id in video_ids:
+            if reconcile_stored(library, ledger, video_id):
+                repaired += 1
+                _report("reconciled", video_id, "ledger row now records the transcript")
+            elif args.video:
+                _report("skipped", video_id, "nothing to reconcile")
+    print(f"reconcile: {repaired} row(s) recorded")
+    return EXIT_OK
 
 
 def _cmd_doctor(args: argparse.Namespace) -> int:
@@ -1691,6 +1748,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     doctor.add_argument("--json", action="store_true", help="machine-readable output")
     doctor.set_defaults(handler=_cmd_doctor)
+
+    reconcile = subparsers.add_parser(
+        "reconcile",
+        help="record transcripts left on disk by an interrupted store (no network)",
+    )
+    reconcile.add_argument("video", nargs="*", help="video IDs or URLs (default: all)")
+    reconcile.set_defaults(handler=_cmd_reconcile)
 
     snap = subparsers.add_parser(
         "snap-timestamps", help="align cited timestamps in notes to the transcript"

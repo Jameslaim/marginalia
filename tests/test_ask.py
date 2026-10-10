@@ -1482,3 +1482,190 @@ def test_only_transcripts_cited_beside_a_quote_are_read(tmp_path, monkeypatch):
     answer_question(config, library, spoken, "q")
 
     assert read == [A]
+
+
+# -- what the model and the record say about a partial library ----------------
+#
+# Above the budget the selector loads part of the library. The answer prompt
+# said "You have all of them" regardless, so a model shown one note of three was
+# told that whatever it could not find was not there; `--deep` for a note the
+# selector left out was dropped with a log line calling the video absent; and
+# the saved answer's `## Notes read` listed every title in the library under a
+# header that said one had been read.
+
+
+def _selected(tmp_path):
+    config, library = build(
+        tmp_path, {A: "aaa " * 4_000, B: "bbb " * 4_000, C: "ccc " * 4_000},
+        {A: TRANSCRIPT, B: TRANSCRIPT, C: TRANSCRIPT},
+    )
+    return config, replace(config, ask=make_ask_config(max_input_tokens=8_000)), library
+
+
+def test_a_selected_answer_tells_the_model_it_has_part_of_the_library(tmp_path):
+    _, config, library = _selected(tmp_path)
+    spoken = client([f"DROPPED: {B}, {C}\nWHY: off topic", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+
+    assert answer.selection.mode == SELECTION_SELECTED
+    answering = spoken.sent[1]["messages"][1]["content"]
+    assert "You have all of them" not in answering
+    assert "1 of the library's 3 notes" in answering
+    assert "not that the library does not" in answering
+
+
+def test_a_whole_library_answer_still_says_it_has_everything(tmp_path):
+    config, library = build(tmp_path, {A: "note A", B: "note B"})
+    spoken = client(["An answer."])
+
+    answer_question(config, library, spoken, "q")
+
+    assert "You have all of them." in spoken.sent[0]["messages"][1]["content"]
+
+
+def test_deep_for_a_note_selection_left_out_is_honoured(tmp_path):
+    _, config, library = _selected(tmp_path)
+    spoken = client([f"DROPPED: {B}, {C}\nWHY: off topic", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q", deep=[C])
+
+    assert (C, "opened by request") in answer.opened
+    assert answer.deep_unselected == [C]
+    assert C not in answer.selection.video_ids, "the selection record is unchanged"
+    answering = spoken.sent[1]["messages"][1]["content"]
+    assert f"===== TRANSCRIPT {C}" in answering
+    assert "below that nothing is cached" in answering
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+    assert f"- {C} — opened by request (its note was not among those selected)" in rendered
+
+
+def test_a_citation_into_a_deep_transcript_outside_the_selection_resolves(tmp_path):
+    _, config, library = _selected(tmp_path)
+    spoken = client([f"DROPPED: {B}, {C}\nWHY: off topic", f"It says so [{C} 00:04]."])
+
+    answer = answer_question(config, library, spoken, "q", deep=[C])
+
+    assert [citation.video_id for citation in answer.citations] == [C]
+    assert answer.unresolved_ids == []
+
+
+def test_deep_that_cannot_be_honoured_says_why(tmp_path, caplog):
+    config, library = build(tmp_path, {A: "note A", B: "note B"}, {A: TRANSCRIPT})
+    absent = "zzzzzzzzzzz"
+    spoken = client(["An answer."])
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.ask"):
+        answer = answer_question(config, library, spoken, "q", deep=[absent, B])
+
+    assert answer.deep_skipped == [
+        (absent, "no note in the library"),
+        (B, "no transcript on disk"),
+    ]
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+    assert f"- {absent} — not opened (--deep): no note in the library" in rendered
+    assert f"- {B} — not opened (--deep): no transcript on disk" in rendered
+    assert absent in caplog.text
+
+
+def test_notes_read_lists_only_the_notes_supplied(tmp_path):
+    _, config, library = _selected(tmp_path)
+    spoken = client([f"DROPPED: {B}, {C}\nWHY: off topic", "An answer."])
+
+    answer = answer_question(config, library, spoken, "q")
+    rendered = render_answer(answer, asked_at="2026-01-01T00:00:00+00:00")
+
+    notes_read = rendered.split("## Notes read")[1].split("## Transcripts opened")[0]
+    assert A in notes_read
+    assert B not in notes_read and C not in notes_read
+
+
+# -- a near-exact quote among repeated fragments ------------------------------
+#
+# The indexed matcher voted for alignments and scored the top twenty. One
+# inserted word splits a passage's votes 4 and 4; twenty or more repeats of a
+# five-word fragment then took every slot, and a passage the exhaustive search
+# scored 0.8 came out at 0.5 — below both thresholds.
+
+_P = [f"p{i}" for i in range(8)]
+_QUOTE = " ".join(_P)
+_DECOY = " ".join(_P[:5] + ["u0", "u1", "u2"])
+_NEAR = " ".join(_P[:4] + ["inserted"] + _P[4:])
+
+
+def _decoyed(filler: int = 0) -> str:
+    padding = " ".join(f"f{i}" for i in range(filler))
+    return " ".join([padding, " ".join([_DECOY] * 25), _NEAR, "after the passage"]).strip()
+
+
+@pytest.mark.parametrize("filler", [0, 2_000], ids=["short", "transcript-length"])
+def test_a_near_exact_passage_among_repeated_fragments_is_close(filler):
+    from marginalia.quotes import Words, closeness
+
+    assert closeness(_QUOTE, Words(_decoyed(filler))) == pytest.approx(0.8)
+
+
+def test_the_vote_path_agrees_with_exhaustive_scoring_on_natural_text():
+    """The speed-up must not change answers it was never meant to change."""
+    import difflib
+    import random
+
+    from marginalia.quotes import Words, closeness
+
+    def exhaustive(quote, words):
+        needle = quote.split()
+        return max(
+            difflib.SequenceMatcher(None, needle, words[start : start + len(needle) + 4]).ratio()
+            for start in range(max(1, len(words) - len(needle) + 1))
+        )
+
+    rng = random.Random(7)
+    vocab = [f"w{i}" for i in range(3_000)]
+    weights = [1 / (i + 1) for i in range(3_000)]
+    for _ in range(12):
+        words = rng.choices(vocab, weights, k=2_500)
+        at = rng.randrange(100, 2_300)
+        quote = words[at : at + 12]
+        edited = words[:at] + quote[:6] + [rng.choice(vocab)] + quote[6:] + words[at + 12 :]
+        assert closeness(" ".join(quote), Words(" ".join(edited))) == pytest.approx(
+            exhaustive(" ".join(quote), edited)
+        )
+
+
+def test_a_long_transcript_is_scored_at_a_bounded_number_of_windows(monkeypatch):
+    """Performance, asserted as work rather than time: twenty passages, each
+    scored across its neighbourhood, however long the transcript."""
+    import difflib
+
+    from marginalia import quotes
+
+    calls = {"n": 0}
+    real = difflib.SequenceMatcher
+
+    class Counting(real):
+        def __init__(self, *args, **kwargs):
+            calls["n"] += 1
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(quotes.difflib, "SequenceMatcher", Counting)
+    hay = quotes.Words(" ".join(f"w{i % 400}" for i in range(50_000)))
+
+    quotes.closeness("w1 w2 w3 w4 w5 w6 w7 w8", hay)
+
+    assert 0 < calls["n"] <= quotes._ALIGNMENTS * (2 * quotes._SPREAD + 1)
+
+
+def test_a_near_exact_quote_among_decoys_is_loose_not_unverified(tmp_path):
+    from marginalia.ask import check_grounding
+
+    transcript = "\n".join(
+        f"[00:{i // 60:02d}:{i % 60:02d}.000 --> 00:{i // 60:02d}:{i % 60:02d}.900] {chunk}"
+        for i, chunk in enumerate(_decoyed(2_000).split(" "))
+    )
+    config, library = build(tmp_path, {A: "## Verbatim\n- nothing quoted\n"})
+    notes = load_notes(library)
+
+    grounding = check_grounding(f'He says "{_QUOTE}" [{A} 00:01].', notes, [A], transcripts={A: transcript})
+
+    flagged = list(grounding.unverified_speech) + list(grounding.unverified_phrases)
+    assert [entry.loose for entry in flagged] == [True]

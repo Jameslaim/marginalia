@@ -67,6 +67,8 @@ from ..contracts import (
     RECOMMEND_STOP,
     REJECTED,
     STORED_THIS_RUN,
+    UNJUDGED_REASONS,
+    UNJUDGED_TOO_LARGE,
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
@@ -97,7 +99,7 @@ from ..llm import LlmClient
 from ..providers import PermanentError, TransientError, get_provider
 from ..providers.base import TranscriptProvider
 from .search import quota_headroom, run_search
-from .store import store_transcript
+from .store import reconcile_stored, store_transcript
 
 log = logging.getLogger(__name__)
 
@@ -842,7 +844,7 @@ def _judge_round(
         # from the stored file instead, below; only a video already judged for
         # this topic is skipped.
         held = library.has_transcript(candidate.video_id)
-        if held and _judged_for_topic(ledger, candidate.video_id, run.topic):
+        if held and _judged_for_topic(ledger, candidate.video_id, run.topic, model=run.model):
             log.info(
                 "discover: %s is on disk and already judged for this topic",
                 candidate.video_id,
@@ -894,6 +896,12 @@ def _judge_round(
         if held:
             report.already_held += 1
             report.judged_from_disk += 1
+            # A store interrupted between the file and the row leaves the bytes
+            # here and the row `pending`, and nothing downstream ever notes a
+            # `pending` video. Judged from disk without this, it was counted as
+            # coverage that could never become a note.
+            if reconcile_stored(library, ledger, candidate.video_id):
+                report.reconciled += 1
             material = _held_material(library, ledger, candidate.video_id)
         else:
             _pace(config, fetched_any)
@@ -965,6 +973,11 @@ def _judge_round(
         )
         if not judgement.parsed:
             report.unparsed += 1
+        if not judgement.judged:
+            # Kept, per rule 8, and not coverage: nothing read it against the
+            # brief. The planner is shown it apart, and the next run on this
+            # topic judges it again.
+            report.unjudged += 1
         if judgement.unmarked_currency:
             # Its own counter, and nothing else happens. The verdict stands —
             # dating an API is usually a correct judgement and the marker is
@@ -1025,7 +1038,8 @@ def _judge_round(
         # worker measures. The judge's rendering is shorter per line, so
         # checking it here undercounted videos the worker would then refuse.
         stored_chars = material.stored_chars
-        if stored_chars > config.note.max_transcript_chars:
+        too_long = stored_chars > config.note.max_transcript_chars
+        if too_long:
             report.too_long_to_note += 1
             log.info(
                 "discover: %s is %d characters, past the note ceiling of %d; "
@@ -1049,7 +1063,7 @@ def _judge_round(
         # Always the stage-2 judgement now. There is no longer a keeper whose
         # reason describes a title rather than a transcript, which is what made
         # a coverage claim built on one a claim built on a guess.
-        report.kept.append(_judged(candidate, STAGE_FULL, judgement))
+        report.kept.append(_judged(candidate, STAGE_FULL, judgement, too_long=too_long))
 
     return _dedupe_concepts(concepts)
 
@@ -1072,12 +1086,27 @@ class _Material:
 _STORED_CUE_RE = re.compile(r"^\[(\d{2}:\d{2}:\d{2}\.\d{3}) --> [^\]]*\] ?", re.MULTILINE)
 
 
-def _judged_for_topic(ledger: Ledger, video_id: str, topic: str) -> bool:
-    """Has stage 2 already read this video for this topic?"""
-    return any(
-        decision.stage in (STAGE_FULL, STAGE_OPENING) and decision.topic == topic
-        for decision in ledger.decisions_for(video_id)
-    )
+def _judged_for_topic(ledger: Ledger, video_id: str, topic: str, *, model: str = "") -> bool:
+    """Has stage 2 already given this video a verdict for this topic?
+
+    A verdict, not a call. A stage-2 call that failed, was cut off or carried
+    no verdict recorded a row too — as MAYBE now, and as a plain YES before —
+    and counting that row as a judgement meant one provider blip stopped the
+    topic from ever reading the video again.
+
+    The one unjudged row that does stand is a transcript too large for the
+    model that refused it: asking the same model again is refused again, so it
+    waits for a different model rather than spending a call every run.
+    """
+    for decision in ledger.decisions_for(video_id):
+        if decision.stage not in (STAGE_FULL, STAGE_OPENING) or decision.topic != topic:
+            continue
+        unjudged = decision.verdict == VERDICT_MAYBE or (decision.reason or "") in UNJUDGED_REASONS
+        if not unjudged:
+            return True
+        if decision.reason == UNJUDGED_TOO_LARGE and (not model or decision.model == model):
+            return True
+    return False
 
 
 def _held_material(library: Library, ledger: Ledger, video_id: str) -> _Material:
@@ -1175,6 +1204,8 @@ def _judged(
         verdict=verdict.verdict,
         reason=verdict.reason,
         evidence=getattr(verdict, "evidence", EVIDENCE_CLEAR),
+        too_long=too_long,
+        judged=getattr(verdict, "judged", True),
     )
 
 
