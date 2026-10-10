@@ -22,11 +22,16 @@ import re
 from typing import Iterable, Sequence
 
 __all__ = [
+    "NOTE_SECTIONS",
     "QUOTE_RE",
     "Words",
     "closeness",
     "flatten",
+    "normalise_heading",
+    "note_lines",
+    "note_sections",
     "quoted_spans",
+    "section_heading",
     "spoken_text",
     "verbatim_of",
 ]
@@ -47,8 +52,105 @@ _CUE_PREFIX_RE = re.compile(r"^\[[^\]\n]*\]\s?", re.MULTILINE)
 _NOT_WORD_RE = re.compile(r"[\W_]+", re.UNICODE)
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
-_VERBATIM_RE = re.compile(r"^## Verbatim\s*$", re.MULTILINE)
-_SECTION_RE = re.compile(r"^#{1,4}\s", re.MULTILINE)
+# -- note sections ---------------------------------------------------------
+#
+# The note format's sections, spelled as `prompts/write_note.md` spells them.
+# Here rather than in `enrich/note.py` because four readers need them — the
+# validator, the Verbatim check, the answer checker's Verbatim fallback and the
+# selector's one-line summary — and each used to find sections its own way. A
+# `# install the dependencies` line inside Verbatim ended the section for the
+# validator (so the note "had no Verbatim" and failed every run) and for the
+# quote checks (so quotes after it went unchecked), while `### Verbatim` passed
+# validation and was invisible to the answer side. One splitter, used by all.
+NOTE_SECTIONS: tuple[str, ...] = (
+    "Claims",
+    "Wrong or shaky",
+    "Assumes you know",
+    "How current is it",
+    "Leaves out",
+    "Key moments",
+    "Who's talking, what they want",
+    "Verbatim",
+)
+
+_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s*(.*?)\s*#*\s*$")
+_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+
+
+def normalise_heading(text: str) -> str:
+    """A heading's text, reduced to what it must match.
+
+    Models substitute a typographic apostrophe for a typed one about as often
+    as not, and "Who's talking" failing to match "Who’s talking" would reject a
+    perfectly good note. Case, emphasis and a trailing colon go the same way.
+    """
+    text = text.strip().lstrip("#").strip().strip("*_").strip()
+    return " ".join(text.replace("’", "'").casefold().split()).rstrip(":").strip()
+
+
+_KNOWN = {normalise_heading(name): name for name in NOTE_SECTIONS}
+
+
+def section_heading(line: str) -> tuple[bool, str | None]:
+    """``(is_a_boundary, section name or None)`` for one line, outside a fence.
+
+    * A known section name, at any heading level, starts that section.
+    * Any other **level-2** heading ends the current one: `##` is the note
+      format's own section level, so an unknown `##` is a section nobody asked
+      for, and its contents are not the previous section's.
+    * Every other `#` line — a shell comment, a level-3 subheading, a hashtag —
+      is content.
+    """
+    match = _HEADING_RE.match(line)
+    if match is None:
+        return False, None
+    name = _KNOWN.get(normalise_heading(match.group(2)))
+    if name is not None:
+        return True, name
+    return (len(match.group(1)) == 2 and bool(match.group(2))), None
+
+
+def note_lines(text: str) -> list[tuple[str | None, str, bool]]:
+    """Every line of a note as ``(section, line, is_heading)``, line endings kept.
+
+    ``section`` is the canonical name of the section the line belongs to, or
+    ``None`` before the first one and after an unknown one. A fenced code block
+    is content throughout, whatever its lines start with.
+    """
+    out: list[tuple[str | None, str, bool]] = []
+    section: str | None = None
+    fenced = False
+    for line in text.splitlines(keepends=True):
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+            out.append((section, line, False))
+            continue
+        if not fenced:
+            boundary, name = section_heading(line)
+            if boundary:
+                section = name
+                out.append((section, line, True))
+                continue
+        out.append((section, line, False))
+    return out
+
+
+def note_sections(text: str) -> dict[str, str]:
+    """The note's known sections by canonical name, bodies stripped. A section
+    that appears twice keeps its first body."""
+    bodies: dict[str, list[str]] = {}
+    seen: set[str] = set()
+    current: str | None = None
+    for section, line, is_heading in note_lines(text):
+        if is_heading:
+            current = section if section not in seen else None
+            if section is not None:
+                seen.add(section)
+                bodies.setdefault(section, [])
+            continue
+        if current is not None:
+            bodies[current].append(line)
+    return {name: "".join(lines).strip() for name, lines in bodies.items()}
 
 # Candidate passages scored per quote, once the vote has been taken. Twenty is
 # what lets a whole transcript be searched in milliseconds where scoring every
@@ -88,12 +190,7 @@ def spoken_text(transcript: str) -> str:
 
 def verbatim_of(note_text: str) -> str:
     """A note's ``## Verbatim`` section, or empty if it has none."""
-    heading = _VERBATIM_RE.search(note_text)
-    if not heading:
-        return ""
-    rest = note_text[heading.end() :]
-    following = _SECTION_RE.search(rest)
-    return (rest[: following.start()] if following else rest).strip()
+    return note_sections(note_text).get("Verbatim", "")
 
 
 def quoted_spans(text: str) -> list[str]:

@@ -54,7 +54,7 @@ from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
 from .core.library import Library
 from .llm import LlmClient, LlmError, Prompt, load_prompt, safe_reason
-from .quotes import QUOTE_RE, Words, closeness, flatten, spoken_text, verbatim_of
+from .quotes import QUOTE_RE, Words, closeness, flatten, note_sections, spoken_text, verbatim_of
 
 log = logging.getLogger(__name__)
 
@@ -1057,7 +1057,6 @@ def load_notes(library: Library, ledger: Ledger | None = None) -> list[LoadedNot
 # is the closest thing a note has to a description of itself. Truncated, because
 # the selector needs a hint rather than the note — that is the next stage's job.
 _GIST_CHARS = 200
-_CLAIMS_RE = re.compile(r"^##\s*Claims\s*$(.*?)(?=^##\s|\Z)", re.MULTILINE | re.DOTALL)
 _BULLET_RE = re.compile(r"^\s*[-*]\s+(.+?)$", re.MULTILINE)
 _DATE_RE = re.compile(r"\b(\d{8})\b")
 
@@ -1080,9 +1079,11 @@ def summarise(note: LoadedNote) -> NoteSummary:
         published = found.group(1) if found else ""
 
     gist = ""
-    claims = _CLAIMS_RE.search(note.text)
+    # Found by the splitter every reader of a note shares: `### Claims` and
+    # `## Claims:` are the same section to the validator, so they are here too.
+    claims = note_sections(note.text).get("Claims", "")
     if claims:
-        bullet = _BULLET_RE.search(claims.group(1))
+        bullet = _BULLET_RE.search(claims)
         if bullet:
             gist = " ".join(bullet.group(1).split())[:_GIST_CHARS]
     return NoteSummary(

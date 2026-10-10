@@ -58,7 +58,16 @@ from ..llm import (
     load_prompt,
     safe_reason,
 )
-from ..quotes import Words, closeness, flatten, quoted_spans, spoken_text
+from ..quotes import (
+    NOTE_SECTIONS,
+    Words,
+    closeness,
+    flatten,
+    note_lines,
+    note_sections,
+    quoted_spans,
+    spoken_text,
+)
 from .timestamps import build_index, snap_note
 
 log = logging.getLogger(__name__)
@@ -80,20 +89,12 @@ __all__ = [
 # The required sections, spelled as the prompt spells them. Consistent structure is
 # what lets M6 reason across fifty notes at once; free prose inside each is what
 # keeps them worth reading.
-REQUIRED_SECTIONS: tuple[str, ...] = (
-    "Claims",
-    "Wrong or shaky",
-    "Assumes you know",
-    # v5. Required, so a note that skips it fails validation and is retried
-    # rather than stored silent about era. An optional section is one the model
-    # omits on exactly the videos that most need it: the ones giving no version
-    # signal, where "I cannot tell" is the answer worth recording.
-    "How current is it",
-    "Leaves out",
-    "Key moments",
-    "Who's talking, what they want",
-    "Verbatim",
-)
+#
+# Defined once, in `quotes.py`, where every reader of a note's sections finds
+# them. "How current is it" (v5) is required on purpose: an optional section is
+# one the model omits on exactly the videos that most need it — the ones giving
+# no version signal, where "I cannot tell" is the answer worth recording.
+REQUIRED_SECTIONS: tuple[str, ...] = NOTE_SECTIONS
 
 # Consecutive failures before the drain gives up. Observed, not hypothetical: a
 # run against an unreachable endpoint failed all thirty-six videos, four
@@ -119,17 +120,6 @@ class NoteInvalid(RuntimeError):
 # change many times and these must keep telling the truth about its output.
 
 
-def _normalise_heading(line: str) -> str:
-    """A heading, reduced to what it must match.
-
-    Models substitute a typographic apostrophe for a typed one about as often
-    as not, and "Who's talking" failing to match "Who’s talking" would reject a
-    perfectly good note. Case and surrounding decoration go the same way.
-    """
-    text = line.strip().lstrip("#").strip().strip("*").strip()
-    return " ".join(text.replace("’", "'").lower().split()).rstrip(":")
-
-
 def missing_sections(text: str) -> list[str]:
     """Required sections that are absent, or present with nothing under them.
 
@@ -137,22 +127,13 @@ def missing_sections(text: str) -> list[str]:
     when there is nothing to report — "no errors found" is a claim, and a
     useful one — so a heading followed by whitespace means the model ran out,
     not that the video was flawless.
+
+    Sections are found by `quotes.note_sections`, the splitter every reader of
+    a note uses, so a `# comment` line inside a section is content here exactly
+    as it is to the quote checks.
     """
-    wanted = {_normalise_heading(name): name for name in REQUIRED_SECTIONS}
-    bodies: dict[str, list[str]] = {}
-    current: str | None = None
-
-    for line in text.splitlines():
-        if line.lstrip().startswith("#"):
-            heading = _normalise_heading(line)
-            current = heading if heading in wanted else None
-            if current is not None:
-                bodies.setdefault(current, [])
-            continue
-        if current is not None and line.strip():
-            bodies[current].append(line.strip())
-
-    return [name for key, name in wanted.items() if not bodies.get(key)]
+    bodies = note_sections(text)
+    return [name for name in REQUIRED_SECTIONS if not bodies.get(name)]
 
 
 def validate_note(text: str) -> None:
@@ -247,14 +228,12 @@ def check_verbatim(body: str, transcript: str) -> tuple[str, int, int]:
     words: Words | None = None
     out: list[str] = []
     checked = unfound = 0
-    in_verbatim = False
 
-    for line in body.splitlines(keepends=True):
-        if line.lstrip().startswith("#"):
-            in_verbatim = _normalise_heading(line) == "verbatim"
+    for section, line, is_heading in note_lines(body):
+        if is_heading:
             out.append(line)
             continue
-        if not in_verbatim or VERBATIM_UNFOUND in line:
+        if section != "Verbatim" or VERBATIM_UNFOUND in line:
             out.append(line)
             continue
         spans = quoted_spans(_NOTE_MARKER_RE.sub(" ", line))

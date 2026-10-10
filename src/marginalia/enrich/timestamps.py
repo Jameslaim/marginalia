@@ -36,6 +36,7 @@ from typing import Iterable, Sequence
 
 from ..contracts import Change, NoteCitation, SnapResult, TranscriptIndex
 from ..core.library import Library
+from ..quotes import note_lines
 
 log = logging.getLogger(__name__)
 
@@ -392,16 +393,18 @@ def snap_text(note: str, index: TranscriptIndex) -> tuple[str, list[Change], lis
     them apart, and the note does not provide them. Rewriting one and guessing
     the other is precisely the authoritative-looking error this must not make.
     """
-    lines = note.splitlines(keepends=True)
-    section = ""
+    # Sections as every other reader of a note finds them (`quotes.note_lines`):
+    # a `# comment` inside Verbatim is a line of Verbatim, not a new section.
+    sectioned = note_lines(note)
+    lines = [line for _, line, _ in sectioned]
     changes: list[Change] = []
     left: list[tuple[str, str, str]] = []
 
-    for number, line in enumerate(lines):
+    for number, (section_name, line, is_heading) in enumerate(sectioned):
         stripped = line.strip()
-        if stripped.startswith("#"):
-            section = stripped.lstrip("#").strip().strip("*").strip()
+        if is_heading:
             continue
+        section = section_name or ""
 
         citations = parse_note_timestamps(line)
         if not citations:
