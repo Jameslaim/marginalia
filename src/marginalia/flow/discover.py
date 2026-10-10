@@ -101,6 +101,7 @@ from ..providers import PermanentError, TransientError
 from ..providers.base import TranscriptProvider
 from .acquire import acquire, transcript_providers
 from .search import quota_headroom, run_search
+from ..enrich.note import note_refusal
 from .store import reconcile_stored, store_transcript
 
 log = logging.getLogger(__name__)
@@ -1111,6 +1112,20 @@ def _judge_round(
                 stored_chars,
                 config.note.max_transcript_chars,
             )
+        # The ceiling's own counter stays; every other ground the note worker
+        # refuses on comes from the worker's own predicate, so the two cannot
+        # disagree about whether a note will ever exist (R1 F3).
+        unnoteable = ""
+        if not too_long and judgement.evidence != EVIDENCE_DEGRADED:
+            unnoteable = note_refusal(
+                ledger.get(candidate.video_id),
+                ledger.decisions_for(candidate.video_id),
+                stored_chars,
+                config.note,
+            )
+            if unnoteable:
+                report.not_noteable += 1
+                log.info("discover: %s will not be noted (%s)", candidate.video_id, unnoteable)
 
         if not is_held:
             # Stored by this run. A video judged from disk was stored by an
@@ -1126,7 +1141,9 @@ def _judge_round(
         # Always the stage-2 judgement now. There is no longer a keeper whose
         # reason describes a title rather than a transcript, which is what made
         # a coverage claim built on one a claim built on a guess.
-        report.kept.append(_judged(candidate, STAGE_FULL, judgement, too_long=too_long))
+        report.kept.append(
+            _judged(candidate, STAGE_FULL, judgement, too_long=too_long, unnoteable=unnoteable)
+        )
 
     return _dedupe_concepts(concepts)
 
@@ -1194,7 +1211,12 @@ def _store(
 
 
 def _judged(
-    candidate: SearchResult, stage: str, verdict, *, too_long: bool = False
+    candidate: SearchResult,
+    stage: str,
+    verdict,
+    *,
+    too_long: bool = False,
+    unnoteable: str = "",
 ) -> JudgedVideo:
     """One decision, as the planner will be shown it.
 
@@ -1223,6 +1245,7 @@ def _judged(
         reason=verdict.reason,
         evidence=getattr(verdict, "evidence", EVIDENCE_CLEAR),
         too_long=too_long,
+        unnoteable=unnoteable,
         judged=getattr(verdict, "judged", True),
     )
 

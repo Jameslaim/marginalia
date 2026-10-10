@@ -33,7 +33,7 @@ from datetime import date
 import time
 from typing import Any, Sequence
 
-from ..config import Config
+from ..config import Config, NoteConfig
 from ..contracts import (
     FAILED,
     NOTED,
@@ -47,7 +47,7 @@ from ..contracts import (
     NoteRun,
     VideoRow,
 )
-from ..core.ledger import Ledger
+from ..core.ledger import DecisionRow, Ledger, wanted_for_a_note
 from ..core.library import Library, format_duration
 from ..llm import (
     LlmClient,
@@ -70,6 +70,7 @@ __all__ = [
     "validate_note",
     "note_header",
     "note_version",
+    "note_refusal",
     "select",
     "check_verbatim",
     "VERBATIM_UNFOUND",
@@ -329,6 +330,30 @@ def select(
 # -- the worker --------------------------------------------------------------
 
 
+def note_refusal(
+    row: VideoRow | None,
+    decisions: Sequence[DecisionRow],
+    transcript_chars: int,
+    config: NoteConfig,
+) -> str:
+    """Why the note worker will refuse this video, or ``""`` if it will not.
+
+    The one statement of those grounds, for the two places that need them: the
+    worker, which refuses, and discovery, which must not count as coverage a
+    video that will never have a note. Discovery used to check the length
+    ceiling alone, so a transcript under the floor, or one a stage 2 marked
+    DEGRADED for some other topic, was counted as covering the brief and then
+    never noted (R1 F3) — rule 25's sibling, missed twice.
+    """
+    if row is not None and not wanted_for_a_note(row, decisions):
+        return "unreadable: a stage 2 called the transcript degraded"
+    if config.min_transcript_chars and transcript_chars < config.min_transcript_chars:
+        return f"transcript is {transcript_chars:,} chars, under the {config.min_transcript_chars:,} floor"
+    if transcript_chars > config.max_transcript_chars:
+        return f"transcript is {transcript_chars:,} chars, over {config.max_transcript_chars:,}"
+    return ""
+
+
 def note_version(prompts_directory: Any = None) -> str:
     """The version of the prompt currently on disk.
 
@@ -400,6 +425,8 @@ def write_notes(
                 run.stopped_because = STOP_REFUSED
                 break
             run.results.append(result)
+            if result.outcome == FAILED:
+                ledger.mark_note_failed(row.video_id)
             if result.outcome in (NOTED, FAILED):
                 attempts += 1
 

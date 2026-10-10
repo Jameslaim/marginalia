@@ -391,6 +391,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.failed, "fetch failed"),
             (report.no_captions, "no captions, sent to ASR"),
             (report.unavailable, "already recorded as unavailable, skipped"),
+            (report.not_noteable, "kept, but the note worker will refuse it"),
             (report.already_held, "already on disk"),
             # Of those, the ones read from disk because nothing had judged them
             # for this topic. A verdict happened; a download did not.
@@ -700,6 +701,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "uncertain": report.uncertain,
                 "no_captions": report.no_captions,
                 "unavailable": report.unavailable,
+                "not_noteable": report.not_noteable,
                 "degraded": report.degraded,
                 "too_long_to_note": report.too_long_to_note,
                 "unparsed": report.unparsed,

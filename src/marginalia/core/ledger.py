@@ -146,7 +146,9 @@ CREATE TABLE IF NOT EXISTS videos (
   note_model     TEXT,            -- which model read the transcript
   noted_at       TEXT,            -- when the CURRENT note.md was written
   first_noted_at TEXT,            -- when this video first had any note; never rewritten
-  channel_id     TEXT             -- B1; never backfilled, new videos only
+  channel_id     TEXT,            -- B1; never backfilled, new videos only
+  note_failures  INTEGER NOT NULL DEFAULT 0,  -- failed note attempts since the last note
+  note_failed_at TEXT             -- when the latest of them failed
 );
 CREATE INDEX IF NOT EXISTS idx_videos_status ON videos(status);
 CREATE INDEX IF NOT EXISTS idx_videos_hash   ON videos(content_hash);
@@ -288,6 +290,12 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # recognise historical reason text, so nothing else ever does.
     ("decisions", "outcome", "TEXT"),
     ("decisions", "said", "TEXT"),
+    # Note failures, so the drain stops meeting the same failing videos first.
+    # Zero on every existing row, which is the honest answer: nothing recorded
+    # a failure before this, and treating unrecorded as "never failed" puts
+    # those videos exactly where they were in the queue.
+    ("videos", "note_failures", "INTEGER NOT NULL DEFAULT 0"),
+    ("videos", "note_failed_at", "TEXT"),
     ("runs", "territory_map", "TEXT"),
     ("runs", "territory_version", "TEXT"),
     # What the library already satisfied before this run searched. NULL on
@@ -1061,12 +1069,35 @@ class Ledger:
                 note_model     = ?,
                 noted_at       = ?,
                 first_noted_at = COALESCE(first_noted_at, ?),
+                note_failures  = 0,
+                note_failed_at = NULL,
                 last_updated   = ?
             WHERE video_id = ?
             """,
             (version, model, _utcnow(), _utcnow(), _utcnow(), video_id),
         )
         log.info("ledger: %s noted (%s, %s)", video_id, version, model)
+        return self._require(video_id)
+
+    def mark_note_failed(self, video_id: str) -> VideoRow:
+        """Record a note attempt that failed — a fragment, an invalid note, a
+        transient error. **Not** called for a refusal: a billing error says
+        nothing about the video (rule 24).
+
+        The video stays in the queue; this only moves it behind the ones not yet
+        tried, so a drain is never again spent on the same failures first.
+        """
+        self._update(
+            video_id,
+            """
+            UPDATE videos SET
+                note_failures  = COALESCE(note_failures, 0) + 1,
+                note_failed_at = ?
+            WHERE video_id = ?
+            """,
+            (_utcnow(), video_id),
+        )
+        log.info("ledger: %s note attempt failed", video_id)
         return self._require(video_id)
 
     def videos_needing_note(
@@ -1115,6 +1146,11 @@ class Ledger:
             rows = [row for row in rows if row.noted_at is None]
         elif stale_only:
             rows = [row for row in rows if not row.note_is_current(version)]
+        # Untried before previously failed, each group still by `first_seen`
+        # (a stable sort). Without this the same three failing videos took the
+        # first three attempts of every drain and stopped it, and nothing behind
+        # them was ever reached.
+        rows.sort(key=lambda row: bool(row.note_failures))
         return rows[:limit] if limit is not None else rows
 
     def videos_to_refetch(

@@ -583,7 +583,8 @@ def render_round(
     lines.append(
         f"KEPT BUT NOT ANSWERABLE ({len(unreadable)}) — no note will be written for "
         "these, either because the transcript was too damaged to read or because it "
-        "is past the note worker's length ceiling, so nothing can ever be answered "
+        "is past the note worker's length ceiling (or under its floor), so nothing "
+        "can ever be answered "
         "from them. They do NOT count toward coverage: treat the part of the brief "
         "they look like they cover as still unmet."
     )

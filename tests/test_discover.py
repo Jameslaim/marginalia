@@ -18,7 +18,7 @@ from pathlib import Path
 
 import json
 import pytest
-from conftest import make_config, make_ask_config
+from conftest import make_ask_config, make_config, make_note_config
 
 from marginalia.contracts import (
     STATUS_HAS_TRANSCRIPT,
@@ -241,7 +241,12 @@ def ledger(library: Library) -> Iterator[Ledger]:
 
 @pytest.fixture()
 def config(tmp_path: Path) -> object:
-    return make_config(tmp_path, search_order=("fake",))
+    # The fixtures' transcripts are a few words long. With the note worker's
+    # real floor they would all be (correctly) unnoteable, and every test about
+    # coverage would be testing the floor instead; the floor has its own test.
+    return make_config(
+        tmp_path, search_order=("fake",), note=make_note_config(min_transcript_chars=0)
+    )
 
 
 @pytest.fixture()
@@ -3270,3 +3275,43 @@ def test_discovery_records_the_provider_that_answered(
 
     assert ledger.get("aaaaaaaaaaa").provider == FakeTranscripts.name
     assert library.read_meta("aaaaaaaaaaa")["provider"] == FakeTranscripts.name
+
+
+# -- coverage agrees with the note worker -----------------------------------------
+
+
+def test_a_keeper_under_the_note_floor_is_not_coverage(
+    config, ledger, library, client, searches
+) -> None:
+    """R1 probe P9: a 48-character transcript against a 1,200 floor counted as
+    coverage, and `marg note` then refused it for good."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    config = replace(config, note=replace(config.note, min_transcript_chars=1_200))
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client, FakeJudge(), planner=planner, max_rounds=2)
+
+    assert outcome.rounds[0].not_noteable == 1
+    (_, video), = planner.kept_so_far_seen[-1]
+    assert video.answerable is False and video.covers is False
+    assert "floor" in video.unnoteable
+
+
+def test_a_keeper_degraded_for_another_topic_is_not_coverage(
+    config, ledger, library, client, searches
+) -> None:
+    """The note worker refuses a transcript any stage 2 called degraded (one
+    transcript, every topic); discovery counted it as coverage for this one."""
+    _hold(library, ledger, "aaaaaaaaaaa")
+    ledger.log_decision(
+        "aaaaaaaaaaa", "another topic", stage=STAGE_FULL, verdict=VERDICT_MAYBE,
+        evidence=EVIDENCE_DEGRADED, reason="captions garbled", outcome="judged",
+    )
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client, FakeJudge(), planner=planner, max_rounds=2)
+
+    (_, video), = planner.kept_so_far_seen[-1]
+    assert video.covers is False and "degraded" in video.unnoteable
+    assert outcome.rounds[0].not_noteable == 1

@@ -755,6 +755,12 @@ class JudgedVideo:
     # will summarise are two findings, and one field holding both would report a
     # ceiling as a caption failure.
     too_long: bool = False
+    # Any other reason the note worker will refuse this video, in its own words
+    # — a transcript under the length floor, or a stage-2 DEGRADED recorded for
+    # another topic (the transcript is the same for every topic). Empty when a
+    # note can be written. These were invisible here, so the planner counted as
+    # coverage videos `marg note` would never note (R1 F3).
+    unnoteable: str = ""
     # False when stage 2 produced no verdict (`FullVerdict.judged`). Kept and
     # stored, and a note may still be written — but nothing has read it against
     # the brief, so it is not evidence that any part of the brief is covered.
@@ -772,7 +778,7 @@ class JudgedVideo:
         The question coverage actually turns on. A kept video that produces no
         note satisfies no part of the brief however good it looked.
         """
-        return not self.unreadable and not self.too_long
+        return not self.unreadable and not self.too_long and not self.unnoteable
 
     @property
     def covers(self) -> bool:
@@ -1275,6 +1281,13 @@ class VideoRow:
     # network calls for a column no current feature reads. New videos populate
     # it, and NULL is the honest answer for a video seen before it existed.
     channel_id: str | None = None
+    # Note attempts that failed since the last note was written, and when the
+    # latest one did. A failed attempt used to leave no trace, so the queue —
+    # ordered by `first_seen` — met the same three deterministically failing
+    # videos first on every run and stopped on them, forever. Cleared by a
+    # successful note; never written for a provider refusal (rule 24).
+    note_failures: int | None = 0
+    note_failed_at: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> VideoRow:
@@ -1365,6 +1378,10 @@ class RoundReport:
     # Candidates the ledger already records as permanently unavailable, skipped
     # before stage 1. Not a fetch failure — no fetch was made.
     unavailable: int = 0
+    # Kept, but the note worker will refuse it on a ground other than the length
+    # ceiling (which has `too_long_to_note`): under the floor, or a transcript a
+    # stage 2 called degraded for another topic. Not coverage.
+    not_noteable: int = 0
     # Kept, but stage 2 could not read the transcript well enough to be sure.
     # Not a rejection and not a clean keep — and it suppresses the note, which
     # is a consequence nobody should have to infer from a silent counter.

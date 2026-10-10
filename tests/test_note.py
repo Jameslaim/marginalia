@@ -900,3 +900,75 @@ def test_a_transcript_quoting_template_syntax_is_noted(tmp_path, caplog):
     assert source in writer.sent[0]["messages"][1]["content"], "the transcript, exactly as stored"
     assert all("zqsourcetokenqz" not in r.detail for r in run.results)
     assert "zqsourcetokenqz" not in caplog.text
+
+
+# -- a failed note is recorded, so the queue cannot jam on it ---------------------
+
+
+def test_the_drain_does_not_jam_behind_videos_that_always_fail(tmp_path: Path) -> None:
+    """R2 F1, reproduced: the first three queued videos fail the same way every
+    time, so every drain spent three whole-transcript calls on them, stopped on
+    `repeated_failures`, and never reached the fourth. A failure is now recorded
+    and moves the video behind the ones not yet tried."""
+    ids = [f"aaaaaaaaaa{n}" for n in range(1, 6)]
+    config, library, ledger = library_with(tmp_path, *ids)
+
+    # Run 1: the first three attempts fail, and the drain stops on the streak.
+    first = write_notes(
+        config, ledger, library, client("not a note at all"),
+        prompts_directory=prompts(tmp_path),
+    )
+    assert first.stopped_because == STOP_REPEATED_FAILURES
+    assert [r.video_id for r in first.results] == ids[:3]
+
+    # Run 2: the first two attempts succeed. On the old ordering they were the
+    # same three videos again, so the first two of *those* would be noted.
+    script = [GOOD_NOTE, GOOD_NOTE]
+    second = write_notes(
+        config, ledger, library,
+        client(lambda n: script[n] if n < len(script) else "not a note at all"),
+        prompts_directory=prompts(tmp_path),
+    )
+
+    assert [r.video_id for r in second.results][:2] == ids[3:], "the untried videos go first"
+    assert all(ledger.get(v).noted_at for v in ids[3:])
+    assert all(ledger.get(v).note_failures >= 1 for v in ids[:3])
+
+
+def test_a_refusal_is_not_recorded_as_the_videos_failure(tmp_path: Path) -> None:
+    """Rule 24: a billing error says nothing about the video."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaa1")
+
+    write_notes(config, ledger, library, client(Http402()), prompts_directory=prompts(tmp_path))
+
+    assert ledger.get("aaaaaaaaaa1").note_failures == 0
+
+
+def test_a_successful_note_clears_the_failure_record(tmp_path: Path) -> None:
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaa1")
+    ledger.mark_note_failed("aaaaaaaaaa1")
+
+    write_notes(config, ledger, library, client(GOOD_NOTE), prompts_directory=prompts(tmp_path))
+
+    row = ledger.get("aaaaaaaaaa1")
+    assert row.noted_at and (row.note_failures, row.note_failed_at) == (0, None)
+
+
+def test_the_note_file_lands_before_the_ledger_says_so(tmp_path: Path, monkeypatch) -> None:
+    """Write order (rule 6's corollary for notes): a crash between the two must
+    leave a note the ledger does not know about — costing one model call — never
+    a row claiming a note that is not on disk. No test failed when the order was
+    reversed (mutation M37)."""
+    config, library, ledger = library_with(tmp_path, "aaaaaaaaaa1")
+    seen: list[bool] = []
+    original = ledger.mark_noted
+
+    def watching(video_id, **kwargs):
+        seen.append(library.has_note(video_id))
+        return original(video_id, **kwargs)
+
+    monkeypatch.setattr(ledger, "mark_noted", watching)
+
+    write_notes(config, ledger, library, client(GOOD_NOTE), prompts_directory=prompts(tmp_path))
+
+    assert seen == [True]
