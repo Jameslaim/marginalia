@@ -50,6 +50,7 @@ from ..contracts import (
     NEW,
     REJECTED,
     STATUS_DUPLICATE,
+    STATUS_HAS_TRANSCRIPT,
     STORED_THIS_RUN,
     VERDICT_MAYBE,
     VERDICT_NO,
@@ -58,7 +59,7 @@ from ..contracts import (
     SearchResult,
     SearchRun,
 )
-from ..core.ledger import STAGE_SEARCH, Ledger, in_library, normalise_topic
+from ..core.ledger import STAGE_METADATA, STAGE_SEARCH, Ledger, in_library, normalise_topic
 from ..providers import (
     PermanentError,
     ProviderUnavailable,
@@ -84,6 +85,7 @@ def run_search(
     run_id: str | None = None,
     filters: SearchFilters | None = None,
     stored_this_run: Collection[str] = (),
+    read_this_run: Collection[str] = (),
 ) -> SearchRun:
     """Search, gate, log. No network call is made for a gated-out video.
 
@@ -114,6 +116,7 @@ def run_search(
             log=log_decisions,
             run_id=run_id,
             stored_this_run=stored_this_run,
+            read_this_run=read_this_run,
         )
         for result in _deduplicate(results)
     ]
@@ -146,8 +149,9 @@ def _gate(
     log: bool = True,
     run_id: str | None = None,
     stored_this_run: Collection[str] = (),
+    read_this_run: Collection[str] = (),
 ) -> Candidate:
-    verdict, reason, logged = _verdict(ledger, result, topic, stored_this_run)
+    verdict, reason, logged = _verdict(ledger, result, topic, stored_this_run, read_this_run)
     if log:
         ledger.log_decision(
             result.video_id,
@@ -165,6 +169,7 @@ def _verdict(
     result: SearchResult,
     topic: str,
     stored_this_run: Collection[str] = (),
+    read_this_run: Collection[str] = (),
 ) -> tuple[str, str, str]:
     """Return ``(report verdict, reason, logged verdict)``.
 
@@ -178,6 +183,12 @@ def _verdict(
         # that the video had been turned down. That is the invisible error
         # rule 8 exists to avoid, arriving through a counter fix.
         return STORED_THIS_RUN, "stored earlier in this run", VERDICT_MAYBE
+    if result.video_id in read_this_run:
+        # The same question for a transcript this run read from disk rather
+        # than fetched: it has had its stage-2 reading for this topic, and a
+        # second screening in a later round would only repeat it. Logged
+        # `maybe` for the same reason.
+        return STORED_THIS_RUN, "judged from disk earlier in this run", VERDICT_MAYBE
 
     row = ledger.get(result.video_id)
     if in_library(row):
@@ -191,6 +202,19 @@ def _verdict(
     # A judge's NO that is still the current verdict for this topic — never a
     # search-stage row, which is this gate's own bookkeeping. See `rejection_in`.
     previous = ledger.topic_rejection(result.video_id, topic)
+    if (
+        previous is not None
+        and previous.stage == STAGE_METADATA
+        and row is not None
+        and row.status == STATUS_HAS_TRANSCRIPT
+    ):
+        # A stage-1 NO decides whether to *fetch* (rule 13), and these bytes
+        # are already held — fetched for another topic, or before the NO was
+        # written. It used to stand anyway, so a title-only opinion permanently
+        # stopped stage 2 from reading a transcript the library holds. Let it
+        # through; discovery reads it from disk, and stage 2's verdict then
+        # supersedes the title's.
+        return NEW, "held on disk; a stage-1 NO does not decide for it", VERDICT_MAYBE
     if previous is not None:
         return REJECTED, f"no for this topic ({previous.decided_on})", VERDICT_NO
 

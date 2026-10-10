@@ -668,6 +668,7 @@ def _gather(
                 # stopped the model call or the second row in the round's
                 # evidence, which the planner then read as two findings.
                 stored_this_run=run.stored_ids,
+                read_this_run=run.read_from_disk,
             )
         except (PermanentError, TransientError) as exc:
             # One dead query must not end a round that has nine good ones.
@@ -774,15 +775,43 @@ def _judge_round(
     if not candidates:
         return []
 
-    verdicts = judge.judge_metadata(
-        run.brief,
-        candidates,
-        batch_size=config.llm.judge_batch_size,
-        # Stage 1 especially. This is where a video whose title never says
-        # "agent" is dropped before anything reads it, and the vocabulary is
-        # the only thing that can stop that — under the rule, stated in the
-        # prompt, that a word from the map is never a reason to keep.
-        territory=run.territory,
+    # **Partition before stage 1.** Stage 1 decides whether to *fetch* (rule
+    # 13), and a transcript already on disk has nothing left to fetch — so a
+    # held candidate goes straight to stage 2, or is skipped when stage 2 has
+    # already judged it for this topic. It used to be screened by stage 1
+    # first, and a title-only NO then stopped stage 2 from ever reading bytes
+    # the library was holding: once that run, and permanently afterwards
+    # through Gate 2. It also re-judged every held keeper at stage 1 in every
+    # later round, and the planner read each repeat as a new finding.
+    held: list[SearchResult] = []
+    to_screen: list[SearchResult] = []
+    for candidate in candidates:
+        if not library.has_transcript(candidate.video_id):
+            to_screen.append(candidate)
+        elif judged_for_topic(
+            ledger.decisions_for(candidate.video_id), run.topic, model=run.model
+        ):
+            log.info(
+                "discover: %s is on disk and already judged for this topic",
+                candidate.video_id,
+            )
+            report.already_held += 1
+        else:
+            held.append(candidate)
+
+    verdicts = (
+        judge.judge_metadata(
+            run.brief,
+            to_screen,
+            batch_size=config.llm.judge_batch_size,
+            # Stage 1 especially. This is where a video whose title never says
+            # "agent" is dropped before anything reads it, and the vocabulary is
+            # the only thing that can stop that — under the rule, stated in the
+            # prompt, that a word from the map is never a reason to keep.
+            territory=run.territory,
+        )
+        if to_screen
+        else []
     )
     by_id = {candidate.video_id: candidate for candidate in candidates}
     concepts: list[str] = []
@@ -811,50 +840,26 @@ def _judge_round(
         run.stopped_because = STOP_DRY_RUN
         return []
 
-    # YES first, and no longer because it is cheaper — it is not. Both verdicts
-    # now cost a fetch and a stage-2 call, so the ordering buys one thing only:
-    # when `max_videos` truncates the round, the candidates stage 1 was
-    # confident about are the ones that got the budget.
-    ordered = [v for v in verdicts if v.verdict == VERDICT_YES]
-    ordered += [v for v in verdicts if v.verdict == VERDICT_MAYBE]
+    # Held transcripts first: they cost no fetch and no `max_videos` slot.
+    # Then YES before MAYBE — not because it is cheaper (both cost a fetch and a
+    # stage-2 call) but so that when `max_videos` truncates the round, the
+    # candidates stage 1 was confident about are the ones that got the budget.
+    ordered: list[tuple[SearchResult, object | None]] = [(c, None) for c in held]
+    ordered += [(by_id[v.video_id], v) for v in verdicts if v.verdict == VERDICT_YES]
+    ordered += [(by_id[v.video_id], v) for v in verdicts if v.verdict == VERDICT_MAYBE]
 
-    for verdict in ordered:
+    for candidate, verdict in ordered:
         if len(run.stored_ids) >= max_videos:
             run.stopped_because = STOP_MAX_VIDEOS
             return _dedupe_concepts(concepts)
 
-        candidate = by_id[verdict.video_id]
-
         # Gate 1 asks whether a video is in the *library*, which since B1 means
-        # it has a note. This asks a different question — do we already hold the
-        # bytes? — and it has to be asked separately, because the two answers
-        # genuinely differ: a video fetched for an earlier topic whose note has
-        # not been written yet is not in the library and is already on disk.
-        #
-        # Gate 1 used to shadow this by dropping anything `stored`. Splitting
-        # status from relevance unshadowed it, and `write_transcript` caught the
-        # result immediately by refusing to overwrite an immutable file — which
-        # is the guard working, not a reason to weaken Gate 1. The transcript
-        # stays, no network call is made, and `marg note` will pick the video up
-        # from `has_transcript` regardless of which topic first found it.
-        #
-        # **Held is not judged.** A transcript on disk with no stage-2 verdict for
-        # *this* topic — fetched for another topic, or stored just before a judge
-        # refused — used to be skipped here, so it never counted as coverage and
-        # the planner could name as a gap a video sitting on disk. It is judged
-        # from the stored file instead, below; only a video already judged for
-        # this topic is skipped.
-        held = library.has_transcript(candidate.video_id)
-        if held and judged_for_topic(
-            ledger.decisions_for(candidate.video_id), run.topic, model=run.model
-        ):
-            log.info(
-                "discover: %s is on disk and already judged for this topic",
-                candidate.video_id,
-            )
-            report.already_held += 1
-            continue
-
+        # it has a note. Holding the bytes is a different question, asked in the
+        # partition above: a video fetched for an earlier topic whose note has
+        # not been written yet is not in the library and is already on disk —
+        # and **held is not judged**, so it is read from the stored file below
+        # unless stage 2 has already judged it for this topic.
+        is_held = verdict is None
         # YouTube already told us there is no caption track, in the same
         # `videos.list` call that supplied the duration. Trying anyway costs a
         # request and arrives at `failed` on the way to `needs_asr`, which is
@@ -871,7 +876,7 @@ def _judge_round(
         # uploaded* tracks: 6 of 6 manual right, 31 of 31 auto wrong. Trusting it
         # would route most of what discovery finds into `needs_asr`, whose worker
         # does not exist until M4. See `DEFAULT_TRUST_CAPTION_HINT`.
-        if not held and config.discover.trust_caption_hint and candidate.has_captions is False:
+        if not is_held and config.discover.trust_caption_hint and candidate.has_captions is False:
             log.info(
                 "discover: %s reports no caption track; routing to ASR unfetched",
                 candidate.video_id,
@@ -896,7 +901,7 @@ def _judge_round(
             run.stopped_because = STOP_MAX_COST
             return _dedupe_concepts(concepts)
 
-        if held:
+        if is_held:
             report.already_held += 1
             report.judged_from_disk += 1
             # A store interrupted between the file and the row leaves the bytes
@@ -955,6 +960,14 @@ def _judge_round(
         # Handed to the judge as text. `brain/` cannot reach the filesystem, so
         # "the judge never reads a stored transcript into a report" is
         # structural here, not careful.
+        #
+        # Each video's context-window overflow is its own, as in the note
+        # drain: three long transcripts in a row used to trip the client's
+        # "every request is too large" streak and end the run as a config
+        # error, with the advice to lower settings discovery does not use.
+        # The small calls each round (stage 1, expansion, planning) still trip
+        # it when the configuration genuinely cannot fit.
+        client.forget_overflows()
         judgement = judge.judge_full(
             run.brief,
             candidate,
@@ -963,6 +976,8 @@ def _judge_round(
             duration_s=material.duration_s or candidate.duration_s,
             territory=run.territory,
         )
+        if is_held:
+            run.read_from_disk.append(candidate.video_id)
         _log(
             ledger,
             run,
@@ -1012,7 +1027,11 @@ def _judge_round(
             # stage 2 declines is stage 2 doing its job; a YES that stage 2
             # declines is stage 1 having been wrong, and that is the number
             # this change exists to make visible.
-            if verdict.verdict == VERDICT_YES:
+            if verdict is None:
+                # Read from disk with no stage-1 call: neither a stage-1 YES
+                # overturned nor a MAYBE flipped, and counted as neither.
+                pass
+            elif verdict.verdict == VERDICT_YES:
                 report.overturned += 1
                 log.info(
                     "discover: %s was a stage-1 YES and stage 2 declined it — %s",
@@ -1061,7 +1080,7 @@ def _judge_round(
                 config.note.max_transcript_chars,
             )
 
-        if not held:
+        if not is_held:
             # Stored by this run. A video judged from disk was stored by an
             # earlier one, and counting it here would inflate `videos_stored`
             # and spend `max_videos` on a download that never happened.

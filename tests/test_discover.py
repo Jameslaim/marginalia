@@ -3104,3 +3104,118 @@ def test_a_no_on_unreadable_evidence_is_stored_as_maybe_with_the_judges_word(
     assert outcome.rounds[0].degraded == 1
     assert outcome.rounds[0].rejected == [] or all(v.stage != STAGE_FULL for v in outcome.rounds[0].rejected)
     assert ledger.topic_rejection("aaaaaaaaaaa", TOPIC) is None, "not a rejection for the topic"
+
+
+# -- held transcripts are read by stage 2, never re-screened by stage 1 -------
+
+
+def test_a_held_transcript_is_judged_from_disk_without_a_stage_one_call(
+    config, ledger, library, client, searches
+) -> None:
+    """R1 probe P1. A stored video whose stage-2 call failed is retried by the
+    next run — but it went through stage 1 first, and a title-only NO then
+    stopped stage 2 from reading the bytes on disk: in that run, and through
+    Gate 2 in every later one. Stage 1 decides whether to fetch; held bytes
+    need no fetch."""
+    _hold(library, ledger, "aaaaaaaaaaa")
+    ledger.log_decision(
+        "aaaaaaaaaaa", TOPIC, stage=STAGE_FULL, verdict=VERDICT_MAYBE,
+        reason="stage-2 judge failed, kept", outcome="call_failed",
+    )
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_NO, "the title looks off-topic")})
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"], "stage 2 read it from disk"
+    assert judge.batch_sizes == [], "and stage 1 was never asked about it"
+    stages = [d.stage for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage != STAGE_SEARCH]
+    assert stages == [STAGE_FULL, STAGE_FULL]
+    assert outcome.rounds[0].judged_from_disk == 1
+
+
+def test_a_stage_one_no_on_a_held_transcript_does_not_block_stage_two(
+    config, ledger, library, client, searches
+) -> None:
+    """The ledgers the old ordering already wrote: a held video carrying a
+    stage-1 NO for the topic. Gate 2 lets it through, and stage 2's reading
+    supersedes the title's."""
+    _hold(library, ledger, "aaaaaaaaaaa")
+    ledger.log_decision(
+        "aaaaaaaaaaa", TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO, reason="title"
+    )
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge()
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+    assert ledger.topic_rejection("aaaaaaaaaaa", TOPIC) is None
+
+
+def test_a_stage_one_no_still_blocks_a_video_that_is_not_held(
+    config, ledger, library, client, searches
+) -> None:
+    """The exemption is about bytes on disk. Without them, a stage-1 NO keeps
+    meaning "never fetch" (rule 8's asymmetry is unchanged)."""
+    ledger.log_decision(
+        "aaaaaaaaaaa", TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO, reason="title"
+    )
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge()
+    provider = FakeTranscripts()
+
+    outcome = run(config, ledger, library, client, judge, provider=provider, max_rounds=1)
+
+    assert provider.fetched == [] and judge.opening_calls == []
+    assert outcome.rounds[0].rejected_before == 1
+
+
+def test_a_video_read_from_disk_is_not_screened_again_in_a_later_round(
+    config, ledger, library, client, searches
+) -> None:
+    """R1 probe P2: round 2 re-judged the held keeper at stage 1 and wrote a
+    second `metadata` row, which the planner read as a second finding."""
+    _hold(library, ledger, "aaaaaaaaaaa")
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[["q1"], ["q2"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2)
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"], "read once"
+    metadata_rows = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_METADATA]
+    assert metadata_rows == []
+    assert len(outcome.rounds) == 2 and outcome.rounds[1].known_this_run == 1
+
+
+def test_three_long_transcripts_in_a_row_do_not_end_the_run(
+    config, ledger, library, searches
+) -> None:
+    """R1 probe P4. Each stage-2 overflow is about that one transcript, so the
+    client's "every request is too large" streak is reset per video, as the
+    note drain does. It used to end the run as a config error after the third,
+    with advice about settings discovery does not use."""
+    from marginalia.brain.judge import Judge
+    from conftest import make_llm_config
+
+    shared = LlmClient(
+        make_llm_config(),
+        transport=lambda **_: (_ for _ in ()).throw(_Overflow()),
+        sleep=lambda _: None,
+    )
+    ids = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc", "ddddddddddd"]
+    searches["*"] = [result(video_id) for video_id in ids]
+
+    class Overflowing(FakeJudge):
+        real = Judge(shared)
+
+        def judge_full(self, brief, candidate, **kwargs):
+            self.opening_calls.append(candidate.video_id)
+            return self.real.judge_full(brief, candidate, **kwargs)
+
+    judge = Overflowing()
+    outcome = run(config, ledger, library, shared, judge, max_rounds=1)
+
+    assert judge.opening_calls == ids, "every video reached stage 2"
+    assert outcome.rounds[0].unjudged == 4
+    assert outcome.stopped_because != "incomplete"

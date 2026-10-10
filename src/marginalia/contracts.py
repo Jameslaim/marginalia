@@ -1460,6 +1460,10 @@ class DiscoverRun:
     model: str
     rounds: list[RoundReport] = field(default_factory=list)
     stored_ids: list[str] = field(default_factory=list)
+    # Held transcripts this run judged from disk. Not stored by it, so not in
+    # `stored_ids` (or `max_videos`); passed to Gate 1 beside it so a later
+    # round does not screen, or judge, the same video again.
+    read_from_disk: list[str] = field(default_factory=list)
     stopped_because: str = ""
     requests: int = 0
     input_tokens: int = 0
