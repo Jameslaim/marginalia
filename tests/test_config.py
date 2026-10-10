@@ -395,3 +395,47 @@ def test_a_non_boolean_caption_hint_is_refused(tmp_path, monkeypatch) -> None:
     with pytest.raises(ConfigError) as caught:
         load_config()
     assert "discover.trust_caption_hint" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "[discover]\nmax_videos = 0.4\n",
+        "[llm.limits]\njudge_batch_size = 0.9\n",
+        "[discover]\nmax_rounds = 2.9\n",
+    ],
+)
+def test_a_fractional_count_is_refused_not_truncated(tmp_path, monkeypatch, body) -> None:
+    """`int()` turned 0.4 videos into 0 and a 0.9 batch into one that raises
+    mid-run, after quota was spent. A count is a whole number or an error."""
+    write(tmp_path, LLM + body, monkeypatch)
+
+    with pytest.raises(ConfigError, match="whole number"):
+        load_config()
+
+
+def test_a_whole_number_written_as_a_float_is_still_a_count(tmp_path, monkeypatch) -> None:
+    write(tmp_path, LLM + "[discover]\nmax_rounds = 3.0\n", monkeypatch)
+
+    assert load_config().discover.max_rounds == 3
+
+
+def test_a_fractional_timeout_is_kept(tmp_path, monkeypatch) -> None:
+    """Read as a count, 0.5 seconds became 0 and every request timed out."""
+    write(tmp_path, '\n[llm]\n' + REQUIRED + "timeout_s = 0.5\n", monkeypatch)
+
+    assert load_config().llm.timeout_s == 0.5
+
+
+def test_a_share_above_one_is_refused(tmp_path, monkeypatch) -> None:
+    write(tmp_path, LLM + "[ask]\nselect_budget_share = 7.0\n", monkeypatch)
+
+    with pytest.raises(ConfigError, match="at most 1"):
+        load_config()
+
+
+def test_an_empty_library_path_is_refused_not_defaulted(tmp_path, monkeypatch) -> None:
+    write(tmp_path, '[library]\npath = ""\n' + LLM, monkeypatch)
+
+    with pytest.raises(ConfigError, match="library.path"):
+        load_config()

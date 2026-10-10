@@ -447,9 +447,13 @@ def _candidates() -> list[Path]:
 
 
 def _library_path(data: dict, config_path: Path) -> Path:
-    raw = (data.get("library") or {}).get("path") or DEFAULT_LIBRARY_PATH
-    if not isinstance(raw, str):
-        raise ConfigError(f"library.path must be a string in {config_path}")
+    raw = (data.get("library") or {}).get("path")
+    if raw is None:
+        raw = DEFAULT_LIBRARY_PATH
+    # An empty string used to fall through `or` to the default — a library the
+    # user had just tried to point somewhere else.
+    if not isinstance(raw, str) or not raw.strip():
+        raise ConfigError(f"library.path must be a non-empty string in {config_path}")
     path = Path(raw).expanduser()
     if not path.is_absolute():
         path = config_path.parent / path
@@ -508,8 +512,8 @@ def _llm(data: dict, config_path: Path) -> LlmConfig:
         judge_batch_size=_positive(
             limits, "judge_batch_size", DEFAULT_JUDGE_BATCH_SIZE, config_path, "llm.limits"
         ),
-        timeout_s=float(
-            _positive(section, "timeout_s", int(DEFAULT_LLM_TIMEOUT_S), config_path, "llm")
+        timeout_s=_positive_number(
+            section, "timeout_s", DEFAULT_LLM_TIMEOUT_S, config_path, "llm"
         ),
         max_tokens=_positive(section, "max_tokens", DEFAULT_MAX_TOKENS, config_path, "llm"),
         tasks=_tasks(section, config_path),
@@ -643,10 +647,8 @@ def _ask(data: dict, config_path: Path) -> AskConfig:
             config_path,
             "ask",
         ),
-        select_budget_share=float(
-            _number(
-                section, "select_budget_share", DEFAULT_SELECT_BUDGET_SHARE, config_path, "ask"
-            )
+        select_budget_share=_share(
+            section, "select_budget_share", DEFAULT_SELECT_BUDGET_SHARE, config_path, "ask"
         ),
         # No default: absent means "do not guess", not "use this number".
         max_input_tokens=(
@@ -707,12 +709,44 @@ def _string(section: dict, key: str, default: str, config_path: Path, where: str
 
 
 def _positive(section: dict, key: str, default: int, config_path: Path, where: str) -> int:
+    """A positive whole number. A fraction is refused, not truncated: `int()`
+    turned `max_videos = 0.4` into 0 and `judge_batch_size = 0.9` into a batch
+    size that raises mid-run, after quota had been spent."""
     raw = section.get(key)
     if raw is None:
         return default
+    if (
+        isinstance(raw, bool)
+        or not isinstance(raw, (int, float))
+        or raw <= 0
+        or (isinstance(raw, float) and not raw.is_integer())
+    ):
+        raise ConfigError(f"{where}.{key} must be a positive whole number in {config_path}")
+    return int(raw)
+
+
+def _positive_number(
+    section: dict, key: str, default: float, config_path: Path, where: str
+) -> float:
+    """A positive number that may be fractional — a timeout. Read through
+    `_positive` it was truncated, and `timeout_s = 0.5` became 0: every request
+    timed out at once."""
+    raw = section.get(key)
+    if raw is None:
+        return float(default)
     if isinstance(raw, bool) or not isinstance(raw, (int, float)) or raw <= 0:
         raise ConfigError(f"{where}.{key} must be a positive number in {config_path}")
-    return int(raw)
+    return float(raw)
+
+
+def _share(section: dict, key: str, default: float, config_path: Path, where: str) -> float:
+    """A fraction of a whole, above 0 and at most 1."""
+    raw = section.get(key)
+    if raw is None:
+        return float(default)
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 < raw <= 1:
+        raise ConfigError(f"{where}.{key} must be above 0 and at most 1 in {config_path}")
+    return float(raw)
 
 
 def _repo_root() -> Path:
