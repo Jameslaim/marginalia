@@ -63,6 +63,7 @@ __all__ = [
     "in_library",
     "wanted_for_a_note",
     "quota_day",
+    "now",
     "FAIL_PERMANENT",
     "FAIL_TRANSIENT",
     "STAGE_SEARCH",
@@ -283,6 +284,11 @@ _LEGACY_TABLES: dict[str, str] = {
 
 def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def now() -> str:
+    """The ledger's clock, for a caller stamping a row it will write later."""
+    return _utcnow()
 
 
 # The YouTube Data API's daily quota resets at **midnight Pacific**, not at
@@ -1249,8 +1255,16 @@ class Ledger:
         results_count: int | None = None,
         provider: str | None = None,
         quota_units: int | None = None,
+        ran_at: str | None = None,
     ) -> QueryRow:
         """Record one search, with where it came from and what it cost.
+
+        ``ran_at`` is when the search *started*, passed in by a caller that
+        knows. The row is written after the search, and the search writes its
+        candidates' gate decisions as it goes, so a timestamp taken here can
+        sort after them — and the run export, which attributes decisions to the
+        round whose queries had started, then filed a round's first decisions
+        under the round before.
 
         Written after the search rather than before it, unlike ``mark_pending``,
         and the difference is deliberate: a fetch that dies mid-flight leaves a
@@ -1269,7 +1283,7 @@ class Ledger:
             results_count=results_count,
             provider=provider,
             quota_units=quota_units,
-            ran_at=_utcnow(),
+            ran_at=ran_at or _utcnow(),
         )
         with self._conn:
             self._conn.execute(

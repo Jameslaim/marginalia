@@ -2868,3 +2868,25 @@ def test_a_transcript_stored_before_a_refusal_is_judged_on_the_next_run(
     assert provider.fetched == []
     assert judge.opening_calls == ["aaaaaaaaaaa"]
     assert STAGE_FULL in {d.stage for d in ledger.decisions_for("aaaaaaaaaaa")}
+
+
+def test_a_query_is_stamped_before_the_decisions_its_search_wrote(
+    config, ledger, library, client, searches, monkeypatch
+) -> None:
+    """The export attributes a decision to the round whose queries had started.
+    The queries row was stamped after its search returned, and the search writes
+    its gate decisions as it goes — so whenever a second rolled over in between,
+    a round's first decisions sorted before the round and were filed under the
+    one before it."""
+    ticks = iter(range(10_000))
+    monkeypatch.setattr(
+        "marginalia.core.ledger._utcnow",
+        lambda: f"2026-01-01T00:{next(ticks) // 60:02d}:{next(ticks) % 60:02d}+00:00",
+    )
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    query = ledger.queries_for_run(outcome.run_id)[0]
+    gate = [d for d in ledger.decisions_for_run(outcome.run_id) if d.stage == STAGE_SEARCH]
+    assert gate and all(query.ran_at <= decision.decided_at for decision in gate)

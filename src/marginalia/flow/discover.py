@@ -90,6 +90,7 @@ from ..core.ledger import (
     Ledger,
     normalise_topic,
 )
+from ..core.ledger import now as ledger_now
 from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
 from ..core.library import Library, format_timestamp, render_transcript
 from ..llm import LlmClient
@@ -645,6 +646,9 @@ def _gather(
     answered = False
 
     for query in queries:
+        # Before the search, which writes its gate decisions as it runs; see
+        # `Ledger.log_query`.
+        started = ledger_now()
         try:
             result = run_search(
                 config,
@@ -672,7 +676,8 @@ def _gather(
             # query that ran, and a table that only holds the successful ones
             # would answer "what did this round search for?" wrongly.
             _log_query(
-                ledger, run, report.number, query, results=None, provider=None, units=0
+                ledger, run, report.number, query, results=None, provider=None, units=0,
+                ran_at=started,
             )
             if searched is not None:
                 searched.append((query, None))
@@ -692,6 +697,7 @@ def _gather(
             provider=result.provider,
             units=result.quota_units,
             applied=result.filters_applied,
+            ran_at=started,
         )
         if searched is not None:
             searched.append((query, len(result.candidates)))
@@ -719,6 +725,7 @@ def _log_query(
     provider: str | None,
     units: int,
     applied: SearchFilters | None = None,
+    ran_at: str | None = None,
 ) -> None:
     """Record one search. Written even on a dry run, unlike a decision.
 
@@ -746,6 +753,7 @@ def _log_query(
         results_count=results,
         provider=provider,
         quota_units=units,
+        ran_at=ran_at,
     )
 
 
