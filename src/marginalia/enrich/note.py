@@ -60,6 +60,7 @@ from ..llm import (
 )
 from ..quotes import (
     NOTE_SECTIONS,
+    VERBATIM_UNFOUND as _VERBATIM_UNFOUND,
     Words,
     closeness,
     flatten,
@@ -199,7 +200,8 @@ def _stamp(start_ms: object) -> str:
 # the finding where the next reader is — inside the note — rather than in a
 # counter they would have to know to look up.
 
-VERBATIM_UNFOUND = "[note: not found in the transcript as worded]"
+# Defined in `quotes.py`, which both sides of the quote chain read.
+VERBATIM_UNFOUND = _VERBATIM_UNFOUND
 
 # Found means word for word once case and punctuation are set aside, or close
 # enough to be the same sentence with a caption error fixed — "cash control"

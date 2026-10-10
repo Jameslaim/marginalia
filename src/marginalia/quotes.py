@@ -18,6 +18,7 @@ learned the same lesson first, from a citation that snapped to 00:00:00.
 from __future__ import annotations
 
 import difflib
+import unicodedata
 import re
 from typing import Iterable, Sequence
 
@@ -26,6 +27,7 @@ __all__ = [
     "QUOTE_RE",
     "Words",
     "closeness",
+    "find_quotes",
     "flatten",
     "normalise_heading",
     "note_lines",
@@ -33,12 +35,39 @@ __all__ = [
     "quoted_spans",
     "section_heading",
     "spoken_text",
+    "standing_verbatim",
+    "VERBATIM_UNFOUND",
     "verbatim_of",
 ]
 
 # Quoted spans. Four characters minimum, because "a" and "AI" in quotes are
 # punctuation rather than attribution.
 QUOTE_RE = re.compile(r"[\"“]([^\"“”]{4,300})[\"”]")
+
+# Quotation marks other languages use, mapped one character to one character
+# onto the pair `QUOTE_RE` reads, so match offsets stay valid in the original
+# text. Guillemets, low-high marks and corner brackets were invisible to every
+# check — not checked, not counted — while `prompts/answer.md` tells the model
+# to answer in the question's language (R2 F7). `‘’` are left out on purpose:
+# `’` is also the apostrophe, and pairing it would invent quotes inside words.
+_QUOTE_MARKS = str.maketrans({"«": "“", "»": "”", "「": "“", "」": "”", "『": "“", "』": "”"})
+# German and several Central European languages open low and close with `“` —
+# the character English opens with — so they cannot share the mapping above.
+_LOW_HIGH_RE = re.compile(r"„([^„“”\"]{4,300})[“”]")
+
+
+def find_quotes(text: str) -> list[re.Match[str]]:
+    """Every quoted span in ``text``, in any of the quotation styles above,
+    in order. Offsets refer to ``text`` itself; ``group(1)`` is the quoted span.
+    """
+    low_high = list(_LOW_HIGH_RE.finditer(text))
+    taken = [(match.start(), match.end()) for match in low_high]
+    others = [
+        match
+        for match in QUOTE_RE.finditer(text.translate(_QUOTE_MARKS))
+        if not any(start < match.end() and match.start() < end for start, end in taken)
+    ]
+    return sorted(low_high + others, key=lambda match: match.start())
 
 # Below this many characters once flattened, a quoted span is a term rather than
 # a quotation, and matching it says nothing.
@@ -180,7 +209,15 @@ def flatten(text: str) -> str:
     **Deliberately blunt.** A cleverer matcher is a second thing that can be
     wrong, and every caller's job is to raise a flag rather than to adjudicate.
     """
-    return _NOT_WORD_RE.sub("", text.casefold())
+    return _NOT_WORD_RE.sub("", _normal(text).casefold())
+
+
+def _normal(text: str) -> str:
+    """NFKC. A quote typed in composed form (`é` as one code point) failed the
+    exact test against a transcript in decomposed form (`e` plus an accent) —
+    measured for Spanish and Vietnamese (R2 F16) — and full-width letters
+    never matched their ordinary forms. Neutral for plain ASCII."""
+    return unicodedata.normalize("NFKC", text)
 
 
 def spoken_text(transcript: str) -> str:
@@ -193,11 +230,31 @@ def verbatim_of(note_text: str) -> str:
     return note_sections(note_text).get("Verbatim", "")
 
 
+# The marker the note worker puts on a Verbatim line whose quote its own
+# transcript does not hold (rule 26). Defined here, beside the section reader,
+# because both sides of the quote chain read it.
+VERBATIM_UNFOUND = "[note: not found in the transcript as worded]"
+
+
+def standing_verbatim(note_text: str) -> str:
+    """The Verbatim lines that stand as speech: every line but the ones the note
+    worker already marked as not found in the transcript.
+
+    The answer check falls back to a note's Verbatim when the cited video has no
+    transcript on disk, and a line marked unfound still verified an answer's
+    quote there (R2 F15) — the note had said the quote was not the speaker's,
+    and the answer was then told it was.
+    """
+    return "\n".join(
+        line for line in verbatim_of(note_text).splitlines() if VERBATIM_UNFOUND not in line
+    )
+
+
 def quoted_spans(text: str) -> list[str]:
     """The quoted spans in ``text`` long enough to be worth checking."""
     return [
         match.group(1).strip()
-        for match in QUOTE_RE.finditer(text)
+        for match in find_quotes(text)
         if len(flatten(match.group(1))) >= _MIN_FLAT
     ]
 
@@ -206,7 +263,7 @@ class Words:
     """One text as a word sequence, indexed for the loose match."""
 
     def __init__(self, text: str) -> None:
-        self.words = _WORD_RE.findall(text.casefold())
+        self.words = _WORD_RE.findall(_normal(text).casefold())
         self.positions: dict[str, list[int]] = {}
         for index, word in enumerate(self.words):
             self.positions.setdefault(word, []).append(index)
@@ -226,7 +283,7 @@ def closeness(quote: str, hay: Words) -> float:
     A number about closeness and nothing else: it never says where the match
     was or what it read, which is what lets a caller report it under rule 1.
     """
-    needle = _WORD_RE.findall(quote.casefold())
+    needle = _WORD_RE.findall(_normal(quote).casefold())
     if not needle or not hay.words:
         return 0.0
     if len(hay.words) <= _EXHAUSTIVE_MAX:
@@ -236,8 +293,45 @@ def closeness(quote: str, hay: Words) -> float:
     best = 0.0
     for start in starts:
         window = hay.words[start : start + len(needle) + 4]
-        best = max(best, difflib.SequenceMatcher(None, needle, window).ratio())
+        matcher = difflib.SequenceMatcher(None, needle, window)
+        score = matcher.ratio()
+        if score > best and _flips_polarity(needle, window, matcher):
+            continue
+        best = max(best, score)
     return best
+
+
+# Words that reverse a claim. A twenty-word quote with "never" where the
+# speaker said "always", or with a "not" inserted, scored 0.85 — "loosely
+# quoted" in an answer, and inside the 0.8 tolerance of a note's Verbatim, for
+# a quote saying the opposite of the source (R2 F5). English only: the scorer's
+# thresholds were calibrated on this library, and this narrows only the cases
+# it can name. `t` is what a contraction's `n't` tokenises to.
+_POLARITY = frozenset(
+    {
+        "not", "no", "never", "nothing", "none", "nobody", "neither", "nor",
+        "without", "cannot", "t",
+    }
+)
+
+
+def _flips_polarity(
+    needle: Sequence[str], window: Sequence[str], matcher: difflib.SequenceMatcher
+) -> bool:
+    """Do quote and window differ by a word that reverses the claim?
+
+    Only words that differ count — the window's extra trailing context does
+    not, or an ordinary "not" in the next sentence would disqualify an exact
+    quote.
+    """
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "insert" and i1 in (0, len(needle)):
+            continue  # context before or after the quote, not a change inside it
+        if _POLARITY.intersection(needle[i1:i2]) or _POLARITY.intersection(window[j1:j2]):
+            return True
+    return False
 
 
 def _candidate_starts(needle: Sequence[str], hay: Words) -> list[int]:

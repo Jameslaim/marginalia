@@ -54,7 +54,15 @@ from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
 from .core.library import Library
 from .llm import LlmClient, LlmError, Prompt, load_prompt, safe_reason
-from .quotes import QUOTE_RE, Words, closeness, flatten, note_sections, spoken_text, verbatim_of
+from .quotes import (
+    Words,
+    closeness,
+    find_quotes,
+    flatten,
+    note_sections,
+    spoken_text,
+    standing_verbatim,
+)
 
 log = logging.getLogger(__name__)
 
@@ -500,7 +508,7 @@ def check_grounding(
     known = set(loaded)
     folded = {video_id.lower(): video_id for video_id in known}
     flat = {note.video_id: flatten(note.text) for note in notes}
-    verbatim = {note.video_id: verbatim_of(note.text) for note in notes}
+    verbatim = {note.video_id: standing_verbatim(note.text) for note in notes}
     spoken_note = {video_id: flatten(part) for video_id, part in verbatim.items()}
     heard_text = {
         video_id: spoken_text(body)
@@ -541,7 +549,7 @@ def check_grounding(
     unspoken: list[UnverifiedQuote] = []
     uncited: list[str] = []
     checked = verified = unchecked = 0
-    for quote in QUOTE_RE.finditer(text):
+    for quote in find_quotes(text):
         body = quote.group(1).strip()
         needle = flatten(body)
         if len(needle) < 8:
@@ -777,7 +785,7 @@ def mark_unverified(answer: Answer) -> str:
         return answer.text
     out: list[str] = []
     at = 0
-    for match in QUOTE_RE.finditer(answer.text):
+    for match in find_quotes(answer.text):
         marker = failing.get(match.group(1).strip())
         if marker is None:
             continue
@@ -1618,7 +1626,7 @@ def _transcripts_for(
     # any other, and an answer citing thirty long videos would otherwise read
     # tens of megabytes to check three quotes.
     wanted: list[str] = []
-    for quote in QUOTE_RE.finditer(text):
+    for quote in find_quotes(text):
         window = flat_text[max(0, quote.start() - _CITE_WINDOW) : quote.end() + _CITE_WINDOW]
         for video_id in _cited_near(window, folded):
             if video_id not in wanted:
