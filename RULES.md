@@ -175,6 +175,19 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    waits for a different model rather than spending a refused call every run. A
    reply with a verdict and a stray line beside it is still a verdict.
 
+   **Whether a judge decided anything is stored, never inferred** (2026-10-11).
+   `decisions.outcome` is `judged`, `call_failed`, `too_large`, `truncated` or
+   `no_verdict`, and `decisions.said` keeps the judge's own verdict word when the
+   stored one resolves it. It used to be reconstructed from `verdict == maybe` and
+   from exact reason strings, and three historical shapes were never recognised,
+   so those videos read as "already judged for this topic" for good. Rows written
+   before the column are read by `ledger.legacy_outcome`, the one place that
+   still interprets reason text. Two resolutions moved with it, both toward *kept,
+   not coverage* rather than toward YES: a judge's literal `MAYBE` stays MAYBE (it
+   was counted as YES — this paragraph's wrong YES), and a NO resting on a
+   transcript the judge called unreadable is MAYBE + DEGRADED with `said = no` (it
+   was stored as `yes`). Coverage requires an actual YES.
+
 9. **`brain/` reasons and returns decisions; `flow/` executes them.** `brain/` performs
    no filesystem, database, network or provider access — it may call the LLM abstraction
    only. A reasoning layer is worth having because it can be tested without a machine,
@@ -317,6 +330,13 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     it never counted as coverage, and the planner could name as a gap a video the
     library was holding. Stage 2 now reads it from the stored file, counted in
     `judged_from_disk`, unless it has already been judged for this topic.
+
+    **And it goes straight there, without stage 1.** Stage 1 decides whether to
+    fetch, and held bytes need no fetch. A held candidate was screened by stage 1
+    first, so a title-only NO stopped stage 2 from reading a transcript the library
+    held — in that run, and permanently through Gate 2. Gate 2 likewise does not
+    let a *stage-1* NO block a video whose transcript is held; stage 2's reading
+    then supersedes the title's (rule 12's "later stage supersedes").
 
     Two counters, never one. A MAYBE stage 2 declines is `flipped_to_no` and is stage 2
     working; a **YES** stage 2 declines is `overturned` and is stage 1 having been
@@ -762,12 +782,23 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py  quotes.py
   core/     ids.py  ledger.py  library.py        identity, state, file layout
   providers/                                     the part guaranteed to break
   brain/    judge.py  territory.py  planner.py  selector.py   reasoning; no I/O
-  flow/     search.py  discover.py  store.py  refetch.py  doctor.py  export.py
+  flow/     search.py  discover.py  acquire.py  store.py  refetch.py  doctor.py  export.py
                                                  execution
   enrich/   note.py  timestamps.py               what happens after storage
 ```
 
 - `cli.py` is the only entry point.
+- `flow/acquire.py` is the one path a transcript is *fetched* by — ingest, discovery
+  and refetch all call it (2026-10-11). It writes `mark_pending` first, walks
+  `providers.transcript_order`, and records the provider that answered. Before it,
+  discovery and refetch used only the first configured provider, so rule 4's "a new
+  provider is one file" held for ingest alone.
+- Every `try` around a model call that could catch a refusal re-raises
+  `LlmConfigError` first; `tests/test_refusal_policy.py` scans the source for it, so
+  rule 25's tracing for that class is done by a test rather than by a reviewer.
+- `quotes.py` also holds the note format's section names and the one section
+  splitter every reader of a note uses (validator, Verbatim check, answer check,
+  selector summary, snapper).
 - `flow/store.py` is the one path a fetched transcript is stored by — ingest,
   discovery and refetch all call it — and `core/library.py`'s `render_transcript` is
   the one definition of the stored format, so a length measured before storing is the
