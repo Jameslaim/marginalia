@@ -219,10 +219,12 @@ def _fake_yt_dlp(info: dict, bodies: dict[str, bytes]) -> types.ModuleType:
             return info
 
         def urlopen(self, url):
+            module.opened.append(url)
             return types.SimpleNamespace(read=lambda: bodies[url])
 
     module = types.ModuleType("yt_dlp")
     module.YoutubeDL = YoutubeDL
+    module.opened = []
     return module
 
 
@@ -238,11 +240,14 @@ def test_a_chat_replay_is_never_chosen_as_a_caption_track(monkeypatch) -> None:
         "automatic_captions": {"en": [{"url": "auto", "ext": "vtt"}]},
         "title": "t", "duration": 60,
     }
-    monkeypatch.setitem(sys.modules, "yt_dlp", _fake_yt_dlp(info, {"auto": VTT, "chat": b"{}"}))
+    fake = _fake_yt_dlp(info, {"auto": VTT, "chat": b"{}"})
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
 
     result = YtDlpProvider().fetch("aaaaaaaaaaa")
 
     assert result is not None and result.caption_kind == "auto"
+    # Not merely survived by the zero-line fallback: never downloaded at all.
+    assert fake.opened == ["auto"]
 
 
 def test_a_manual_track_that_parses_to_nothing_falls_back_to_auto(monkeypatch) -> None:
