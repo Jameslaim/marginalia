@@ -1081,3 +1081,16 @@ def test_the_two_reasons_a_keeper_is_unanswerable_are_both_named() -> None:
 
     assert "KEPT BUT NOT ANSWERABLE (2)" in rendered
     assert "too damaged to read" in rendered and "length ceiling" in rendered
+
+
+def test_the_declined_count_includes_overturned_stage_one_yeses() -> None:
+    """REVIEW A9: "N declined" counted only MAYBEs stage 2 turned down, and
+    "kept and stored" implied the declined were not stored (rule 12 stores them)."""
+    from marginalia.brain.planner import render_round
+    from marginalia.contracts import RoundReport
+
+    report = RoundReport(number=1, queries=[], flipped_to_no=1, overturned=2, stored=4)
+
+    rendered = render_round(report)
+
+    assert "3 declined (2 of them stage-1 YES; declined videos are stored too)" in rendered

@@ -47,6 +47,7 @@ after.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 import logging
 import re
 import time
@@ -661,6 +662,7 @@ def _gather(
     run's queries are a list with no causal story.
     """
     survivors: dict[str, SearchResult] = {}
+    counted: set[str] = set()
     answered = False
 
     for query in queries:
@@ -703,10 +705,24 @@ def _gather(
             continue
 
         answered = True
-        report.candidates += len(result.candidates)
-        report.known += len(result.of(KNOWN))
-        report.known_this_run += len(result.of(STORED_THIS_RUN))
-        report.rejected_before += len(result.of(REJECTED))
+        # Videos, not search hits: a video three queries returned is one
+        # candidate. These counters were summed per query, so the planner read
+        # "9 candidates seen, 6 already in the library" about 3 videos.
+        for candidate in result.candidates:
+            if candidate.video_id in counted:
+                continue
+            counted.add(candidate.video_id)
+            report.candidates += 1
+            if candidate.verdict == KNOWN:
+                report.known += 1
+            elif candidate.verdict == STORED_THIS_RUN:
+                report.known_this_run += 1
+            elif candidate.verdict == REJECTED:
+                previous = ledger.topic_rejection(candidate.video_id, run.topic)
+                if previous is not None and previous.run_id == run.run_id:
+                    report.rejected_this_run += 1
+                else:
+                    report.rejected_before += 1
         _log_query(
             ledger,
             run,
@@ -719,7 +735,11 @@ def _gather(
             ran_at=started,
         )
         if searched is not None:
-            searched.append((query, len(result.candidates)))
+            # With the filters that actually ran, as `_log_query` records them:
+            # after a fall-through to a provider that cannot filter, the planner
+            # was told `order=date` or a date window had been applied to a
+            # search that was plain (R1 F12), and planned on it.
+            searched.append((replace(query, filters=result.filters_applied), len(result.candidates)))
 
         for candidate in result.of(NEW):
             # Which origins surfaced this video, not just the first. "Would the
@@ -824,6 +844,23 @@ def _judge_round(
             report.already_held += 1
         else:
             held.append(candidate)
+
+    # Stage 1 within the request budget. The round was admitted with one
+    # request of headroom and then ran every batch, so `max_requests` could be
+    # passed by a dozen calls before the first per-fetch check — and the NOs
+    # written past it are permanent for the topic (R1 F17). Candidates beyond
+    # what the budget pays for keep rank order out of it: no row is written, so
+    # they stay new for a later run.
+    affordable = max(0, max_requests - client.usage.requests) * config.llm.judge_batch_size
+    screened_short = len(to_screen) > affordable
+    if screened_short:
+        log.warning(
+            "discover: the request budget pays for screening %d of %d candidates; "
+            "the rest are left for a later run",
+            affordable,
+            len(to_screen),
+        )
+        to_screen = to_screen[:affordable]
 
     verdicts = (
         judge.judge_metadata(
@@ -1145,6 +1182,8 @@ def _judge_round(
             _judged(candidate, STAGE_FULL, judgement, too_long=too_long, unnoteable=unnoteable)
         )
 
+    if screened_short and not run.stopped_because:
+        run.stopped_because = STOP_MAX_REQUESTS
     return _dedupe_concepts(concepts)
 
 

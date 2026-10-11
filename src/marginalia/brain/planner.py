@@ -632,15 +632,21 @@ def render_round(
     lines.append("")
     lines.append("COUNTERS:")
     lines.append(
-        f"- {report.candidates} candidates seen, {report.known} already in the library, "
-        f"{report.rejected_before} carried a NO for this topic from an earlier run"
+        f"- {report.candidates} candidate videos seen, {report.known} already in the "
+        f"library, {report.rejected_before} carried a NO for this topic from an earlier "
+        f"run, {report.rejected_this_run} were declined by an earlier round of this run"
     )
     lines.append(
         f"- stage 1: {report.verdict_yes} yes, {report.verdict_maybe} maybe, "
         f"{report.verdict_no} no"
     )
+    # Declined counts both kinds: a MAYBE stage 2 turned down and a stage-1 YES
+    # it overturned. The second used to be left out (REVIEW A9), and declined
+    # videos are stored too (rule 12), so "kept and stored" was half the story.
     lines.append(
-        f"- stage 2: {report.stored} kept and stored, {report.flipped_to_no} declined, "
+        f"- stage 2: {report.stored} newly stored and kept, "
+        f"{report.flipped_to_no + report.overturned} declined "
+        f"({report.overturned} of them stage-1 YES; declined videos are stored too), "
         f"{report.degraded} unreadable transcripts"
     )
     lines.append(

@@ -1334,6 +1334,12 @@ class RoundReport:
     known_this_run: int = 0
     # Gate 2: carries a NO for this exact topic from an earlier run.
     rejected_before: int = 0
+    # Gate 2, but the NO was written by an earlier round of *this* run. It used
+    # to be counted as `rejected_before`, so the planner read "carried a NO from
+    # an earlier run" about a video it had itself turned down an hour before
+    # (§12.4, R1 F11). All the Gate counters count videos, not search hits: one
+    # video returned by three queries is one candidate.
+    rejected_this_run: int = 0
     verdict_no: int = 0
     verdict_maybe: int = 0
     verdict_yes: int = 0

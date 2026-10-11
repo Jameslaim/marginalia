@@ -1680,6 +1680,7 @@ class FakePlanner:
         self.rounds_left_seen: list[object] = []
         self.kept_so_far_seen: list[list] = []
         self.max_tokens_seen: list[object] = []
+        self.searched_seen: list[list] = []
 
     def prompt(self, name):
         return FakePrompt()
@@ -1698,6 +1699,7 @@ class FakePlanner:
         self.kept_so_far_seen.append(list(kwargs.get("kept_so_far") or []))
         self.baseline_seen.append(list(kwargs.get("baseline") or []))
         self.max_tokens_seen.append(kwargs.get("max_tokens"))
+        self.searched_seen.append(list(kwargs.get("searched") or []))
         if self._plans:
             return self._plans.pop(0)
         return RoundPlan(round_number=report.number)
@@ -2314,7 +2316,10 @@ def test_a_video_the_round_rejected_is_still_stopped_by_gate_two(
                   mapper=FakeMapper(), planner=FakePlanner())
 
     assert judge.opening_calls == ["aaaaaaaaaaa"]
-    assert outcome.rounds[1].rejected_before == 1
+    # This run's own round-1 NO, counted apart from a NO from an earlier run:
+    # it used to be `rejected_before`, which the planner reads as "from an
+    # earlier run" (§12.4, R1 F11).
+    assert (outcome.rounds[1].rejected_this_run, outcome.rounds[1].rejected_before) == (1, 0)
 
 
 def test_a_dry_run_stores_nothing_so_the_gate_holds_nothing(
@@ -3315,3 +3320,83 @@ def test_a_keeper_degraded_for_another_topic_is_not_coverage(
     (_, video), = planner.kept_so_far_seen[-1]
     assert video.covers is False and "degraded" in video.unnoteable
     assert outcome.rounds[0].not_noteable == 1
+
+
+# -- what the planner is told about the round -------------------------------------
+
+
+def test_the_gate_counters_count_videos_not_search_hits(
+    config, ledger, library, client, searches
+) -> None:
+    """R1 probe P6: one video returned by three queries was three candidates."""
+    ledger.mark_pending("aaaaaaaaaaa")
+    ledger.mark_has_transcript("aaaaaaaaaaa", source="captions", provider="ytdlp")
+    ledger.mark_noted("aaaaaaaaaaa", version="1", model="m")
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[["q1", "q2", "q3"]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert (outcome.rounds[0].candidates, outcome.rounds[0].known) == (1, 1)
+
+
+def test_the_planner_is_shown_the_filters_that_ran(config, ledger, library, client, monkeypatch) -> None:
+    """R1 F12: after a fall-through to a provider that cannot filter, the planner
+    was told `order=date` had been applied to a search that was plain."""
+    from marginalia.contracts import SearchFilters
+
+    def plain_provider(name, **_):
+        class P:
+            name = "plain"
+
+            def search(self, query, limit=25, filters=None):
+                return [result("aaaaaaaaaaa")]
+
+            def quota_remaining(self):
+                return None
+
+            def applied_filters(self):
+                return SearchFilters()
+
+        return P()
+
+    monkeypatch.setattr("marginalia.flow.search.get_search_provider", plain_provider)
+    planner = FakePlanner()
+    territory = TerritoryMap(
+        topic=TOPIC,
+        version="1",
+        concepts=["caching"],
+        vocabulary=["kv cache"],
+        queries=[
+            PlannedQuery(text="q-dated", origin=ORIGIN_TERRITORY, filters=SearchFilters(order="date"))
+        ],
+    )
+
+    run(
+        config, ledger, library, client, FakeJudge(),
+        mapper=FakeMapper(territory), planner=planner, max_rounds=2,
+    )
+
+    shown = {query.text: query.filters.as_dict() for query, _ in planner.searched_seen[0]}
+    assert shown["q-dated"] == {}
+
+
+def test_stage_one_stays_inside_the_request_budget(
+    config, ledger, library, client, searches
+) -> None:
+    """R1 F17: a round admitted with one request of headroom ran every stage-1
+    batch past `max_requests`, and the NOs it wrote are permanent."""
+    from marginalia.contracts import Usage
+
+    searches["*"] = [result(f"aaaaaaaaa{n:02d}") for n in range(25)]
+    client.usage = Usage(requests=8)
+    judge = FakeJudge()
+
+    outcome = run(config, ledger, library, client, judge, max_requests=10, max_rounds=1)
+
+    # Two requests of headroom pay for two batches: 20 of the 25 candidates.
+    metadata_rows = [
+        d for n in range(25) for d in ledger.decisions_for(f"aaaaaaaaa{n:02d}") if d.stage == "metadata"
+    ]
+    assert len(metadata_rows) == 2 * config.llm.judge_batch_size
+    assert outcome.stopped_because == "max_requests"

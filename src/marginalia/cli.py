@@ -430,6 +430,8 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             line += f" ({detail})"
         if report.rejected_before:
             line += f", {report.rejected_before} previously rejected"
+        if report.rejected_this_run:
+            line += f", {report.rejected_this_run} declined earlier in this run"
         lines.append(line)
         lines.extend(_plan_lines(report))
     verb = "would store" if run.dry_run else "stored"
@@ -687,6 +689,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "known": report.known,
                 "known_this_run": report.known_this_run,
                 "rejected_before": report.rejected_before,
+                "rejected_this_run": report.rejected_this_run,
                 "yes": report.verdict_yes,
                 "no": report.verdict_no,
                 "maybe": report.verdict_maybe,
