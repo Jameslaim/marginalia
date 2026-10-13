@@ -88,3 +88,28 @@ def test_the_selector_summary_reads_the_same_claims_section() -> None:
     summary = summarise(LoadedNote("aaaaaaaaaaa", "A title", note_text))
 
     assert summary.gist == "the real claim"
+
+
+# -- shapes the validator accepted before the splitter, which must still pass ------
+# (independent review F4)
+
+
+def test_an_unclosed_code_fence_does_not_swallow_the_sections_after_it() -> None:
+    note = _note("ok").replace("## Leaves out\n", "```\n## Leaves out\n")
+    assert missing_sections(note) == []
+
+
+def test_a_section_repeated_with_an_empty_first_copy_still_validates() -> None:
+    note = _note("ok").replace("## Claims\n- a claim\n", "## Claims\n\n## Claims\n- a claim\n")
+    assert missing_sections(note) == []
+
+
+def test_an_indented_heading_still_counts() -> None:
+    note = _note("ok").replace("## Verbatim", "    ## Verbatim")
+    assert missing_sections(note) == [] and verbatim_of(note) == "ok"
+
+
+def test_inline_triple_backticks_are_not_a_fence() -> None:
+    note = _note('```pip install x```\n- "we always cache the system prompt first"')
+    assert "we always cache" in verbatim_of(note)
+    assert note_sections(note)["Claims"] == "- a claim"

@@ -66,6 +66,7 @@ from ..contracts import (
     ORIGIN_BRIEF,
     ORIGIN_THREAD,
     ACQUIRE_NO_CAPTIONS,
+    OUTCOME_TOO_LARGE,
     RECOMMEND_STOP,
     STOP_REFUSED,
     REJECTED,
@@ -128,6 +129,14 @@ STOP_COVERAGE_SATISFIED = "coverage_satisfied"
 # round rather than discovered inside it: a round that dies halfway leaves the
 # planner reading half a round's evidence as though it were the whole thing.
 STOP_QUOTA = "quota"
+# Stage-2 requests kept overflowing the model's context window with none fitting
+# between them: the configuration, not the videos. Its own word, so it reads
+# neither as a crash nor as a provider refusal.
+STOP_CONTEXT_WINDOW = "context_window"
+# How many stage-2 overflows in a row, with nothing fitting between them, end the
+# run. Above the client's own three: three long videos in a row are ordinary
+# (R1 F5) and must not end a run; five with nothing fitting is a setting.
+_OVERFLOW_STOP = 5
 STOP_REASONS = (
     STOP_MAX_ROUNDS,
     STOP_NO_NEW_VIDEOS,
@@ -139,6 +148,7 @@ STOP_REASONS = (
     STOP_COVERAGE_SATISFIED,
     STOP_QUOTA,
     STOP_REFUSED,
+    STOP_CONTEXT_WINDOW,
 )
 
 # Requests a round needs beyond judging: query expansion. Checked before the
@@ -346,7 +356,7 @@ def _loop(
             return
 
         searched: list[tuple[PlannedQuery, int | None]] = []
-        candidates = _gather(config, ledger, run, planned, report, searched)
+        candidates = _gather(config, ledger, run, planned, report, searched, library=library)
         if candidates is None:
             run.stopped_because = STOP_NO_SEARCH
             return
@@ -653,6 +663,8 @@ def _gather(
     queries: Sequence[PlannedQuery],
     report: RoundReport,
     searched: list[tuple[PlannedQuery, int | None]] | None = None,
+    *,
+    library: Library | None = None,
 ) -> list[SearchResult] | None:
     """Search every query and apply gates 1 and 2. Returns survivors, in rank order.
 
@@ -689,6 +701,7 @@ def _gather(
                 # evidence, which the planner then read as two findings.
                 stored_this_run=run.stored_ids,
                 read_this_run=run.read_from_disk,
+                holds=library.has_transcript if library is not None else None,
             )
         except (PermanentError, TransientError) as exc:
             # One dead query must not end a round that has nine good ones.
@@ -842,6 +855,10 @@ def _judge_round(
                 candidate.video_id,
             )
             report.already_held += 1
+            # Carried on the run like a video read this run, so later rounds'
+            # Gate 1 drops it instead of counting it again (independent review, F9).
+            if candidate.video_id not in run.read_from_disk:
+                run.read_from_disk.append(candidate.video_id)
         else:
             held.append(candidate)
 
@@ -914,6 +931,16 @@ def _judge_round(
     for candidate, verdict in ordered:
         if len(run.stored_ids) >= max_videos:
             run.stopped_because = STOP_MAX_VIDEOS
+            return _dedupe_concepts(concepts)
+        if run.overflow_streak >= _OVERFLOW_STOP:
+            log.warning(
+                "discover: %d transcripts in a row were too large for %r and none fit "
+                "between them — the model's window or [llm] max_tokens cannot hold a "
+                "transcript; stopping rather than storing every candidate unread",
+                run.overflow_streak,
+                run.model,
+            )
+            run.stopped_because = STOP_CONTEXT_WINDOW
             return _dedupe_concepts(concepts)
 
         # Gate 1 asks whether a video is in the *library*, which since B1 means
@@ -1048,6 +1075,16 @@ def _judge_round(
         )
         if is_held:
             run.read_from_disk.append(candidate.video_id)
+        # The other half of forgetting overflows per call: a run in which
+        # *nothing* fits is not a run of long videos, it is a model or a
+        # `max_tokens` that cannot hold a transcript — and judged one at a time
+        # it would store every candidate as `too_large`, unread, which sticks
+        # for that model. Stopped after `_OVERFLOW_STOP` in a row with no
+        # stage-2 call fitting in between (independent review, F2).
+        if judgement.outcome == OUTCOME_TOO_LARGE:
+            run.overflow_streak += 1
+        else:
+            run.overflow_streak = 0
         _log(
             ledger,
             run,

@@ -97,3 +97,21 @@ def test_a_verbatim_line_marked_unfound_does_not_verify_an_answer() -> None:
         transcripts={},
     )
     assert grounding.quotes_verified == 0
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("quote", "source"),
+    [
+        ("we don't cache anything until the second call", "we do not cache anything until the second call"),
+        ("you can't change the prefix after the first request", "you cannot change the prefix after the first request"),
+        ("and they won't invalidate it for five minutes", "and they will not invalidate it for five minutes"),
+    ],
+)
+def test_a_contraction_is_not_a_reversal(quote: str, source: str) -> None:
+    """Found by the independent review: one negation for one, tokenised
+    differently, was scored 0 — a faithful quote marked unfound. The guard now
+    counts negations on each side."""
+    assert closeness(quote, Words(source)) >= 0.6

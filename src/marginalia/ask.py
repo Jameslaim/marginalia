@@ -1518,6 +1518,12 @@ def answer_question(
         result.escalations_refused.extend(refused)
         if wanted or refused:
             for video_id, why in wanted:
+                if any(item.video_id == video_id for item in opened):
+                    # Already given (usually by --deep), perhaps cut. Opening it
+                    # again sent a second copy of the same first part — double
+                    # the tokens, still not "the rest" (independent review, F3).
+                    result.escalations_refused.append((video_id, "already opened"))
+                    continue
                 got = _read_transcript(
                     config, library, ledger, video_id, why, room_chars=room_chars()
                 )

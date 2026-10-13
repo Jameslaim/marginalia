@@ -3400,3 +3400,68 @@ def test_stage_one_stays_inside_the_request_budget(
     ]
     assert len(metadata_rows) == 2 * config.llm.judge_batch_size
     assert outcome.stopped_because == "max_requests"
+
+
+def test_a_run_where_no_transcript_fits_stops_as_a_context_window_problem(
+    config, ledger, library, searches
+) -> None:
+    """Independent review F2. Forgetting overflows per video (so three long videos
+    do not end a run) removed the stop for a configuration in which *nothing*
+    fits, which stored every candidate as `too_large`, unread. Five in a row with
+    nothing fitting between them stops the run under its own reason."""
+    from marginalia.brain.judge import Judge
+    from conftest import make_llm_config
+
+    shared = LlmClient(
+        make_llm_config(),
+        transport=lambda **_: (_ for _ in ()).throw(_Overflow()),
+        sleep=lambda _: None,
+    )
+    ids = [f"{chr(97 + n) * 11}" for n in range(7)]
+    searches["*"] = [result(video_id) for video_id in ids]
+    provider = FakeTranscripts()
+
+    class Overflowing(FakeJudge):
+        real = Judge(shared)
+
+        def judge_full(self, brief, candidate, **kwargs):
+            self.opening_calls.append(candidate.video_id)
+            return self.real.judge_full(brief, candidate, **kwargs)
+
+    judge = Overflowing()
+    outcome = run(config, ledger, library, shared, judge, provider=provider, max_rounds=1)
+
+    assert outcome.stopped_because == "context_window"
+    assert len(judge.opening_calls) == 5 and len(provider.fetched) == 5
+
+
+def test_gate_two_reads_held_from_the_disk_not_the_row(config, ledger, library, client, searches) -> None:
+    """Independent review F8: an interrupted store leaves bytes and a `pending`
+    row; Gate 2 read the row, so a stage-1 NO still blocked bytes the
+    partition treats as held."""
+    ledger.mark_pending("aaaaaaaaaaa")
+    library.write_transcript("aaaaaaaaaaa", [TranscriptLine(5000, 9000, "a stored sentence")])
+    ledger.log_decision("aaaaaaaaaaa", TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO, reason="title")
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge()
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.opening_calls == ["aaaaaaaaaaa"]
+
+
+def test_a_held_video_already_judged_is_not_counted_again_next_round(
+    config, ledger, library, client, searches
+) -> None:
+    """Independent review F9: skipped but not carried on the run, so it passed
+    Gate 1 and was counted as a candidate again in every round."""
+    _hold(library, ledger, "aaaaaaaaaaa")
+    ledger.log_decision(
+        "aaaaaaaaaaa", TOPIC, stage=STAGE_FULL, verdict=VERDICT_YES, reason="good", outcome="judged"
+    )
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]), max_rounds=2)
+
+    assert outcome.rounds[0].already_held == 1
+    assert (outcome.rounds[1].already_held, outcome.rounds[1].known_this_run) == (0, 1)

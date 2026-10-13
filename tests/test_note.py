@@ -972,3 +972,20 @@ def test_the_note_file_lands_before_the_ledger_says_so(tmp_path: Path, monkeypat
     write_notes(config, ledger, library, client(GOOD_NOTE), prompts_directory=prompts(tmp_path))
 
     assert seen == [True]
+
+
+def test_a_video_that_keeps_failing_sinks_behind_ones_that_failed_once(tmp_path: Path) -> None:
+    """Independent review F7: ordering the failed group by `first_seen` brought
+    the same oldest failures back to the head once the untried ones ran out."""
+    ids = [f"aaaaaaaaaa{n}" for n in range(1, 5)]
+    config, library, ledger = library_with(tmp_path, *ids)
+    for _ in range(3):
+        ledger.mark_note_failed(ids[0])
+    ledger.mark_note_failed(ids[1])
+    ledger.mark_note_failed(ids[2])
+    ledger.mark_note_failed(ids[3])
+
+    queue = [row.video_id for row in ledger.videos_needing_note(version="1")]
+
+    assert queue[-1] == ids[0]
+    assert queue[:3] == ids[1:]

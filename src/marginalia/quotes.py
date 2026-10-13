@@ -102,8 +102,12 @@ NOTE_SECTIONS: tuple[str, ...] = (
     "Verbatim",
 )
 
-_HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s*(.*?)\s*#*\s*$")
-_FENCE_RE = re.compile(r"^\s{0,3}(```|~~~)")
+# Any indentation: the validator this replaced stripped leading whitespace, and
+# an indented `## Verbatim` that validated before must still validate.
+_HEADING_RE = re.compile(r"^\s*(#{1,6})\s*(.*?)\s*#*\s*$")
+# A fence line opens or closes a block; a line that also closes on itself
+# (```cmd```) is inline code, not a fence.
+_FENCE_RE = re.compile(r"^\s*(```|~~~)[^`~]*$")
 
 
 def normalise_heading(text: str) -> str:
@@ -149,8 +153,13 @@ def note_lines(text: str) -> list[tuple[str | None, str, bool]]:
     out: list[tuple[str | None, str, bool]] = []
     section: str | None = None
     fenced = False
-    for line in text.splitlines(keepends=True):
-        if _FENCE_RE.match(line):
+    lines = text.splitlines(keepends=True)
+    # A fence with no closer is not a fence: treating it as one turned every
+    # later heading into content, and a note with a stray ``` lost its sections.
+    fences = [index for index, line in enumerate(lines) if _FENCE_RE.match(line)]
+    unmatched = fences[-1] if len(fences) % 2 else None
+    for index, line in enumerate(lines):
+        if index != unmatched and _FENCE_RE.match(line):
             fenced = not fenced
             out.append((section, line, False))
             continue
@@ -166,15 +175,14 @@ def note_lines(text: str) -> list[tuple[str | None, str, bool]]:
 
 def note_sections(text: str) -> dict[str, str]:
     """The note's known sections by canonical name, bodies stripped. A section
-    that appears twice keeps its first body."""
+    that appears twice is read as one, in order — as the validator this
+    replaced read it, so a note whose first copy was empty still validates."""
     bodies: dict[str, list[str]] = {}
-    seen: set[str] = set()
     current: str | None = None
     for section, line, is_heading in note_lines(text):
         if is_heading:
-            current = section if section not in seen else None
+            current = section
             if section is not None:
-                seen.add(section)
                 bodies.setdefault(section, [])
             continue
         if current is not None:
@@ -323,15 +331,24 @@ def _flips_polarity(
     Only words that differ count — the window's extra trailing context does
     not, or an ordinary "not" in the next sentence would disqualify an exact
     quote.
+
+    **Counted, not merely present.** A contraction swap is one negation for one
+    — "don't" tokenises to `don t`, "do not" to `do not`, "can't" to `can t`
+    against `cannot` — and asking only whether a negation word appeared among the
+    differences flagged every such faithful quote as a reversal and scored it 0
+    (found by the independent review). A reversal or an inserted "not" changes
+    the count.
     """
+    quote_side = 0
+    source_side = 0
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
         if tag == "insert" and i1 in (0, len(needle)):
             continue  # context before or after the quote, not a change inside it
-        if _POLARITY.intersection(needle[i1:i2]) or _POLARITY.intersection(window[j1:j2]):
-            return True
-    return False
+        quote_side += sum(word in _POLARITY for word in needle[i1:i2])
+        source_side += sum(word in _POLARITY for word in window[j1:j2])
+    return quote_side != source_side
 
 
 def _candidate_starts(needle: Sequence[str], hay: Words) -> list[int]:

@@ -844,10 +844,14 @@ class Ledger:
         # columns, the new tables and the status rename had already landed — so
         # an older version could no longer read the file it was told to go back
         # to, which is the one recovery the message recommends.
-        for name in sorted(_LEGACY_TABLES):
-            if name in self._tables():
-                self._conn.close()
-                raise self._stale(f"it still has the `{name}` table ({_LEGACY_TABLES[name]})")
+        # The whole check, in its read-only form (missing additive columns and
+        # missing tables are what the steps below add): a legacy table *or* a
+        # missing core column is refused with the file untouched.
+        try:
+            self._check_schema(allow_additive_gaps=True)
+        except LedgerError:
+            self._conn.close()
+            raise
         # Migration first: _SCHEMA indexes columns that an older ledger does
         # not have yet, so CREATE INDEX would fail before the guard could
         # produce a readable message.
@@ -1146,11 +1150,14 @@ class Ledger:
             rows = [row for row in rows if row.noted_at is None]
         elif stale_only:
             rows = [row for row in rows if not row.note_is_current(version)]
-        # Untried before previously failed, each group still by `first_seen`
-        # (a stable sort). Without this the same three failing videos took the
-        # first three attempts of every drain and stopped it, and nothing behind
-        # them was ever reached.
-        rows.sort(key=lambda row: bool(row.note_failures))
+        # Untried first (by `first_seen`, a stable sort), then fewest failures,
+        # then the oldest failure — so a video that keeps failing sinks behind
+        # the ones that failed once. Without this the same three failing videos
+        # took the first three attempts of every drain and stopped it, and
+        # nothing behind them was ever reached; ordering failed videos by
+        # `first_seen` alone brought the same three back once the untried ran
+        # out (independent review, F7).
+        rows.sort(key=lambda row: (row.note_failures or 0, row.note_failed_at or ""))
         return rows[:limit] if limit is not None else rows
 
     def videos_to_refetch(

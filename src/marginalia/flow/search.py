@@ -42,7 +42,7 @@ misbehaves in M2b is diagnosable only from what was actually recorded.
 from __future__ import annotations
 
 import logging
-from typing import Collection, Sequence
+from typing import Callable, Collection, Sequence
 
 from ..config import Config
 from ..contracts import (
@@ -86,6 +86,7 @@ def run_search(
     filters: SearchFilters | None = None,
     stored_this_run: Collection[str] = (),
     read_this_run: Collection[str] = (),
+    holds: Callable[[str], bool] | None = None,
 ) -> SearchRun:
     """Search, gate, log. No network call is made for a gated-out video.
 
@@ -117,6 +118,7 @@ def run_search(
             run_id=run_id,
             stored_this_run=stored_this_run,
             read_this_run=read_this_run,
+            holds=holds,
         )
         for result in _deduplicate(results)
     ]
@@ -150,8 +152,11 @@ def _gate(
     run_id: str | None = None,
     stored_this_run: Collection[str] = (),
     read_this_run: Collection[str] = (),
+    holds: Callable[[str], bool] | None = None,
 ) -> Candidate:
-    verdict, reason, logged = _verdict(ledger, result, topic, stored_this_run, read_this_run)
+    verdict, reason, logged = _verdict(
+        ledger, result, topic, stored_this_run, read_this_run, holds
+    )
     if log:
         ledger.log_decision(
             result.video_id,
@@ -170,6 +175,7 @@ def _verdict(
     topic: str,
     stored_this_run: Collection[str] = (),
     read_this_run: Collection[str] = (),
+    holds: Callable[[str], bool] | None = None,
 ) -> tuple[str, str, str]:
     """Return ``(report verdict, reason, logged verdict)``.
 
@@ -202,12 +208,17 @@ def _verdict(
     # A judge's NO that is still the current verdict for this topic — never a
     # search-stage row, which is this gate's own bookkeeping. See `rejection_in`.
     previous = ledger.topic_rejection(result.video_id, topic)
-    if (
-        previous is not None
-        and previous.stage == STAGE_METADATA
-        and row is not None
-        and row.status == STATUS_HAS_TRANSCRIPT
-    ):
+    # "Held" asked of the disk when the caller can (discovery passes
+    # `library.has_transcript`, the same check its partition makes), so the two
+    # cannot disagree: a row saying `has_transcript` over a missing file, or a
+    # `pending` row over bytes an interrupted store left (independent review,
+    # F8). Without a disk check, the row is what there is.
+    held = (
+        holds(result.video_id)
+        if holds is not None
+        else row is not None and row.status == STATUS_HAS_TRANSCRIPT
+    )
+    if previous is not None and previous.stage == STAGE_METADATA and held:
         # A stage-1 NO decides whether to *fetch* (rule 13), and these bytes
         # are already held — fetched for another topic, or before the NO was
         # written. It used to stand anyway, so a title-only opinion permanently

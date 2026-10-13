@@ -669,6 +669,14 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     the library, and handled per request it would keep every candidate unread —
     an unjudged library by another route.
 
+    **Where requests are independent the streak is per caller** (2026-10-11). The
+    note drain and discovery's stage 2 reset the client's count per video, because
+    three long videos in a row are ordinary and used to end a discovery run. In
+    their place discovery stops after five stage-2 overflows in a row with nothing
+    fitting between them, under its own reason `context_window` — the
+    configuration, not the videos — and the client's own streak still guards the
+    small calls (stage 1, expansion, planning).
+
     **Only the request id is logged, never the error body.** A provider's body is the
     field its support asks about *and* an echo of the request, which here is a system
     prompt plus a whole transcript — so `_safe` puts the classification and the id in
@@ -794,8 +802,10 @@ src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py  quotes.py
   discovery and refetch used only the first configured provider, so rule 4's "a new
   provider is one file" held for ingest alone.
 - Every `try` around a model call that could catch a refusal re-raises
-  `LlmConfigError` first; `tests/test_refusal_policy.py` scans the source for it, so
-  rule 25's tracing for that class is done by a test rather than by a reviewer.
+  `LlmConfigError` first; `tests/test_refusal_policy.py` scans the source for it. The
+  scan is lexical — it sees a `.complete(` call written inside the `try`, not one
+  reached through a helper — so it catches the shape that was missed three times and
+  does not replace asking rule 25's question of a new call site.
 - `quotes.py` also holds the note format's section names and the one section
   splitter every reader of a note uses (validator, Verbatim check, answer check,
   selector summary, snapper).

@@ -1490,6 +1490,9 @@ class DiscoverRun:
     # `stored_ids` (or `max_videos`); passed to Gate 1 beside it so a later
     # round does not screen, or judge, the same video again.
     read_from_disk: list[str] = field(default_factory=list)
+    # Consecutive stage-2 requests refused as too large for the context window,
+    # across rounds, reset by any stage-2 call that fitted. See discovery.
+    overflow_streak: int = 0
     stopped_because: str = ""
     requests: int = 0
     input_tokens: int = 0

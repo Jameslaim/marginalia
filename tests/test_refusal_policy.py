@@ -29,12 +29,13 @@ _BROAD = {"Exception", "BaseException", "LlmError", "RuntimeError"}
 
 # Call sites that deliberately convert a refusal into a *reported failure* and
 # make no further call after it. Each entry says why; adding one needs the same.
+#
+# **The scan is lexical**: it sees `.complete(` written inside the `try` itself,
+# not a `try` around a helper that calls the model (`ask.answer_question`'s try
+# calls `_call`, for instance, and converts any `LlmError` — refusals included —
+# into a reported failure with exit 1). Such sites are not policed here and need
+# a reviewer's eye; the independent review found this limit.
 _ALLOWED = {
-    # `marg ask` makes at most two calls for one question. A refusal becomes the
-    # answer's failure text (built by `safe_reason`, never the provider body),
-    # `Answer.failed` is set, the CLI exits 1 — and nothing is retried, kept or
-    # spent afterwards, which is what rule 24 forbids.
-    ("ask.py", "answer_question"),
     # `marg llm-check` exists to report what the provider says to one request.
     # Every `LlmError`, refusals included, is printed and exits non-zero; there
     # is no second call to protect.

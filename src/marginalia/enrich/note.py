@@ -328,11 +328,24 @@ def note_refusal(
     """
     if row is not None and not wanted_for_a_note(row, decisions):
         return "unreadable: a stage 2 called the transcript degraded"
-    if config.min_transcript_chars and transcript_chars < config.min_transcript_chars:
-        return f"transcript is {transcript_chars:,} chars, under the {config.min_transcript_chars:,} floor"
+    length = _length_refusal(transcript_chars, config)
+    return length[1] if length is not None else ""
+
+
+_FLOOR = "floor"
+_CEILING = "ceiling"
+
+
+def _length_refusal(transcript_chars: int, config: NoteConfig) -> tuple[str, str] | None:
+    """``(which limit, detail)`` when the transcript's length is refused, else
+    ``None``. The worker and `note_refusal` both decide through this, so the two
+    cannot drift apart on where the limits sit."""
+    floor = config.min_transcript_chars
+    if floor and transcript_chars < floor:
+        return _FLOOR, f"transcript is {transcript_chars:,} chars, under the {floor:,} floor"
     if transcript_chars > config.max_transcript_chars:
-        return f"transcript is {transcript_chars:,} chars, over {config.max_transcript_chars:,}"
-    return ""
+        return _CEILING, f"transcript is {transcript_chars:,} chars, over {config.max_transcript_chars:,}"
+    return None
 
 
 def note_version(prompts_directory: Any = None) -> str:
@@ -447,7 +460,8 @@ def _one(
     ledger.touch_accessed(video_id)
 
     floor = config.note.min_transcript_chars
-    if floor and len(transcript) < floor:
+    length = _length_refusal(len(transcript), config.note)
+    if length is not None and length[0] == _FLOOR:
         # **Its own outcome, not a failure and not the ceiling's twin.** Nothing
         # went wrong and nothing was too big: there is not enough transcript for
         # the required sections to be written from, so whatever a note contained would
@@ -481,7 +495,7 @@ def _one(
         )
 
     ceiling = config.note.max_transcript_chars
-    if len(transcript) > ceiling:
+    if length is not None and length[0] == _CEILING:
         # Logged and skipped, never split. See the module docstring.
         log.warning(
             "note: %s is %d characters, over the %d limit — skipped, not split",

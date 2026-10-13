@@ -43,6 +43,10 @@ SELECT_PROMPT = "select_notes"
 _DROPPED_RE = re.compile(r"^\s*\**\s*DROPPED\s*\**\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _WHY_RE = re.compile(r"^\s*\**\s*WHY\s*\**\s*:\s*(.*)$", re.IGNORECASE | re.MULTILINE)
 _ID_RE = re.compile(r"[A-Za-z0-9_-]{11}")
+# A continuation of the DROPPED list: ids, bullets, numbering and separators only.
+_LIST_LINE_RE = re.compile(
+    r"^\s*(?:[-*\d.)]+\s*)?[A-Za-z0-9_-]{11}(?:\s*[,;]?\s*[A-Za-z0-9_-]{11})*\s*[,;]?\s*$"
+)
 
 _MAX_WHY = 300
 
@@ -130,8 +134,21 @@ def parse_selection(text: str, *, known: Sequence[str], most: int | None = None)
     # written one id per line dropped only its first id and still parsed clean
     # (R2 F13) — a quota of five honoured as one, and the shortfall trimmed by
     # position downstream.
+    #
+    # **But only list lines.** The first line is the label's own; after it a
+    # line counts only while it is ids, bullets and separators. Reading every id
+    # up to WHY dropped an id the model mentioned in prose — "I kept X because…"
+    # (independent review, F10).
     why = _WHY_RE.search(text or "", body.start(1))
-    listed = (text or "")[body.start(1) : why.start() if why else None]
+    block = (text or "")[body.start(1) : why.start() if why else None].splitlines()
+    kept_lines = block[:1]
+    for line in block[1:]:
+        if not line.strip():
+            continue
+        if not _LIST_LINE_RE.match(line):
+            break
+        kept_lines.append(line)
+    listed = "\n".join(kept_lines)
 
     offered = set(known)
     named: list[str] = []

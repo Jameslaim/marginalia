@@ -185,3 +185,30 @@ def test_overflow_after_selection_does_not_always_trim_the_last_ids(tmp_path) ->
     assert 0 < per_run < len(notes), "the budget forces a trim and leaves something"
     last_ids = {n.video_id for n in notes[-per_run:]}
     assert trimmed - last_ids, "the trim reaches ids other than the ones that sort last"
+
+
+def test_a_transcript_already_opened_is_not_opened_twice(tmp_path) -> None:
+    """Independent review F3: --deep opened A (cut), the model asked for A again,
+    and A went to the second call twice."""
+    config, library = _build(tmp_path, {A: "note"}, {A: _lines(400)}, max_transcript_chars=3_000)
+    made = _client([f"ESCALATE: {A}: I need the rest of it", "The answer."])
+
+    answer = answer_question(config, library, made, "q", deep=[A])
+
+    assert answer.opened == [(A, "opened by request")]
+    assert (A, "already opened") in answer.escalations_refused
+    assert _prompt(made, 1).count(f"===== TRANSCRIPT {A}") == 1
+
+
+def test_an_id_mentioned_in_prose_after_the_dropped_list_is_not_dropped() -> None:
+    """Independent review F10: every id up to WHY counted as dropped, so
+    "I kept X because…" dropped X."""
+    known = [f"aaaaaaaaa{n:02d}" for n in range(10)]
+    reply = (
+        "DROPPED:\n" + "\n".join(known[:2])
+        + f"\nI kept {known[5]} because it covers the question directly.\nWHY: off topic"
+    )
+
+    selection = parse_selection(reply, known=known, most=3)
+
+    assert set(known) - set(selection.video_ids) == set(known[:2])

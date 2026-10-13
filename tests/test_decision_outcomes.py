@@ -284,3 +284,23 @@ def test_a_legacy_ledger_is_refused_before_anything_is_written_to_it(tmp_path: P
         Ledger(path)
 
     assert _digest(path) == before
+
+
+def test_a_ledger_with_real_drift_is_refused_before_anything_is_written(tmp_path: Path) -> None:
+    """Independent review F5: the legacy-table case was refused first, but a
+    ledger missing a core column still had additive columns and tables written
+    into it before the refusal."""
+    path = tmp_path / "ledger.db"
+    Ledger(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE decisions DROP COLUMN reason")
+    conn.execute("ALTER TABLE decisions DROP COLUMN outcome")
+    conn.execute("DROP TABLE plans")
+    conn.commit()
+    conn.close()
+    before = _digest(path)
+
+    with pytest.raises(LedgerError, match="missing column"):
+        Ledger(path)
+
+    assert _digest(path) == before
