@@ -105,9 +105,46 @@ NOTE_SECTIONS: tuple[str, ...] = (
 # Any indentation: the validator this replaced stripped leading whitespace, and
 # an indented `## Verbatim` that validated before must still validate.
 _HEADING_RE = re.compile(r"^\s*(#{1,6})\s*(.*?)\s*#*\s*$")
-# A fence line opens or closes a block; a line that also closes on itself
-# (```cmd```) is inline code, not a fence.
-_FENCE_RE = re.compile(r"^\s*(```|~~~)[^`~]*$")
+# The fence policy, one place for every reader (second independent review, B):
+#
+# * **Opens** on a run of three or more backticks, or three or more tildes, at
+#   any indentation (headings are read at any indentation too, and a fence in
+#   a list item is indented). A backtick opener's info string may not contain
+#   a backtick: ```` ```cmd``` ```` is inline code, not a fence.
+# * **Closes** only on a run of the *same* character, at least as long as the
+#   opener, with nothing after it. A tilde line inside a backtick block, a
+#   shorter run, or a ```` ```python ```` line is content.
+# * **An opener with no closer is not a fence** (see `note_lines`).
+_FENCE_OPEN_RE = re.compile(r"^\s*(`{3,}(?=[^`]*$)|~{3,})")
+_FENCE_CLOSE_RE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
+
+
+def _closes(line: str, opener: str) -> bool:
+    match = _FENCE_CLOSE_RE.match(line)
+    return (
+        match is not None
+        and match.group(1)[0] == opener[0]
+        and len(match.group(1)) >= len(opener)
+    )
+
+
+def _fenced_lines(lines: Sequence[str]) -> set[int]:
+    """Indices of every line that is a fence or inside one."""
+    inside: set[int] = set()
+    index = 0
+    while index < len(lines):
+        match = _FENCE_OPEN_RE.match(lines[index])
+        if match is not None:
+            opener = match.group(1)
+            close = next(
+                (n for n in range(index + 1, len(lines)) if _closes(lines[n], opener)), None
+            )
+            if close is not None:
+                inside.update(range(index, close + 1))
+                index = close + 1
+                continue
+        index += 1
+    return inside
 
 
 def normalise_heading(text: str) -> str:
@@ -152,18 +189,13 @@ def note_lines(text: str) -> list[tuple[str | None, str, bool]]:
     """
     out: list[tuple[str | None, str, bool]] = []
     section: str | None = None
-    fenced = False
     lines = text.splitlines(keepends=True)
     # A fence with no closer is not a fence: treating it as one turned every
     # later heading into content, and a note with a stray ``` lost its sections.
-    fences = [index for index, line in enumerate(lines) if _FENCE_RE.match(line)]
-    unmatched = fences[-1] if len(fences) % 2 else None
+    # Its line is read as an ordinary line and the scan goes on from the next.
+    fenced = _fenced_lines([line.rstrip("\r\n") for line in lines])
     for index, line in enumerate(lines):
-        if index != unmatched and _FENCE_RE.match(line):
-            fenced = not fenced
-            out.append((section, line, False))
-            continue
-        if not fenced:
+        if index not in fenced:
             boundary, name = section_heading(line)
             if boundary:
                 section = name
@@ -338,17 +370,28 @@ def _flips_polarity(
     differences flagged every such faithful quote as a reversal and scored it 0
     (found by the independent review). A reversal or an inserted "not" changes
     the count.
+
+    **Counted per change, not per quote.** A negation's meaning is where it
+    sits. Summed over the whole quote, "the cache is *not* cleared and the model
+    is reloaded" against "the cache is cleared and the model is *not* reloaded"
+    held one on each side and scored 0.92 (second independent review). A moved
+    negation is two changes — one where it left, one where it arrived — each
+    unbalanced on its own; a contraction is one change, balanced.
+
+    **What it cannot see:** a transposition next to a negation. "not always"
+    against "always not" aligns the two "not"s and moves "always", so no
+    negation differs. Word order is outside what a word list can name.
     """
-    quote_side = 0
-    source_side = 0
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag == "equal":
             continue
         if tag == "insert" and i1 in (0, len(needle)):
             continue  # context before or after the quote, not a change inside it
-        quote_side += sum(word in _POLARITY for word in needle[i1:i2])
-        source_side += sum(word in _POLARITY for word in window[j1:j2])
-    return quote_side != source_side
+        quote_side = sum(word in _POLARITY for word in needle[i1:i2])
+        source_side = sum(word in _POLARITY for word in window[j1:j2])
+        if quote_side != source_side:
+            return True
+    return False
 
 
 def _candidate_starts(needle: Sequence[str], hay: Words) -> list[int]:

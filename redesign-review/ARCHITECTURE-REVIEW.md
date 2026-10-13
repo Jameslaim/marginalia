@@ -76,6 +76,31 @@ regressions on four note shapes, a drifted ledger written before refusal, and sm
 each was checked against the code and fixed with a test in `3d019cf`. The reviewer's own list
 of things it verified as correct is in that file.
 
+## 4b. Second independent review — six boundary cases (uncommitted corrections)
+
+A separate review reproduced the 1,757 passing tests and reported six boundary cases from
+focused synthetic probes. Each was treated as a claim: reproduced on a fresh snapshot of
+`9b95fab` (and, for origin, of `56d04fa` and `c590f16`), given a regression test and a
+legitimate control, and shown to fail before the correction and pass after it. The
+corrections are **in the working tree of `redesign/agent`, not committed**, for independent
+review.
+
+| | finding | verdict | origin | correction |
+|---|---|---|---|---|
+| A | A negation moved to another clause kept the per-quote negation count equal: 0.916667, "loosely quoted" in an answer, not marked unfound in a note. | **Confirmed** through both paths. | **Regression from an intermediate candidate.** Baseline had no guard (scores the same 0.916667). `c590f16`'s presence-based guard rejected it (0.0, unfound) but scored contractions 0; `3d019cf` fixed contractions by counting over the whole quote, which let a moved negation balance. | `quotes._flips_polarity` compares negations **per changed span** (each `SequenceMatcher` opcode): a move is two unbalanced changes, a contraction one balanced change. Contraction scores are unchanged from baseline and `3d019cf` (probe: 0.777778 on all three); no threshold moved. **Known limit, tested as such:** a transposition beside a negation ("not always" / "always not") aligns the two "not"s, so no negation differs; baseline and `c590f16` miss it too. |
+| B | A four-backtick fence was not recognised; a `~~~` line inside a backtick block toggled the fence; headings in code became sections. | **Confirmed**, and widened: a ```` ```python ```` line inside a ```` ``` ```` block also closed it. | **Introduced by the candidate, partly a regression.** Baseline had no fence concept (every `#` line in code was a heading). `51ab8e4` added fences with "any marker toggles" (the tilde case); `c590f16` still recognised four backticks; `3d019cf`'s inline-code fix (`[^`~]*$`) stopped recognising them. | One explicit policy in `quotes.py`: opens on ≥3 backticks or ≥3 tildes at any indentation (a backtick opener's info string has no backtick, so ```` ```cmd``` ```` stays inline); closes only on the **same character, at least as long, nothing after**; an opener with no closer is not a fence and the scan continues. Tested through `note_sections`, `verbatim_of`, `missing_sections`, `check_verbatim`, the selector summary and the timestamp snapper; ordinary, inline, indented, repeated-section and unclosed cases still pass. |
+| C | With `videos` dropped from an initialised ledger, a read-only open succeeded and the first query raised `OperationalError`; baseline refused with `LedgerError`. Write mode recreated the table. | **Confirmed and qualified.** | Read-only acceptance **introduced** by `b15c7f4` (skipping every absent table as an additive gap). Write-mode recreation **inherited** from baseline (`CREATE TABLE IF NOT EXISTS`). Also found: a ledger without `runs` opened read-only and then crashed `marg doctor`'s `list_runs` (same origin); an empty file opened read-only (baseline refused); a read-only refusal left the SQLite handle open, so on Windows the file could not be moved aside as the message says (inherited). | Required tables established from history: `videos`, `decisions` and `quota` were all created by M2 (`95993ef`), the first schema without the legacy `rejections` table, so every supported ledger has them; `runs` (M2b `0fabe7d`), `queries` (B1 `5dedd1f`) and `plans` (B6 `a32389c`) are legitimate gaps. `_CORE_TABLES` missing → refused **before any write**, in both modes, with a "damaged, not old" message; later tables still skipped read-only and added in write mode; `list_runs` answers empty for a ledger that predates `runs`; a file with no marginalia table is a fresh ledger in write mode and refused read-only; the read-only refusal closes its connection. |
+| D | With `max_transcripts=2` and A opened by `--deep`, a request for A then B took the last slot with A, refused B as over the limit, and opened only A. | **Confirmed and qualified:** duplicate-later ordering also misreported A as "over the limit" instead of "already opened". | **Inherited.** Baseline granted the duplicate (opening A twice) and refused B the same way; `3d019cf` (F3) stopped the second copy but kept the check after the cut. | `escalation_requests` takes the opened ids and refuses a duplicate as "already opened" **before** the limit is applied; repeated ids are reported once; the limit still binds new requests. |
+| E | `marg search` passed no disk check: a `has_transcript` row over a missing file was reported `new` (held); with the check, `rejected`. A `pending` row over bytes also differed. | **Confirmed.** Production callers traced: discovery (`_gather` → `run_search`, passes `library.has_transcript`) and `marg search` (`_cmd_search`, passed nothing). | **Introduced** by `f829066` (exemption read from row status); `3d019cf` (F8) gave discovery the disk check only. Baseline had no exemption. | `_cmd_search` passes `library.has_transcript`; a caller with no disk to ask gets **no** exemption — the stage-1 NO stands, as on baseline — instead of a "held on disk" claim nobody checked. Rule 13 updated. |
+| F | Exactly five overflowing candidates: five overflows, `stopped_because=max_rounds`; six: five judged, `context_window`. | **Confirmed.** Across rounds, a fifth overflow ending round two let round three search and screen before stopping. | **Introduced** by `3d019cf` (F2's run-level stop, checked only before a next candidate). Baseline had no run-level stop. | The same check also runs after the stage-2 loop, so the stop fires at the fifth; the fifth is stored, logged (`too_large`) and counted before it. Tested at 4/5/6, across a round boundary, and with a fitting call resetting the streak. Rule 24 updated. |
+
+Evidence: 28 new test cases fail on `9b95fab`'s source and pass on the corrected source (same
+test files; `newtests-pre2.txt` / `newtests-fix2.txt`). Controls that pass both before and
+after: contraction equivalents in either clause and through answer grounding; ordinary,
+inline, indented, repeated and unclosed fences and a shorter run inside a longer fence; later
+tables absent, fresh initialisation; a single new escalation with one slot; a held exemption
+when the disk agrees; four overflows, and a reset.
+
 The third area reviewer (tests/recovery/diagnostics) was cut off by a usage limit before
 writing a report. Its probe outputs and baseline mutation results were recovered and re-checked
 by the coordinator and are cited as such; no claim here rests on it as an independent review.
@@ -86,6 +111,9 @@ by the coordinator and are cited as such; no claim here rests on it as an indepe
 * Baseline in C under isolation: **1,624 passed** (reproduces the stated baseline).
 * Candidate: **1,757 passed, 0 failed, 0 skipped** (+133 tests, none removed except the
   replaced `test_search` case).
+* Corrected working tree after §4b (uncommitted; run on a fresh snapshot with credentials
+  stripped): **1,807 passed, 0 failed, exit 0** (+50 tests, none removed or loosened; one
+  draft case was replaced by a recorded-limit test, see §4b A).
 * Every run: network blocked (socket guard), home redirected to a scratch folder, an injected
   `MARGINALIA_CONFIG`, no API keys in the environment, and an audit hook that raises on any
   open/sqlite/rename/remove touching the live library, archive, home config, A or B. Each run
@@ -125,6 +153,15 @@ reported "survived" (K04, K05, K07) turned out **not to have been applied** — 
 had moved their anchors, and the driver classed an unapplied mutation as survived. They were
 re-anchored, the driver now reports an unapplied mutation as INVALID (`run_some.sh`), and all
 three are caught. **Final: 31 of 31 caught on `3d019cf`.**
+
+**Re-run on the §4b corrected tree** (uncommitted; each mutant on its own fresh copy of the
+snapshot): K04 and K05 were re-anchored to the corrected ledger code, and twelve mutants were
+added, each reverting one §4b guard — per-change negation count (N-A), fence character, length
+and four-backtick opener (N-B1–3), core-table check, read-only empty file, pre-M2b `list_runs`
+and read-only handle release (N-C1–4), duplicate-before-limit (N-D), the CLI disk check and
+the no-callback fallback (N-E1–2), and the post-loop overflow stop (N-F). **43 of 43 caught**,
+none unapplied. (N-C4's test depends on Windows file locking; on another OS it would pass
+vacuously.)
 
 ### 5.4 Synthetic workload comparison
 `scratchpad/bench/bench.py`, identical deterministic input, run against the pristine baseline
@@ -212,6 +249,10 @@ These are synthetic; real-run costs depend on how often held videos and literal 
 * **Needs real-model validation:** whether planner behaviour improves with honest counters and
   headings; how often judges answer MAYBE; whether the PARTIAL transcript header changes
   answers. Fake replies passing tests says nothing about any of these.
+* **Quote checking is not semantic.** The §4b A guard refuses negation changes it can name, per
+  changed span; it does not establish that a loosely matched quote means what the source
+  meant. Transpositions beside a negation, antonyms ("increase"/"decrease"), and non-English
+  negation are outside it. Synthetic tests show the named cases only.
 
 ## 9. Commits on `redesign/agent`
 
@@ -231,4 +272,5 @@ These are synthetic; real-run costs depend on how often held videos and literal 
 | `ca91a15` | RULES updates and coverage checklist |
 | `c590f16` | chat-replay test strengthened after the mutation run |
 | `3d019cf` | fixes from the independent post-implementation review |
-| (final) | this report and the post-implementation review record |
+| `9b95fab` | this report and the post-implementation review record |
+| (uncommitted) | §4b corrections from the second independent review, left in the working tree for review |

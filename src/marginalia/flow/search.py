@@ -50,7 +50,6 @@ from ..contracts import (
     NEW,
     REJECTED,
     STATUS_DUPLICATE,
-    STATUS_HAS_TRANSCRIPT,
     STORED_THIS_RUN,
     VERDICT_MAYBE,
     VERDICT_NO,
@@ -208,16 +207,15 @@ def _verdict(
     # A judge's NO that is still the current verdict for this topic — never a
     # search-stage row, which is this gate's own bookkeeping. See `rejection_in`.
     previous = ledger.topic_rejection(result.video_id, topic)
-    # "Held" asked of the disk when the caller can (discovery passes
-    # `library.has_transcript`, the same check its partition makes), so the two
-    # cannot disagree: a row saying `has_transcript` over a missing file, or a
-    # `pending` row over bytes an interrupted store left (independent review,
-    # F8). Without a disk check, the row is what there is.
-    held = (
-        holds(result.video_id)
-        if holds is not None
-        else row is not None and row.status == STATUS_HAS_TRANSCRIPT
-    )
+    # "Held" is asked of the disk — `library.has_transcript`, passed by both
+    # production callers, discovery and `marg search` — so Gate 2 and
+    # discovery's partition cannot disagree: a row saying `has_transcript` over
+    # a missing file is not held, and a `pending` row over bytes an interrupted
+    # store left is (independent review F8; `marg search` passed nothing until
+    # the second review, E). A caller with no disk to ask claims no exemption:
+    # the row alone said "held on disk" about a file nobody had looked for, so
+    # the stage-1 NO stands, as it did before the exemption existed.
+    held = holds is not None and holds(result.video_id)
     if previous is not None and previous.stage == STAGE_METADATA and held:
         # A stage-1 NO decides whether to *fetch* (rule 13), and these bytes
         # are already held — fetched for another topic, or before the NO was

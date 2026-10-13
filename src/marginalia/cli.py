@@ -272,7 +272,17 @@ def _cmd_search(args: argparse.Namespace) -> int:
     library.ensure()
 
     with Ledger(library.ledger_path) as ledger:
-        run = run_search(config, ledger, args.query, limit=args.limit, topic=args.topic)
+        # Gate 2's held exemption asks the disk, as discovery's does: a row
+        # saying `has_transcript` over a missing file is not held, and bytes an
+        # interrupted store left under a `pending` row are.
+        run = run_search(
+            config,
+            ledger,
+            args.query,
+            limit=args.limit,
+            topic=args.topic,
+            holds=library.has_transcript,
+        )
 
     if args.json:
         print(json.dumps(_as_json(run), indent=2, ensure_ascii=False))

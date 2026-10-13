@@ -115,3 +115,108 @@ def test_a_contraction_is_not_a_reversal(quote: str, source: str) -> None:
     differently, was scored 0 — a faithful quote marked unfound. The guard now
     counts negations on each side."""
     assert closeness(quote, Words(source)) >= 0.6
+
+
+# -- negation scope (second independent review, finding A) ----------------------
+#
+# Counting negations over the whole quote let one move between clauses: "the
+# cache is not cleared and the model is reloaded" against a source saying the
+# cache *is* cleared and the model is *not* reloaded holds one "not" on each
+# side, and scored 0.92 — loosely quoted in an answer, found in a note.
+
+MOVED_SOURCE = "the cache is cleared and the model is not reloaded each time"
+MOVED_QUOTE = "the cache is not cleared and the model is reloaded each time"
+
+
+def _cue(text: str) -> str:
+    return f"[00:00:01.000 --> 00:00:05.000] {text}\n"
+
+
+@pytest.mark.parametrize(
+    ("quote", "source"),
+    [
+        (MOVED_QUOTE, MOVED_SOURCE),
+        # The same move, written as a contraction on one side.
+        (
+            "it doesn't work the first time and it is cached after that",
+            "it does work the first time and it isn't cached after that",
+        ),
+        # A different negation word, moved the same way.
+        (
+            "we never cache the prefix and we refresh it on every call",
+            "we cache the prefix and we never refresh it on every call",
+        ),
+    ],
+)
+def test_a_negation_moved_to_another_clause_is_not_loosely_quoted(quote: str, source: str) -> None:
+    assert closeness(quote, Words(source)) < 0.6
+
+
+def test_a_transposition_around_a_negation_is_a_known_limit() -> None:
+    """Recorded, not fixed: "not always" against "always not" aligns the two
+    "not"s and moves "always" instead, so no negation word differs. Word order
+    is outside what this guard can name; the earlier presence-based guard
+    missed it too. If this starts failing, the guard got stronger — update it."""
+    quote = "the prefix is not always cached for the whole five minutes"
+    source = "the prefix is always not cached for the whole five minutes"
+    assert closeness(quote, Words(source)) >= 0.6
+
+
+def test_a_moved_negation_is_found_in_a_long_transcript_too() -> None:
+    """Past `_EXHAUSTIVE_MAX` words the scorer picks candidate passages by vote;
+    the guard must hold on that path as well."""
+    filler = " ".join(f"word{n}" for n in range(1_200))
+    hay = Words(f"{filler} {MOVED_SOURCE} {filler}")
+    assert closeness(MOVED_QUOTE, hay) < 0.6
+
+
+def test_a_moved_negation_in_an_answer_is_unverified_not_loose() -> None:
+    note = LoadedNote("aaaaaaaaaaa", "t", "## Claims\n- x\n\n## Verbatim\n- \"something else\"\n")
+    grounding = check_grounding(
+        f'He says "{MOVED_QUOTE}" [aaaaaaaaaaa 00:01].',
+        [note],
+        ["aaaaaaaaaaa"],
+        transcripts={"aaaaaaaaaaa": _cue(MOVED_SOURCE)},
+    )
+    assert grounding.quotes_checked == 1
+    assert [quote.loose for quote in grounding.unverified_speech] == [False]
+
+
+def test_a_moved_negation_in_a_note_is_marked_unfound() -> None:
+    from marginalia.enrich.note import check_verbatim
+
+    _, checked, unfound = check_verbatim(f'## Verbatim\n- "{MOVED_QUOTE}"\n', _cue(MOVED_SOURCE))
+    assert (checked, unfound) == (1, 1)
+
+
+@pytest.mark.parametrize(
+    ("quote", "source"),
+    [
+        # A contraction in a quote that also has a caption fix elsewhere.
+        (
+            "we don't cache anything until the second call to the model arrives",
+            "we do not cash anything until the second call to the model arrives",
+        ),
+        # Two contractions, one per clause, each faithful.
+        (
+            "it isn't cached and the model won't reload it each time",
+            "it is not cached and the model will not reload it each time",
+        ),
+    ],
+)
+def test_faithful_contractions_in_either_clause_are_still_loose(quote: str, source: str) -> None:
+    """The control for the scope check: a negation that stays in its own place,
+    however it is spelled, is not a reversal."""
+    assert closeness(quote, Words(source)) >= 0.6
+
+
+def test_a_faithful_contraction_in_an_answer_is_loosely_quoted() -> None:
+    quote = "it isn't cached and the model won't reload it each time"
+    note = LoadedNote("aaaaaaaaaaa", "t", "## Claims\n- x\n\n## Verbatim\n- \"something else\"\n")
+    grounding = check_grounding(
+        f'He says "{quote}" [aaaaaaaaaaa 00:01].',
+        [note],
+        ["aaaaaaaaaaa"],
+        transcripts={"aaaaaaaaaaa": _cue("it is not cached and the model will not reload it each time")},
+    )
+    assert [q.loose for q in grounding.unverified_speech] == [True]

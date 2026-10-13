@@ -25,6 +25,15 @@ report files; this is a faithful condensation of its final message, with every f
 | F11 | S3 | The refusal-policy scan is lexical; an `_ALLOWED` entry was dead; RULES overclaimed. | Confirmed. | Limit stated in the test and RULES; dead entry removed. |
 | F12 | S3 low | Narrowing the daily-quota pattern is inferred from documentation, not observed. | Agreed. | Left as is, flagged in the report as inferred. |
 
+**Follow-up (second independent review, uncommitted corrections; see ARCHITECTURE-REVIEW
+§4b).** Three of the resolutions above had boundary gaps: F1's whole-quote count let a
+negation move between clauses (now counted per changed span); F2's stop missed a fifth
+overflow that ended its round (now also checked after the loop); F4's inline-code fix stopped
+recognising four-backtick fences, and the fence state ignored which character opened it (one
+open/close policy now). F3's duplicate check ran after the capacity cut (now before), and
+F8's disk check reached discovery but not `marg search` (now both). F5's pre-write check
+skipped every absent table (now only tables later than M2).
+
 ## Reviewer's "checked and found correct"
 Migration and read-only opens (ALTER with NOT NULL DEFAULT on an existing table, unmigrated
 ledgers read byte-identical, baseline can reopen a candidate-migrated ledger); every historical

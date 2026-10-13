@@ -15,6 +15,7 @@ import re
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from conftest import make_ask_config, make_config
 from marginalia.ask import answer_question, choose_notes, render_answer
 from marginalia.brain.selector import parse_selection
@@ -212,3 +213,81 @@ def test_an_id_mentioned_in_prose_after_the_dropped_list_is_not_dropped() -> Non
     selection = parse_selection(reply, known=known, most=3)
 
     assert set(known) - set(selection.video_ids) == set(known[:2])
+
+
+# -- duplicate requests and capacity (second independent review, finding D) ------
+#
+# With `max_transcripts=2` and A opened by `--deep`, one slot is left. A request
+# for A again used to take that slot before it was recognised as a duplicate,
+# so B was refused as over the limit and only A was opened.
+
+C = "ccccccccccc"
+
+
+def _three(tmp_path, **ask):
+    return _build(
+        tmp_path,
+        {A: "note A", B: "note B", C: "note C"},
+        {A: _lines(5), B: _lines(5), C: _lines(5)},
+        **ask,
+    )
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        f"ESCALATE: {A}: again\nESCALATE: {B}: new",  # duplicate first
+        f"ESCALATE: {B}: new\nESCALATE: {A}: again",  # duplicate later
+        # repeated ids, both kinds
+        f"ESCALATE: {A}: again\nESCALATE: {B}: new\nESCALATE: {A}: and again\nESCALATE: {B}: twice",
+    ],
+)
+def test_a_duplicate_request_does_not_take_the_slot_of_a_new_one(tmp_path, reply: str) -> None:
+    config, library = _three(tmp_path, max_transcripts=2)
+    made = _client([reply, "The answer."])
+
+    answer = answer_question(config, library, made, "q", deep=[A])
+
+    assert [video_id for video_id, _ in answer.opened] == [A, B]
+    assert answer.escalations_refused == [(A, "already opened")]
+    assert _prompt(made, 1).count(f"===== TRANSCRIPT {A}") == 1
+    assert _prompt(made, 1).count(f"===== TRANSCRIPT {B}") == 1
+
+
+def test_the_limit_still_applies_to_new_requests_after_a_duplicate(tmp_path) -> None:
+    config, library = _three(tmp_path, max_transcripts=2)
+    made = _client([f"ESCALATE: {A}: again\nESCALATE: {B}: new\nESCALATE: {C}: also new", "The answer."])
+
+    answer = answer_question(config, library, made, "q", deep=[A])
+
+    assert [video_id for video_id, _ in answer.opened] == [A, B]
+    assert answer.escalations_refused == [
+        (A, "already opened"),
+        (C, "over the [ask] max_transcripts limit"),
+    ]
+
+
+def test_with_no_capacity_left_a_duplicate_is_still_named_as_one(tmp_path) -> None:
+    """Exhausted capacity: the duplicate is refused for what it is, and only
+    the new request is over the limit."""
+    config, library = _three(tmp_path, max_transcripts=1)
+    made = _client([f"ESCALATE: {B}: new\nESCALATE: {A}: again", "The answer."])
+
+    answer = answer_question(config, library, made, "q", deep=[A])
+
+    assert [video_id for video_id, _ in answer.opened] == [A]
+    assert answer.escalations_refused == [
+        (B, "over the [ask] max_transcripts limit"),
+        (A, "already opened"),
+    ]
+
+
+def test_a_single_new_request_with_one_slot_left_is_opened(tmp_path) -> None:
+    """The control the review compared against."""
+    config, library = _three(tmp_path, max_transcripts=2)
+    made = _client([f"ESCALATE: {B}: new", "The answer."])
+
+    answer = answer_question(config, library, made, "q", deep=[A])
+
+    assert [video_id for video_id, _ in answer.opened] == [A, B]
+    assert answer.escalations_refused == []

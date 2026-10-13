@@ -231,3 +231,44 @@ def test_json_emits_nothing_else(gated: Path, capsys) -> None:
 )
 def test_durations_are_compact_and_fixed_vocabulary(seconds, expected: str) -> None:
     assert _duration(seconds) == expected
+
+
+# -- Gate 2 asks the library's disk (second independent review, finding E) -------
+
+
+def _stage_one_no(library: Path, status: str, on_disk: bool) -> None:
+    from marginalia.contracts import TranscriptLine
+    from marginalia.core.library import Library
+
+    with Ledger(library / "ledger.db") as ledger:
+        ledger.mark_pending(A)
+        if status == "has_transcript":
+            ledger.mark_has_transcript(A, source="captions", provider="ytdlp")
+        ledger.log_decision(A, "prompt caching", stage=STAGE_METADATA, verdict=VERDICT_NO, reason="title")
+    if on_disk:
+        store = Library(library)
+        store.ensure()
+        store.write_transcript(A, [TranscriptLine(0, 1000, "a stored sentence")])
+
+
+@pytest.mark.parametrize(
+    ("status", "on_disk", "verdict"),
+    [
+        ("has_transcript", False, "rejected"),
+        ("has_transcript", True, "new"),
+        ("pending", True, "new"),
+        ("pending", False, "rejected"),
+    ],
+)
+def test_search_judges_held_by_the_file_as_discovery_does(
+    library: Path, capsys, status: str, on_disk: bool, verdict: str
+) -> None:
+    """`marg search` passed no disk check, so a `has_transcript` row over a
+    missing file was reported `new` — held — and a `pending` row over bytes an
+    interrupted store left was reported `rejected`. Discovery asked the disk."""
+    _stage_one_no(library, status, on_disk)
+
+    assert main(["search", "prompt caching"]) == EXIT_OK
+
+    line = next(row for row in capsys.readouterr().out.splitlines() if A in row)
+    assert line.split()[0] == verdict

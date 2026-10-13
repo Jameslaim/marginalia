@@ -336,7 +336,10 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     first, so a title-only NO stopped stage 2 from reading a transcript the library
     held — in that run, and permanently through Gate 2. Gate 2 likewise does not
     let a *stage-1* NO block a video whose transcript is held; stage 2's reading
-    then supersedes the title's (rule 12's "later stage supersedes").
+    then supersedes the title's (rule 12's "later stage supersedes"). **Held is
+    what the disk says**, asked by both callers — discovery and `marg search` —
+    and never read off the row: a `has_transcript` row over a missing file is not
+    held, and a caller with no library to ask claims no exemption.
 
     Two counters, never one. A MAYBE stage 2 declines is `flipped_to_no` and is stage 2
     working; a **YES** stage 2 declines is `overturned` and is stage 1 having been
@@ -675,7 +678,9 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     their place discovery stops after five stage-2 overflows in a row with nothing
     fitting between them, under its own reason `context_window` — the
     configuration, not the videos — and the client's own streak still guards the
-    small calls (stage 1, expansion, planning).
+    small calls (stage 1, expansion, planning). It stops **at** the fifth, even when
+    the fifth was its round's last candidate; checked only before a next candidate,
+    a run whose fifth overflow ended a round went on to search and screen again.
 
     **Only the request id is logged, never the error body.** A provider's body is the
     field its support asks about *and* an echo of the request, which here is a system

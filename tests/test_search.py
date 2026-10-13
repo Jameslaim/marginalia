@@ -547,3 +547,47 @@ def test_the_producing_provider_is_recorded_on_every_result(config, ledger, prov
     run = run_search(config, ledger, TOPIC)
 
     assert {c.result.provider for c in run.candidates} == {"primary"}
+
+
+# -- Gate 2's held exemption reads the disk (second independent review, E) -------
+#
+# A stage-1 NO stands aside for bytes the library already holds. "Holds" is a
+# fact about the disk, so it is asked of the disk; a caller with no library to
+# ask gets no exemption, and the stage-1 NO stands as it always did.
+
+
+def _stage_one_no(ledger: Ledger, status: str) -> None:
+    ledger.mark_pending(A)
+    if status == "has_transcript":
+        ledger.mark_has_transcript(A, source="captions", provider="ytdlp")
+    ledger.log_decision(A, TOPIC, stage=STAGE_METADATA, verdict=VERDICT_NO, reason="title")
+
+
+@pytest.mark.parametrize(
+    ("status", "on_disk", "expected"),
+    [
+        ("has_transcript", False, REJECTED),  # the row claims bytes the disk lacks
+        ("has_transcript", True, NEW),
+        ("pending", True, NEW),  # an interrupted store left the bytes
+        ("pending", False, REJECTED),
+    ],
+)
+def test_the_held_exemption_follows_the_disk_not_the_row(
+    config, ledger, providers, status: str, on_disk: bool, expected: str
+) -> None:
+    _stage_one_no(ledger, status)
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    run = run_search(config, ledger, TOPIC, holds=lambda video_id: on_disk)
+
+    assert run.candidates[0].verdict == expected
+
+
+@pytest.mark.parametrize("status", ["has_transcript", "pending"])
+def test_without_a_disk_to_ask_a_stage_one_no_stands(config, ledger, providers, status: str) -> None:
+    """A caller with no library: no exemption is claimed from the row alone —
+    "held on disk" was reported for a file nobody had looked for."""
+    _stage_one_no(ledger, status)
+    config = install(providers, config, primary=FakeProvider("primary", [result(A)]))
+
+    assert run_search(config, ledger, TOPIC).candidates[0].verdict == REJECTED

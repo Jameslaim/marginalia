@@ -3465,3 +3465,93 @@ def test_a_held_video_already_judged_is_not_counted_again_next_round(
 
     assert outcome.rounds[0].already_held == 1
     assert (outcome.rounds[1].already_held, outcome.rounds[1].known_this_run) == (0, 1)
+
+
+# -- the overflow stop at exactly its threshold (second independent review, F) ----
+#
+# The stop was checked before the *next* candidate, so a fifth overflow with no
+# candidate after it in the round never stopped anything: five candidates gave
+# five overflows and `max_rounds`, and the run went on to search again.
+
+
+def _overflowing_judge(fits=()):
+    """A judge whose stage-2 call overflows the window, except for `fits`."""
+    from marginalia.brain.judge import Judge
+    from conftest import make_llm_config
+
+    shared = LlmClient(
+        make_llm_config(),
+        transport=lambda **_: (_ for _ in ()).throw(_Overflow()),
+        sleep=lambda _: None,
+    )
+
+    class Overflowing(FakeJudge):
+        real = Judge(shared)
+
+        def judge_full(self, brief, candidate, **kwargs):
+            if candidate.video_id in fits:
+                return super().judge_full(brief, candidate, **kwargs)
+            self.opening_calls.append(candidate.video_id)
+            return self.real.judge_full(brief, candidate, **kwargs)
+
+    return shared, Overflowing
+
+
+def _ids(count: int, first: int = 0) -> list[str]:
+    return [chr(97 + n) * 11 for n in range(first, first + count)]
+
+
+@pytest.mark.parametrize("count", [4, 5, 6])
+def test_the_overflow_stop_fires_when_the_fifth_is_reached(
+    config, ledger, library, searches, count: int
+) -> None:
+    shared, Overflowing = _overflowing_judge()
+    ids = _ids(count)
+    searches["q1"] = [result(video_id) for video_id in ids]
+    judge = Overflowing(queries=[["q1"], ["q2"], ["q3"]])
+    provider = FakeTranscripts()
+
+    outcome = run(config, ledger, library, shared, judge, provider=provider, max_rounds=3)
+
+    judged = min(count, 5)
+    assert len(judge.opening_calls) == judged and len(provider.fetched) == judged
+    if count < 5:
+        assert outcome.stopped_because != "context_window"
+        return
+    assert outcome.stopped_because == "context_window"
+    assert len(outcome.rounds) == 1 and "q2" not in searches["calls"]
+    # The fifth is persisted and accounted for like the four before it.
+    assert outcome.rounds[0].unjudged == 5 and outcome.rounds[0].stored == 5
+    for video_id in ids[:5]:
+        (row,) = [d for d in ledger.decisions_for(video_id) if d.stage == STAGE_FULL]
+        assert row.outcome == "too_large"
+        assert library.has_transcript(video_id)
+
+
+def test_the_overflow_streak_reaches_its_stop_across_rounds(config, ledger, library, searches) -> None:
+    """Three in round one and two in round two are five in a row: the run stops
+    at the fifth, and round three is never searched."""
+    shared, Overflowing = _overflowing_judge()
+    searches["q1"] = [result(video_id) for video_id in _ids(3)]
+    searches["q2"] = [result(video_id) for video_id in _ids(2, first=3)]
+    searches["q3"] = [result(video_id) for video_id in _ids(1, first=5)]
+    judge = Overflowing(queries=[["q1"], ["q2"], ["q3"]])
+
+    outcome = run(config, ledger, library, shared, judge, max_rounds=3)
+
+    assert outcome.stopped_because == "context_window"
+    assert len(judge.opening_calls) == 5 and len(outcome.rounds) == 2
+    assert "q3" not in searches["calls"]
+
+
+def test_a_transcript_that_fits_resets_the_overflow_streak(config, ledger, library, searches) -> None:
+    """Four overflows, one that fits, four more: never five in a row."""
+    ids = _ids(9)
+    shared, Overflowing = _overflowing_judge(fits={ids[4]})
+    searches["q1"] = [result(video_id) for video_id in ids]
+    judge = Overflowing()
+
+    outcome = run(config, ledger, library, shared, judge, max_rounds=1)
+
+    assert judge.opening_calls == ids
+    assert outcome.stopped_because != "context_window"

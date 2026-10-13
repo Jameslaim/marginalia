@@ -305,6 +305,13 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("quota", "exhausted_at", "TEXT"),
 )
 
+# Tables every supported ledger has had since it was created. M2 (95993ef)
+# created all three, and is the first schema without the legacy `rejections`
+# table, so a ledger without one of them is damaged, not old. `runs`, `queries`
+# and `plans` arrived later (M2b, B1, B6): an older ledger can genuinely lack
+# them, and a write-mode open adds them (second independent review, C).
+_CORE_TABLES: frozenset[str] = frozenset({"videos", "decisions", "quota"})
+
 # Tables an older marginalia created that no longer exist. Their presence is
 # proof the ledger predates a schema change, which `CREATE TABLE IF NOT
 # EXISTS` would otherwise hide.
@@ -834,8 +841,17 @@ class Ledger:
             # SQLite enforces this one: a write raises instead of landing.
             self._conn = sqlite3.connect(f"{self.db_path.resolve().as_uri()}?mode=ro", uri=True)
             self._conn.row_factory = sqlite3.Row
-            self._check_schema(allow_additive_gaps=True)
+            try:
+                self._check_schema(allow_additive_gaps=True)
+            except LedgerError:
+                # Closed, so the file the message says to copy aside can be moved.
+                self._conn.close()
+                raise
+            # A later table an older ledger lacks reads as empty, not as an
+            # OperationalError on the first query (see `list_runs`).
+            self._absent = frozenset(_EXPECTED_COLUMNS) - self._tables()
             return
+        self._absent = frozenset()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
         self._conn.row_factory = sqlite3.Row
@@ -848,7 +864,7 @@ class Ledger:
         # missing tables are what the steps below add): a legacy table *or* a
         # missing core column is refused with the file untouched.
         try:
-            self._check_schema(allow_additive_gaps=True)
+            self._check_schema(allow_additive_gaps=True, fresh_ok=True)
         except LedgerError:
             self._conn.close()
             raise
@@ -1465,6 +1481,9 @@ class Ledger:
         return RunRow.from_sqlite(row) if row is not None else None
 
     def list_runs(self, topic: str | None = None) -> list[RunRow]:
+        if "runs" in self._absent:
+            # A read-only open of a ledger older than M2b: no run was recorded.
+            return []
         if topic is None:
             rows = self._conn.execute("SELECT * FROM runs ORDER BY started_at").fetchall()
         else:
@@ -1761,7 +1780,7 @@ class Ledger:
             with self._conn:
                 self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
-    def _check_schema(self, *, allow_additive_gaps: bool = False) -> None:
+    def _check_schema(self, *, allow_additive_gaps: bool = False, fresh_ok: bool = False) -> None:
         """Fail loudly on a ledger written by an older version.
 
         ``CREATE TABLE IF NOT EXISTS`` silently leaves an existing table alone,
@@ -1775,6 +1794,15 @@ class Ledger:
         refusing then made `marg doctor` unusable on exactly the ledger a new
         version had not yet touched. An additive column reads as NULL when it is
         absent, so its absence is not drift. Anything else still is.
+
+        **A missing table is a gap only if it is a later one.** Skipping every
+        absent table let a ledger that had lost `videos` open read-only and
+        fail on its first query, and let a write-mode open create an empty
+        `videos` in its place — a library whose ledger reported no videos at
+        all (second independent review, C). `_CORE_TABLES` are refused before
+        anything is written. ``fresh_ok`` is the write-mode open of a file with
+        no marginalia table at all, which is a new ledger, not a damaged one;
+        read-only, the same file is not a ledger to diagnose.
         """
         tables = self._tables()
 
@@ -1782,13 +1810,24 @@ class Ledger:
             if name in tables:
                 raise self._stale(f"it still has the `{name}` table ({_LEGACY_TABLES[name]})")
 
+        if not tables & set(_EXPECTED_COLUMNS):
+            if fresh_ok:
+                return
+            raise LedgerError(
+                f"{self.db_path} is not an initialized marginalia ledger: it has none "
+                f"of the ledger's tables. Nothing was changed."
+            )
+
         additive = {(table, column) for table, column, _ in _ADDITIVE_COLUMNS}
         for table, expected in _EXPECTED_COLUMNS.items():
             present = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
-            if allow_additive_gaps and not present:
-                # A table a newer version created. A read-only open cannot create
-                # it, and nothing here reads a table that is not there.
+            if allow_additive_gaps and not present and table not in _CORE_TABLES:
+                # A table a later version created. A read-only open cannot create
+                # it; its one reader on that path (`list_runs`, for the doctor)
+                # answers empty instead.
                 continue
+            if not present and table in _CORE_TABLES:
+                raise self._damaged(table)
             missing = sorted(
                 column
                 for column in expected - present
@@ -1798,6 +1837,17 @@ class Ledger:
                 raise self._stale(
                     f"table `{table}` is missing column(s): {', '.join(missing)}"
                 )
+
+    def _damaged(self, table: str) -> LedgerError:
+        return LedgerError(
+            f"{self.db_path} has no `{table}` table. Every marginalia ledger has had "
+            f"one since it was created, so the file is damaged rather than old, and "
+            f"it was refused before anything was written to it. There is no automatic "
+            f"repair. Do not delete the library: its transcripts are the part that "
+            f"cannot be cheaply recreated. Copy ledger.db somewhere safe, then restore "
+            f"an earlier copy of it, or recreate the table by hand against the schema "
+            f"in core/ledger.py."
+        )
 
     def _stale(self, detail: str) -> LedgerError:
         return LedgerError(

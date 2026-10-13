@@ -932,15 +932,7 @@ def _judge_round(
         if len(run.stored_ids) >= max_videos:
             run.stopped_because = STOP_MAX_VIDEOS
             return _dedupe_concepts(concepts)
-        if run.overflow_streak >= _OVERFLOW_STOP:
-            log.warning(
-                "discover: %d transcripts in a row were too large for %r and none fit "
-                "between them — the model's window or [llm] max_tokens cannot hold a "
-                "transcript; stopping rather than storing every candidate unread",
-                run.overflow_streak,
-                run.model,
-            )
-            run.stopped_because = STOP_CONTEXT_WINDOW
+        if _overflowed(run):
             return _dedupe_concepts(concepts)
 
         # Gate 1 asks whether a video is in the *library*, which since B1 means
@@ -1219,9 +1211,31 @@ def _judge_round(
             _judged(candidate, STAGE_FULL, judgement, too_long=too_long, unnoteable=unnoteable)
         )
 
+    # The threshold is checked where it is reached, not only before a next
+    # candidate: a fifth overflow that was the round's last left the run going
+    # on to search and screen another round (second independent review, F).
+    # Checked after the loop, so the fifth is stored, logged and counted like
+    # the four before it.
+    if not run.stopped_because:
+        _overflowed(run)
     if screened_short and not run.stopped_because:
         run.stopped_because = STOP_MAX_REQUESTS
     return _dedupe_concepts(concepts)
+
+
+def _overflowed(run: DiscoverRun) -> bool:
+    """Has stage 2 overflowed `_OVERFLOW_STOP` times in a row? Stops the run if so."""
+    if run.overflow_streak < _OVERFLOW_STOP:
+        return False
+    log.warning(
+        "discover: %d transcripts in a row were too large for %r and none fit "
+        "between them — the model's window or [llm] max_tokens cannot hold a "
+        "transcript; stopping rather than storing every candidate unread",
+        run.overflow_streak,
+        run.model,
+    )
+    run.stopped_because = STOP_CONTEXT_WINDOW
+    return True
 
 
 # -- fetching and storing ---------------------------------------------------

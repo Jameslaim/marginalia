@@ -304,3 +304,75 @@ def test_a_ledger_with_real_drift_is_refused_before_anything_is_written(tmp_path
         Ledger(path)
 
     assert _digest(path) == before
+
+
+# -- missing tables (second independent review, finding C) ---------------------
+#
+# `videos`, `decisions` and `quota` have been in every ledger since M2, the
+# first schema without the legacy `rejections` table (95993ef). `runs`,
+# `queries` and `plans` arrived later (M2b, B1, B6), so an older ledger can
+# genuinely lack them, and a write-mode open adds them.
+
+
+def _without(path: Path, table: str) -> None:
+    Ledger(path).close()
+    conn = sqlite3.connect(path)
+    conn.execute(f"DROP TABLE {table}")
+    conn.commit()
+    conn.close()
+
+
+@pytest.mark.parametrize("table", ["videos", "decisions", "quota"])
+@pytest.mark.parametrize("read_only", [True, False])
+def test_an_initialized_ledger_missing_a_core_table_is_refused_untouched(
+    tmp_path: Path, table: str, read_only: bool
+) -> None:
+    """The read-only open used to succeed and then fail on the first query with
+    an `OperationalError`; the write-mode open quietly created an empty table
+    in its place — a library whose ledger lost `videos` reported no videos."""
+    path = tmp_path / "ledger.db"
+    _without(path, table)
+    before = _digest(path)
+
+    with pytest.raises(LedgerError, match=f"`{table}`") as caught:
+        Ledger(path, read_only=read_only)
+
+    assert "Do not delete the library" in str(caught.value)
+    assert _digest(path) == before
+    # Refused with the connection closed: the file can be moved aside at once,
+    # which is the first thing the message asks for.
+    path.rename(tmp_path / "moved.db")
+
+
+@pytest.mark.parametrize("table", ["runs", "queries", "plans"])
+def test_a_ledger_older_than_a_later_table_still_opens(tmp_path: Path, table: str) -> None:
+    """The control: a table that arrived after M2 is a legitimate gap. Read-only
+    reads around it and changes nothing; write mode adds it."""
+    path = tmp_path / "ledger.db"
+    _without(path, table)
+    before = _digest(path)
+
+    with Ledger(path, read_only=True) as ledger:
+        assert ledger.list_by_status() == []
+        assert ledger.list_runs() == []
+    assert _digest(path) == before
+
+    with Ledger(path) as ledger:
+        assert table in ledger._tables()
+
+
+def test_a_fresh_ledger_is_still_created(tmp_path: Path) -> None:
+    path = tmp_path / "new" / "ledger.db"
+    with Ledger(path) as ledger:
+        assert {"videos", "decisions", "quota", "runs", "queries", "plans"} <= ledger._tables()
+
+
+def test_an_empty_file_opened_read_only_is_not_a_ledger(tmp_path: Path) -> None:
+    """Nothing to diagnose against: refused, as the baseline refused it, rather
+    than opened and failing on the first query."""
+    path = tmp_path / "ledger.db"
+    path.touch()
+
+    with pytest.raises(LedgerError, match="not an initialized"):
+        Ledger(path, read_only=True)
+    assert path.read_bytes() == b""

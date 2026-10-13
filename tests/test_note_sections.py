@@ -15,6 +15,7 @@ import pytest
 from marginalia.ask import summarise
 from marginalia.contracts import LoadedNote
 from marginalia.enrich.note import REQUIRED_SECTIONS, check_verbatim, missing_sections
+from marginalia.enrich.timestamps import build_index, snap_text
 from marginalia.quotes import note_sections, verbatim_of
 
 TRANSCRIPT = "[00:00:01.000 --> 00:00:05.000] we always cache the system prompt first\n"
@@ -113,3 +114,57 @@ def test_inline_triple_backticks_are_not_a_fence() -> None:
     note = _note('```pip install x```\n- "we always cache the system prompt first"')
     assert "we always cache" in verbatim_of(note)
     assert note_sections(note)["Claims"] == "- a claim"
+
+
+# -- fence identity and length (second independent review, finding B) -----------
+#
+# The policy, as `quotes.note_lines` states it: a fence opens on a run of three
+# or more backticks or tildes, and closes only on a run of the *same* character
+# at least as long, with nothing after it. Anything else inside is content. An
+# opener with no closer is not a fence.
+
+_QUOTE = '- "we always cache the system prompt first"'
+
+
+@pytest.mark.parametrize(
+    ("name", "block"),
+    [
+        ("four backticks", "````python\n## Claims\ninside code\n````"),
+        ("tilde inside backticks", "```text\n~~~\n## Claims\ninside code\n~~~\n```"),
+        ("backticks inside tildes", "~~~\n```\n## Claims\ninside code\n```\n~~~"),
+        ("a shorter run inside a longer fence", "````\n```\n## Claims\ninside code\n```\n````"),
+        ("a run with an info string does not close", "```\n```python\n## Claims\ninside code\n```"),
+    ],
+)
+def test_a_heading_inside_any_fence_is_content_for_every_reader(name: str, block: str) -> None:
+    note = _note(f"{block}\n{_QUOTE} [00:00:01]")
+
+    assert note_sections(note)["Claims"] == "- a claim", name
+    assert "inside code" in verbatim_of(note), name
+    assert "we always cache" in verbatim_of(note), name
+    assert missing_sections(note) == [], name
+    _, checked, unfound = check_verbatim(note, TRANSCRIPT)
+    assert (checked, unfound) == (1, 0), name
+    assert summarise(LoadedNote("aaaaaaaaaaa", "A title", note)).gist == "a claim", name
+    _, changes, left = snap_text(note, build_index(TRANSCRIPT))
+    labels = [change.section for change in changes] + [entry[0] for entry in left]
+    assert labels == ["Verbatim"], name
+
+
+def test_an_unclosed_four_backtick_fence_does_not_swallow_the_sections_after_it() -> None:
+    note = _note("ok").replace("## Leaves out\n", "````\n## Leaves out\n")
+    assert missing_sections(note) == []
+
+
+def test_a_fence_closed_by_the_wrong_character_is_unclosed() -> None:
+    """A tilde run cannot close a backtick fence, so this one has no closer and
+    is not a fence at all: the heading after it is a heading."""
+    note = _note("ok").replace("## Leaves out\n", "```\n~~~\n## Leaves out\n")
+    assert missing_sections(note) == []
+
+
+def test_an_indented_fence_is_still_a_fence() -> None:
+    """Any indentation, as for headings: a fence inside a list item is indented."""
+    note = _note(f"    ```\n    ## Claims\n    inside code\n    ```\n{_QUOTE}")
+    assert note_sections(note)["Claims"] == "- a claim"
+    assert "inside code" in verbatim_of(note)

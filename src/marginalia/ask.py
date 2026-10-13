@@ -33,7 +33,7 @@ import random
 import re
 import time
 from dataclasses import replace
-from typing import Any, Mapping, Sequence
+from typing import Any, Collection, Mapping, Sequence
 
 from .config import Config
 from .brain.selector import Selector
@@ -664,7 +664,7 @@ def parse_citations(text: str, known: Sequence[str] | None = None) -> list[Answe
 
 
 def escalation_requests(
-    text: str, *, known: Sequence[str], limit: int
+    text: str, *, known: Sequence[str], limit: int, opened: Collection[str] = ()
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """``(granted, refused)`` transcript requests, each ``(video_id, why)``.
 
@@ -682,6 +682,12 @@ def escalation_requests(
     A refused request is returned, not only logged: the answer record used to
     say "the notes were enough" when the model had asked for a transcript it
     could not have.
+
+    ``opened`` are the transcripts already in the request — `--deep`'s. A
+    request for one is refused as "already opened" *before* the limit is
+    applied: `limit` is what is left for new evidence, and a duplicate that
+    took a slot refused the new transcript behind it as over the limit (second
+    independent review, D).
     """
     text = normalise_dashes(text)
     matches = list(_ESCALATE_RE.finditer(text))
@@ -705,6 +711,12 @@ def escalation_requests(
         if video_id in seen:
             continue
         seen.add(video_id)
+        if video_id in opened:
+            # Already given, perhaps cut. Opening it again sent a second copy of
+            # the same first part — double the tokens, still not "the rest"
+            # (independent review, F3).
+            refused.append((video_id, "already opened"))
+            continue
         if len(granted) >= max(0, limit):
             # `limit` is what is left of `[ask] max_transcripts` after `--deep`.
             refused.append((video_id, "over the [ask] max_transcripts limit"))
@@ -1513,17 +1525,14 @@ def answer_question(
             allow=len(opened) < config.ask.max_transcripts, total=len(everything),
         )
         wanted, refused = escalation_requests(
-            reply.text, known=known, limit=config.ask.max_transcripts - len(opened)
+            reply.text,
+            known=known,
+            limit=config.ask.max_transcripts - len(opened),
+            opened=[item.video_id for item in opened],
         )
         result.escalations_refused.extend(refused)
         if wanted or refused:
             for video_id, why in wanted:
-                if any(item.video_id == video_id for item in opened):
-                    # Already given (usually by --deep), perhaps cut. Opening it
-                    # again sent a second copy of the same first part — double
-                    # the tokens, still not "the rest" (independent review, F3).
-                    result.escalations_refused.append((video_id, "already opened"))
-                    continue
                 got = _read_transcript(
                     config, library, ledger, video_id, why, room_chars=room_chars()
                 )
