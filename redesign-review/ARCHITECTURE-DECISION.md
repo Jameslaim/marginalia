@@ -20,7 +20,7 @@ policy is re-implemented per caller**. Both are the rule-25 failure class ("a gu
 caller must be traced to every caller") showing up again, and both are fixable by giving the state
 or the policy one home, without moving the package boundaries.
 
-A full rewrite would discard ~17k lines of measured safeguards and 1,624 tests to fix problems
+A full rewrite would discard ~18k lines of measured safeguards and 1,624 tests to fix problems
 that are local. Its benefit would be that the code looks different. Rejected.
 
 ## Confirmed structural problems (each reproduced on the baseline; see review §Probes)

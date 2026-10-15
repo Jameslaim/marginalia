@@ -1036,12 +1036,18 @@ Verbatim against it either. Re-measured read-only over the archived library
 
 | measurement | result |
 |---|---|
-| Verbatim quotes with no close match in their own transcript | **571 of 5,733 (10%)**, in 153 of 719 notes |
-| — in notes of English videos / of other-language videos | 11% / **63%** (mostly translations) |
+| Verbatim quotes below the note check's closeness (0.8) in their own transcript | **1,004 of 5,989 (17%)**, in 360 of 719 notes |
+| — in notes of English videos / of other-language videos | 581 of 5,316 (11%) / **423 of 673 (63%)** (mostly translations) |
+| — a first pass (5,733 quotes; skipped quotes under eight characters): nothing even at 0.5 | 571 of 5,733 (10%), in 153 of 719 notes |
 | answer quotes marked `[not spoken]` that the cited transcript holds word for word | **62 of 102** |
 | cited answer quotes found exactly in a cited transcript, all stored answers | 508 of 1,078 (47%) |
 | of the rest, near (closeness ≥ 0.6) to the cited transcript / to a random one | 121 / **0** of 570 |
 | note citations a dry-run snap would still move | 9,298 in 676 of 719 notes |
+
+The first three rows are two passes over the same 719 notes, and they were joined
+until 2026-10-16: rule 26 printed the first pass's total (571 of 5,733, 10%, which
+counts only quotes below 0.5) beside the second's split (11% / 63%, at 0.8), an
+overall rate below both of its parts. Both passes re-run read-only and reproduce.
 
 So "29% are things someone actually said" was a statement about agreement with
 the note-writer's quotes, and `[not spoken]` was wrong more often than right.
@@ -1055,8 +1061,8 @@ counted apart.
 
 What did not change: the check covers quoted text and nothing else, so an
 unquoted claim is exactly as unmeasured as before, and the answer and note
-prompts (`answer` v6, `write_note` v9) are untested against a real model. Whether
-v9 lowers the Verbatim miss rate, or v6 changes what gets quoted, needs a run;
+prompts (`answer` v7, `write_note` v9) are untested against a real model. Whether
+v9 lowers the Verbatim miss rate, or v6/v7 change what gets quoted, needs a run;
 the counters above are what to compare it with.
 
 ### The verdict noise floor — measured, and it is not the problem
@@ -1471,6 +1477,7 @@ marginalia/
 │   ├── flow/
 │   │   ├── search.py            provider chain + gates 1 and 2
 │   │   ├── discover.py          the loop
+│   │   ├── acquire.py           the one fetch path: ingest, discovery and refetch
 │   │   ├── store.py             the one path a fetched transcript is stored by
 │   │   ├── refetch.py           retry transient fetch failures
 │   │   ├── doctor.py            disk against ledger, read-only

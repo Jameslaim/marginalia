@@ -62,7 +62,7 @@ behaviour is unverified without real-model runs.
 |---|---|
 | `tests/` (33 files at baseline) | C: every file touched by a change read in the relevant part; R2 ran six answer-side files; R3 ran the whole suite on mutants (25 mutations). No reviewer did a full quality pass of every test file. |
 | `tests/fixtures/` | not opened |
-| `RULES.md` | C: F. Edited where a rule's text changed (rule 8, rule 13, Structure). |
+| `RULES.md` | C: F. Edited where a rule's text changed (rule 8, rule 13, rule 24, Structure). |
 | `PLAN.md` (2,743 lines) | — not read this pass; not edited |
 | `README.md`, `config.example.toml`, `CLAUDE.md` | G / — ; not edited |
 | `bin/marg`, `bin/marg.cmd`, `hooks/hooks.json`, `skills/*` | — this pass (prior audit read them); not edited. `skills/ask/SKILL.md` claims are listed as stale in R2 F18. |

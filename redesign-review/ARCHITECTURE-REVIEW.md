@@ -1,7 +1,8 @@
 # marginalia — architecture review and redesign candidate
 
 Candidate: worktree `C:\youtube-agent\projects\marginalia-redesign`, branch `redesign/agent`,
-15 commits on top of `56d04fa` (listed in §9). Decision record: `ARCHITECTURE-DECISION.md`. Coverage of what
+16 commits on top of `56d04fa` (listed in §9), fast-forwarded into `main` at `1ee5e5c` on
+2026-10-13. Decision record: `ARCHITECTURE-DECISION.md`. Coverage of what
 was read: `COVERAGE.md`. Independent reviews (verbatim): `independent-reviews/`.
 
 ## 1. Verdict
@@ -16,7 +17,7 @@ defended by measured failures and nothing found here argues against them. Every 
 defect traced to one of two shapes — **state reconstructed instead of stored**, or **one
 policy implemented separately by each caller** (rule 25's failure class) — and each was
 fixable by giving the state or the policy one home, without moving a package boundary. A
-rewrite would have traded ~17k lines of measured safeguards and 1,624 tests for code that
+rewrite would have traded ~18k lines of measured safeguards and 1,624 tests for code that
 looks different.
 
 ## 2. What changed, and why (one commit each)
@@ -35,7 +36,8 @@ looks different.
 | 10 | `f2a512e` | Planner counters counted search hits; this run's NOs reported as "from an earlier run"; "declined" omitted overturned YESes; planner shown requested rather than applied filters; stage 1 could run many batches past `max_requests`. (R1 F11, F12, F17; REVIEW A9; §12.4) | Unique-video counters; `rejected_this_run`; honest declined line; applied filters to the planner; stage 1 bounded by the request budget. |
 
 `RULES.md` was edited only where a rule's text changed (rule 8's stored-outcome paragraph,
-rule 13's held-transcript paragraph, the Structure list). No prompt file changed.
+rule 13's held-transcript paragraph, rule 24's overflow stop, the Structure list). No prompt
+file changed.
 
 ## 3. Changed test expectations (each justified in the test's docstring)
 
@@ -70,20 +72,21 @@ A fresh read-only reviewer that did not write the code reviewed the diff after i
 (`independent-reviews/R-final-post-implementation.md`). It found **one blocking defect**: the
 first polarity guard treated a contraction swap ("don't" / "do not") as a reversal and scored
 faithful quotes 0 — the very failure rule 26 records. That was reproduced and fixed by counting
-negations rather than detecting them. It also found ten S2/S3 issues (a lost stop for a
+negations rather than detecting them. It also found eleven S2/S3 issues (a lost stop for a
 configuration in which nothing fits the context window, a transcript opened twice, splitter
 regressions on four note shapes, a drifted ledger written before refusal, and smaller ones);
-each was checked against the code and fixed with a test in `3d019cf`. The reviewer's own list
+each was checked against the code; ten were fixed with a test in `3d019cf`, and F12 (low,
+inferred from documentation) was left as recorded. The reviewer's own list
 of things it verified as correct is in that file.
 
-## 4b. Second independent review — six boundary cases (uncommitted corrections)
+## 4b. Second independent review — six boundary cases (`1ee5e5c`)
 
 A separate review reproduced the 1,757 passing tests and reported six boundary cases from
 focused synthetic probes. Each was treated as a claim: reproduced on a fresh snapshot of
 `9b95fab` (and, for origin, of `56d04fa` and `c590f16`), given a regression test and a
 legitimate control, and shown to fail before the correction and pass after it. The
-corrections are **in the working tree of `redesign/agent`, not committed**, for independent
-review.
+corrections were left uncommitted for independent review, then committed as `1ee5e5c`
+and fast-forwarded into `main`.
 
 | | finding | verdict | origin | correction |
 |---|---|---|---|---|
@@ -111,7 +114,7 @@ by the coordinator and are cited as such; no claim here rests on it as an indepe
 * Baseline in C under isolation: **1,624 passed** (reproduces the stated baseline).
 * Candidate: **1,757 passed, 0 failed, 0 skipped** (+133 tests, none removed except the
   replaced `test_search` case).
-* Corrected working tree after §4b (uncommitted; run on a fresh snapshot with credentials
+* Corrected tree after §4b (later committed as `1ee5e5c`; run on a fresh snapshot with credentials
   stripped): **1,807 passed, 0 failed, exit 0** (+50 tests, none removed or loosened; one
   draft case was replaced by a recorded-limit test, see §4b A).
 * Every run: network blocked (socket guard), home redirected to a scratch folder, an injected
@@ -154,7 +157,7 @@ had moved their anchors, and the driver classed an unapplied mutation as survive
 re-anchored, the driver now reports an unapplied mutation as INVALID (`run_some.sh`), and all
 three are caught. **Final: 31 of 31 caught on `3d019cf`.**
 
-**Re-run on the §4b corrected tree** (uncommitted; each mutant on its own fresh copy of the
+**Re-run on the §4b corrected tree** (later `1ee5e5c`; each mutant on its own fresh copy of the
 snapshot): K04 and K05 were re-anchored to the corrected ledger code, and twelve mutants were
 added, each reverting one §4b guard — per-change negation count (N-A), fence character, length
 and four-backtick opener (N-B1–3), core-table check, read-only empty file, pre-M2b `list_runs`
@@ -185,8 +188,8 @@ Fake judge/planner/provider; requests counted at the fakes.
 | note queue, 2,000 videos | 0.46–0.51 s | 0.53–0.65 s |
 
 Reading: fewer model requests and rows on the same input, no wall-time regression within the
-noise of this machine, Gate 2 faster (it reads one video-topic slice), the note queue ~15%
-slower (the added sort; sub-second at 2,000 videos). Memory differences are negligible.
+noise of this machine, Gate 2 faster (it reads one video-topic slice), the note queue ~25%
+slower (median 0.47 s to 0.58 s: the added sort; sub-second at 2,000 videos). Memory differences are negligible.
 These are synthetic; real-run costs depend on how often held videos and literal MAYBEs occur.
 
 ## 6. Decisions for the owner (not made here)
@@ -273,4 +276,4 @@ These are synthetic; real-run costs depend on how often held videos and literal 
 | `c590f16` | chat-replay test strengthened after the mutation run |
 | `3d019cf` | fixes from the independent post-implementation review |
 | `9b95fab` | this report and the post-implementation review record |
-| (uncommitted) | §4b corrections from the second independent review, left in the working tree for review |
+| `1ee5e5c` | §4b corrections from the second independent review |

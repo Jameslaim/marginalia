@@ -767,11 +767,13 @@ without them re-breaks bugs that have already been found, fixed and paid for.
 26. **The transcript is the record. A note and an answer are checked against it,
     never against each other.** A note is one model's reading of a transcript, and
     its `## Verbatim` section is that model's choice of quotes. Measured on the
-    archived library: **571 of 5,733 Verbatim quotes (10%) had no close match in
-    their own transcript** — 11% in notes of English videos, 63% in the rest, mostly
-    translations. The answer check treated Verbatim as speech, so it passed those,
-    and marked as `[not spoken]` quotes the transcript held word for word: **62 of
-    102** in the stored answers that could be re-scored.
+    archived library: **1,004 of 5,989 Verbatim quotes (17%) had no match in their
+    own transcript at the closeness the note check accepts (0.8)**, in 360 of 719
+    notes — 581 of 5,316 (11%) in notes of English videos, 423 of 673 (63%) in the
+    rest, mostly translations. (A first pass, counting quotes differently, found 571
+    of 5,733 with nothing even at 0.5.) The answer check treated Verbatim as
+    speech, so it passed those, and marked as `[not spoken]` quotes the transcript
+    held word for word: **62 of 102** in the stored answers that could be re-scored.
 
     So the note worker checks every Verbatim quote against the transcript before
     the note is written, and marks a line it cannot find with the note format's own
