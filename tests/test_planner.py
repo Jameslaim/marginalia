@@ -57,7 +57,10 @@ from marginalia.llm import load_prompt, prompts_dir
 
 BRIEF = Brief(
     topic="prompt caching",
-    text="INTENT\nHow prompt caching works.\n\nMUST CONTAIN\n- shows code\n- covers expiry",
+    text=(
+        "INTENT\nHow prompt caching works.\n\n"
+        "REQUIRED OF EVERY VIDEO\n- shows code\n\nPARTS TO COVER\n- covers expiry"
+    ),
     version="1/1",
 )
 
@@ -84,7 +87,7 @@ QUERY: anthropic caching compared
 FROM: gap - provider comparison
 FILTERS: order=date (provider behaviour changed this year)
 
-RECOMMENDATION: CONTINUE - one MUST CONTAIN item still has nothing against it
+RECOMMENDATION: CONTINUE - one PART TO COVER still has nothing against it
 """
 
 
@@ -151,13 +154,13 @@ def test_a_filter_on_a_planner_query_is_read_with_its_reason() -> None:
 
 def test_a_stop_recommendation_is_read_with_its_reason() -> None:
     plan = parse_plan(
-        "COVERAGE: a | YES | done\nRECOMMENDATION: STOP - every MUST CONTAIN item is covered",
+        "COVERAGE: a | YES | done\nRECOMMENDATION: STOP - every PART TO COVER is covered",
         round_number=2,
     )
 
     assert plan.recommendation == RECOMMEND_STOP
     assert plan.wants_to_stop
-    assert "every MUST CONTAIN" in plan.reason
+    assert "every PART TO COVER" in plan.reason
 
 
 def test_markdown_decoration_survives() -> None:
@@ -228,6 +231,19 @@ def test_too_many_queries_are_capped(caplog: pytest.LogCaptureFixture) -> None:
 
     assert len(plan.queries) == 12
     assert any("30 queries proposed" in record.getMessage() for record in caplog.records)
+
+
+def test_a_brief_at_its_limits_keeps_every_coverage_line() -> None:
+    """Eight PARTS TO COVER and six ALSO WANTED items are fourteen lines, and
+    the planner and the baseline are asked for one line each. At the old cap of
+    twelve the last two ALSO WANTED lines were dropped without a word."""
+    lines = "\n".join(f"COVERAGE: part {n} | NO | nothing yet" for n in range(14))
+
+    plan = parse_plan(f"{lines}\nRECOMMENDATION: CONTINUE - gaps remain", round_number=1)
+    baseline = parse_baseline(lines, notes_read=3)
+
+    assert len(plan.coverage) == 14
+    assert len(baseline.items) == 14
 
 
 # -- revisions: additions are free ---------------------------------------------

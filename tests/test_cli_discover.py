@@ -38,7 +38,10 @@ from marginalia.llm import LlmConfigError
 
 BRIEF = Brief(
     topic="prompt caching",
-    text="INTENT\nUnderstand how prompt caching cuts cost in practice.\n\nMUST CONTAIN\n- x",
+    text=(
+        "INTENT\nUnderstand how prompt caching cuts cost in practice.\n\n"
+        "REQUIRED OF EVERY VIDEO\n- x\n\nPARTS TO COVER\n- x"
+    ),
     version="1/1",
 )
 
@@ -437,7 +440,7 @@ def _with_plan(**kwargs) -> DiscoverRun:
         queries=[
             PlannedQuery("prompt cache ttl expiry", ORIGIN_PLANNER, "gap - cache expiry")
         ],
-        reason="two MUST CONTAIN items still have nothing against them",
+        reason="two PARTS TO COVER still have nothing against them",
         **kwargs,
     )
     return run
@@ -452,7 +455,7 @@ def test_the_report_names_the_gap_and_the_recommendation(stubbed, capsys) -> Non
 
     out = capsys.readouterr().out
     assert "plan:   1 of 3 brief items covered; gap: cache expiry and TTL (+1 more)" in out
-    assert "→ continue: two MUST CONTAIN items" in out
+    assert "→ continue: two PARTS TO COVER" in out
     assert "next:   prompt cache ttl expiry" in out
 
 

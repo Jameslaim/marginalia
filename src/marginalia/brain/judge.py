@@ -748,7 +748,7 @@ class Judge:
         critique is a brief that never gets improved.
 
         ``max_tokens`` covers **both** calls. A brief is a long structured
-        document — intent, must-contain, also-wanted, excluded, edge cases — and
+        document — intent, required, parts, also-wanted, excluded, edge cases — and
         so is the revision of one, so the two carry the same risk. Only the
         review has been seen to truncate, but the draft succeeding at 8,192 was
         luck rather than a difference in shape.
@@ -989,7 +989,15 @@ def _unjudged(video_id: str, reason: str, problem: str, outcome: str) -> FullVer
 # The sections every later judgement reads, as `write_brief` asks for them. A
 # reply missing one of these is a fragment or a critique, not a brief. EDGE
 # CASES and ALSO WANTED break ties and are not required.
-_BRIEF_HEADINGS = ("INTENT", "MUST CONTAIN", "EXCLUDED")
+#
+# **Relevance needs both halves.** A video is relevant when it meets every
+# REQUIRED OF EVERY VIDEO item, covers at least one of the PARTS TO COVER, and
+# hits nothing EXCLUDED; the planner's coverage targets are the parts. A brief
+# missing either section cannot be judged by that rule, so it is refused. The
+# two replaced one heading that checkpoint 1 measured carrying both ideas: a
+# topic made of parts got 6 to 9 items and three of six briefs called every
+# part required, while a topic made of conditions was judged one-is-enough.
+_BRIEF_HEADINGS = ("INTENT", "REQUIRED OF EVERY VIDEO", "PARTS TO COVER", "EXCLUDED")
 
 # Every heading `write_brief` asks for, so a section's body ends where the next
 # one begins. A heading is the name alone on its line, or the name followed by a
@@ -997,7 +1005,8 @@ _BRIEF_HEADINGS = ("INTENT", "MUST CONTAIN", "EXCLUDED")
 # **The name followed by a word is prose**, not a heading — `Intent is clear.`
 # opens a critique, and matching it as a heading let one replace a brief.
 _BRIEF_HEADING_RE = re.compile(
-    r"^[ \t#*_>-]*(INTENT|MUST[ \t]+CONTAIN|ALSO[ \t]+WANTED|EXCLUDED|EDGE[ \t]+CASES)\b"
+    r"^[ \t#*_>-]*(INTENT|REQUIRED[ \t]+OF[ \t]+EVERY[ \t]+VIDEO|PARTS[ \t]+TO[ \t]+COVER"
+    r"|ALSO[ \t]+WANTED|EXCLUDED|EDGE[ \t]+CASES)\b"
     r"[ \t*_]*(?:\([^)\n]*\)[ \t*_]*)?(?:[:：—–-](?P<inline>.*))?$",
     re.IGNORECASE | re.MULTILINE,
 )
@@ -1020,8 +1029,8 @@ def _brief_problem(reply: Reply) -> str:
 
     Three ways to fail: cut off, a required section missing, or a required
     section present and empty. The last is the one a heading check alone let
-    through — `INTENT\\nMUST CONTAIN\\nEXCLUDED`, twenty-eight characters,
-    replaced a whole draft, where the eighty-character guard it superseded had
+    through — three bare headings, twenty-eight characters under the brief's
+    old headings, replaced a whole draft, where the eighty-character guard it superseded had
     refused it. Every verdict in a run is measured against this text, so a
     skeleton of one is worse than the unreviewed draft.
     """

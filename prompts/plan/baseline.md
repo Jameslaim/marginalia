@@ -1,8 +1,12 @@
 ---
 name: plan/baseline
-version: "3"
+version: "4"
 stage: plan
-note: "v3 corrects the opening, which still said every note follows the
+note: "v4 assesses every PART TO COVER, then every ALSO WANTED item. The
+  brief's old required-items heading was split into REQUIRED OF EVERY VIDEO,
+  conditions each video meets, and PARTS TO COVER, what the library must
+  hold; only the parts are coverage targets.
+  v3 corrects the opening, which still said every note follows the
   brief. v2 changed the code to send one index line per note and the lower
   half of this prompt was updated, the opening was not.
   v2 is fed one summary line per note instead of whole notes. v1 sent the
@@ -72,9 +76,12 @@ COVERAGE: <part of the brief> | YES | <which note covers it, and what it supplie
 COVERAGE: <part of the brief> | NO | <what is missing>
 ```
 
-Assess every MUST CONTAIN item, then every ALSO WANTED item. Use the brief's own
-wording for `<part of the brief>`, shortened if it is long, so the planner can
-match your lines against its own.
+Assess every PART TO COVER, then every ALSO WANTED item. Do not assess REQUIRED
+OF EVERY VIDEO: those are conditions each video must meet, not parts a library
+holds. A part that is a language or a market is covered only by a note on a
+video in that language or market. Use the brief's own wording for
+`<part of the brief>`, shortened if it is long, so the planner can match your
+lines against its own.
 
 If the library holds nothing relevant, return a NO line for each part rather
 than an empty reply — "nothing covers any of this" is a real assessment and an

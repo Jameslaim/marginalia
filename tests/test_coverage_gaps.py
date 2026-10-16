@@ -38,7 +38,11 @@ from marginalia.core.library import Library
 from marginalia.llm import LlmClient
 
 SENTINEL = "zebra kumquat sentinel transcript words"
-BRIEF = Brief(topic="t", text="INTENT\nx\nMUST CONTAIN\n- x\nEXCLUDED\n- y", version="1/1")
+BRIEF = Brief(
+    topic="t",
+    text="INTENT\nx\nREQUIRED OF EVERY VIDEO\n- x\nPARTS TO COVER\n- x\nEXCLUDED\n- y",
+    version="1/1",
+)
 
 
 def _candidates(n: int) -> list[SearchResult]:

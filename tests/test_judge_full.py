@@ -934,12 +934,14 @@ def test_storing_the_ranges_changes_no_verdict() -> None:
 # -- the brief: the review replaces the draft only if it is a whole brief ----
 
 _DRAFT = (
-    "INTENT\nLearn how prompt caching changes cost.\n\n"
-    "MUST CONTAIN\n- cache_control breakpoints\n\n"
-    "ALSO WANTED\n- provider comparison\n\n"
-    "EXCLUDED\n- semantic caching of answers\n\n"
-    "EDGE CASES\n- conference talks count if they show configuration\n"
+    "INTENT\nLearn how to diagnose and fix common household plumbing faults.\n\n"
+    "REQUIRED OF EVERY VIDEO\n- explains why the fault happens, not only the fix\n\n"
+    "PARTS TO COVER\n- leaking taps\n- blocked drains\n\n"
+    "ALSO WANTED\n- names the parts and tools by their trade names\n\n"
+    "EXCLUDED\n- product adverts for drain cleaners\n\n"
+    "EDGE CASES\n- trade-school lectures count if they explain a real repair\n"
 )
+TOPIC = "home plumbing repairs"
 
 
 class _BriefResponse:
@@ -966,12 +968,12 @@ def test_a_review_cut_off_by_the_ceiling_does_not_replace_the_draft(tmp_path) ->
     """It used to be enough to be over eighty characters. A review truncated
     after INTENT became the brief every verdict in the run was checked against,
     with no EXCLUDED section to check near misses against."""
-    cut = "INTENT\nLearn how prompt caching changes cost, and" + " more" * 40
+    cut = "INTENT\nLearn how to diagnose household plumbing faults, and" + " more" * 40
     judge = _brief_judge(
         _BriefResponse(_DRAFT), _BriefResponse(cut, finish_reason="length"), tmp_path=tmp_path
     )
 
-    brief = judge.write_brief("prompt caching")
+    brief = judge.write_brief(TOPIC)
 
     assert brief.text == _DRAFT.strip()
 
@@ -979,22 +981,128 @@ def test_a_review_cut_off_by_the_ceiling_does_not_replace_the_draft(tmp_path) ->
 def test_a_critique_instead_of_a_brief_does_not_replace_the_draft(tmp_path) -> None:
     critique = (
         "This brief is mostly sound. I would sharpen the intent, add near misses "
-        "about semantic caching, and state whether conference talks count."
+        "about drain-cleaner adverts, and state whether lectures count."
     )
     judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(critique), tmp_path=tmp_path)
 
-    assert judge.write_brief("prompt caching").text == _DRAFT.strip()
+    assert judge.write_brief(TOPIC).text == _DRAFT.strip()
 
 
 def test_a_whole_review_replaces_the_draft_however_its_headings_are_written(tmp_path) -> None:
     revised = (
-        "## Intent: decide whether prompt caching pays for a chat workload.\n"
-        "**MUST CONTAIN:**\n- cache write premium\n"
-        "EXCLUDED\n- semantic caching of answers\n"
+        "## Intent: fix the faults a householder meets most often.\n"
+        "**REQUIRED OF EVERY VIDEO:**\n- explains the cause of the fault\n"
+        "### Parts to cover\n- leaking taps\n"
+        "EXCLUDED\n- drain-cleaner adverts\n"
     )
     judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(revised), tmp_path=tmp_path)
 
-    assert judge.write_brief("prompt caching").text == revised.strip()
+    assert judge.write_brief(TOPIC).text == revised.strip()
+
+
+@pytest.mark.parametrize(
+    "revised",
+    [
+        # Markdown headings, sentence case.
+        "## Intent\nfix taps\n## Required of every video\n- explains the cause\n"
+        "## Parts to cover\n- leaking taps\n## Also wanted\n- trade names\n"
+        "## Excluded\n- adverts\n## Edge cases\n- lectures count\n",
+        # Bold with a colon, and the body on the same line.
+        "**INTENT:** fix taps\n**REQUIRED OF EVERY VIDEO:** explains the cause\n"
+        "**PARTS TO COVER:** leaking taps\n**ALSO WANTED:** trade names\n"
+        "**EXCLUDED:** adverts\n**EDGE CASES:** lectures count\n",
+        # A dash separator, extra spaces between the words, and a bracketed note.
+        "INTENT — fix taps\nREQUIRED  OF  EVERY  VIDEO (all of them) — explains the cause\n"
+        "PARTS   TO COVER (at least one) - leaking taps\nALSO WANTED - trade names\n"
+        "EXCLUDED - adverts\nEDGE CASES - lectures count\n",
+    ],
+    ids=["markdown-headings", "bold-colon-inline", "dash-separator-and-note"],
+)
+def test_the_six_headings_are_read_however_they_are_decorated(revised, tmp_path) -> None:
+    """All six sections are recognised through the markdown and separators a
+    model adds, so a decorated review is a whole brief rather than a refusal."""
+    from marginalia.brain.judge import _brief_sections
+
+    sections = _brief_sections(revised)
+
+    assert set(sections) == {
+        "INTENT", "REQUIRED OF EVERY VIDEO", "PARTS TO COVER",
+        "ALSO WANTED", "EXCLUDED", "EDGE CASES",
+    }
+    assert "explains the cause" in sections["REQUIRED OF EVERY VIDEO"]
+    assert "leaking taps" in sections["PARTS TO COVER"]
+    # A body ends where the next heading begins, so no section swallows another.
+    assert "leaking taps" not in sections["REQUIRED OF EVERY VIDEO"]
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(revised), tmp_path=tmp_path)
+    assert judge.write_brief(TOPIC).text == revised.strip()
+
+
+@pytest.mark.parametrize(
+    "missing, review",
+    [
+        (
+            "REQUIRED OF EVERY VIDEO",
+            "INTENT\nfix taps\n\nPARTS TO COVER\n- leaking taps\n\nEXCLUDED\n- adverts\n",
+        ),
+        (
+            "PARTS TO COVER",
+            "INTENT\nfix taps\n\nREQUIRED OF EVERY VIDEO\n- explains the cause\n\n"
+            "EXCLUDED\n- adverts\n",
+        ),
+    ],
+    ids=["no-required", "no-parts"],
+)
+def test_a_review_missing_either_new_section_is_refused_and_named(
+    missing, review, tmp_path, caplog
+) -> None:
+    """Relevance is every REQUIRED item and at least one PART. A brief without
+    one of the two cannot be judged by that rule, so the draft stands."""
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        brief = judge.write_brief(TOPIC)
+
+    assert brief.text == _DRAFT.strip()
+    assert f"no {missing} section" in caplog.text
+
+
+@pytest.mark.parametrize("empty", ["REQUIRED OF EVERY VIDEO", "PARTS TO COVER"])
+def test_a_review_with_either_new_section_empty_is_refused_and_named(
+    empty, tmp_path, caplog
+) -> None:
+    bodies = {
+        "INTENT": "fix taps",
+        "REQUIRED OF EVERY VIDEO": "- explains the cause",
+        "PARTS TO COVER": "- leaking taps",
+        "EXCLUDED": "- adverts",
+    }
+    bodies[empty] = "- "
+    review = "".join(f"{name}\n{body}\n\n" for name, body in bodies.items())
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        brief = judge.write_brief(TOPIC)
+
+    assert brief.text == _DRAFT.strip()
+    assert f"empty {empty} section" in caplog.text
+
+
+def test_a_review_under_the_old_headings_is_no_longer_a_whole_brief(tmp_path, caplog) -> None:
+    """A reply that carries the single old required-items heading has neither
+    new section. It is refused rather than read as one of them, because the
+    old heading is exactly the ambiguity the split removed."""
+    old_heading = "MUST " + "CONTAIN"
+    old = (
+        f"INTENT\nfix taps\n\n{old_heading}\n- leaking taps\n- explains the cause\n\n"
+        "EXCLUDED\n- adverts\n"
+    )
+    judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(old), tmp_path=tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        brief = judge.write_brief(TOPIC)
+
+    assert brief.text == _DRAFT.strip()
+    assert "no REQUIRED OF EVERY VIDEO, PARTS TO COVER section" in caplog.text
 
 
 # -- a skeleton or a critique never replaces a draft ---------------------------
@@ -1008,36 +1116,41 @@ def test_a_whole_review_replaces_the_draft_however_its_headings_are_written(tmp_
 @pytest.mark.parametrize(
     "review",
     [
-        "INTENT\nMUST CONTAIN\nEXCLUDED",
-        "INTENT:\nMUST CONTAIN:\nEXCLUDED:\n",
-        "## Intent\n\n## Must contain\n- \n## Excluded\n**",
+        "INTENT\nREQUIRED OF EVERY VIDEO\nPARTS TO COVER\nEXCLUDED",
+        "INTENT:\nREQUIRED OF EVERY VIDEO:\nPARTS TO COVER:\nEXCLUDED:\n",
+        "## Intent\n\n## Required of every video\n- \n## Parts to cover\n*\n## Excluded\n**",
     ],
     ids=["bare-headings", "colon-skeleton", "decorated-skeleton"],
 )
 def test_headings_with_nothing_under_them_do_not_replace_the_draft(review, tmp_path) -> None:
     judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
 
-    assert judge.write_brief("prompt caching").text == _DRAFT.strip()
+    assert judge.write_brief(TOPIC).text == _DRAFT.strip()
 
 
 def test_a_critique_whose_lines_open_with_heading_words_does_not_replace_the_draft(tmp_path) -> None:
     critique = (
         "Intent is stated but too vague to judge against.\n"
-        "Must contain more detail on cache expiry.\n"
+        "Required of every video reads like a list of parts.\n"
+        "Parts to cover should name blocked drains.\n"
         "Excluded items look reasonable.\n"
         "Overall this brief needs another pass."
     )
     judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(critique), tmp_path=tmp_path)
 
-    assert judge.write_brief("prompt caching").text == _DRAFT.strip()
+    assert judge.write_brief(TOPIC).text == _DRAFT.strip()
 
 
 def test_a_review_with_one_empty_required_section_is_refused_and_named(tmp_path, caplog) -> None:
-    review = "INTENT\nDecide whether caching pays.\n\nMUST CONTAIN\n- write premium\n\nEXCLUDED\n\nEDGE CASES\n- talks\n"
+    review = (
+        "INTENT\nFix the faults a householder meets.\n\n"
+        "REQUIRED OF EVERY VIDEO\n- explains the cause\n\n"
+        "PARTS TO COVER\n- leaking taps\n\nEXCLUDED\n\nEDGE CASES\n- lectures\n"
+    )
     judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
 
     with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
-        brief = judge.write_brief("prompt caching")
+        brief = judge.write_brief(TOPIC)
 
     assert brief.text == _DRAFT.strip()
     assert "empty EXCLUDED section" in caplog.text
@@ -1045,10 +1158,13 @@ def test_a_review_with_one_empty_required_section_is_refused_and_named(tmp_path,
 
 def test_a_terse_but_whole_review_still_replaces_the_draft(tmp_path) -> None:
     """The guard refuses empty sections, not short ones."""
-    review = "INTENT: decide if caching pays\nMUST CONTAIN (at least one): write premium\nEXCLUDED: semantic caching\n"
+    review = (
+        "INTENT: fix taps\nREQUIRED OF EVERY VIDEO (all of them): explains the cause\n"
+        "PARTS TO COVER (at least one): leaking taps\nEXCLUDED: adverts\n"
+    )
     judge = _brief_judge(_BriefResponse(_DRAFT), _BriefResponse(review), tmp_path=tmp_path)
 
-    assert judge.write_brief("prompt caching").text == review.strip()
+    assert judge.write_brief(TOPIC).text == review.strip()
 
 
 # -- a stage-2 call that produced no verdict is not a YES -----------------------

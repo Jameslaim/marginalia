@@ -1,8 +1,16 @@
 ---
 name: judge_full
-version: "10"
+version: "11"
 stage: full
-note: "v10 replaces a vendor name in an example import:
+note: "v11 states the relevance rule over the brief's new sections. Step 1
+  said 'substantively address something the brief requires', which counts
+  one item as enough; checkpoint 1 measured briefs whose items were
+  conditions that must all hold, where one is not enough, and briefs whose
+  items were parts, where one is. The brief now separates REQUIRED OF EVERY
+  VIDEO from PARTS TO COVER, so step 1 is every REQUIRED item and at least
+  one PART, and step 3's material part of the brief is a PART. The five-line
+  reply is unchanged.
+  v10 replaces a vendor name in an example import:
   rule 7 says no prompt names a model family, and the test meant to hold
   that scanned only the top level of prompts/, so this file was never
   checked.
@@ -127,11 +135,26 @@ not, not that you know it from elsewhere.
 
 **1. Does it actually cover the subject?**
 
-Substantively address something the brief requires — not merely say a word the
-brief also uses. A video that names the topic once and moves on has not covered
-it. The brief is the authority: not your sense of what is interesting, not what
-the video is good at, and not what a reasonable video on this title would
-usually contain.
+The brief separates two kinds of item, and they are checked differently:
+
+- **REQUIRED OF EVERY VIDEO** — the video must meet **every** one of these.
+  Missing any one is a NO, however good the rest is.
+- **PARTS TO COVER** — the video must substantively cover **at least one**.
+  It is not expected to cover them all: the library as a whole does that, and
+  a video that covers one part well is exactly what the brief asks for.
+
+So a relevant video meets every REQUIRED item, substantively covers at least
+one PART, and hits no EXCLUDED item (step 4). A plumbing brief that requires
+"explains why the fault happens, not only the fix" and lists leaking taps,
+blocked drains and low water pressure as parts is satisfied by a video that
+explains a blocked drain thoroughly and never mentions taps; it is not
+satisfied by a video that tours all three and explains none of them.
+
+Covering means substantively addressing — not merely saying a word the brief
+also uses. A video that names a part once and moves on has not covered it. The
+brief is the authority: not your sense of what is interesting, not what the
+video is good at, and not what a reasonable video on this title would usually
+contain.
 
 **2. Does it deliver substantive value?**
 
@@ -148,8 +171,9 @@ enthusiasm, nor a well-structured tour of things the listener already knew.
 
 **3. Where is the value, and how much of it is there?**
 
-A concentrated segment that satisfies a material part of the brief justifies
-keeping a long video — the rest being filler does not undo the part that is not.
+A concentrated segment that substantively covers one of the brief's PARTS TO
+COVER — in a video that meets every REQUIRED item — justifies keeping a long
+video — the rest being filler does not undo the part that is not.
 A long video that circles the subject without ever explaining, demonstrating or
 establishing anything is a different case, and does not.
 

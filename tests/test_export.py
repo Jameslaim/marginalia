@@ -40,7 +40,10 @@ B = "rGf9Db4tjUQ"
 C = "GXh1KwzNIIM"
 RUN = "abc123def456"
 
-BRIEF = "INTENT\nHow connection pooling works.\n\nMUST CONTAIN\n- shows pgbouncer.ini"
+BRIEF = (
+    "INTENT\nHow connection pooling works.\n\n"
+    "REQUIRED OF EVERY VIDEO\n- shows pgbouncer.ini\n\nPARTS TO COVER\n- transaction pooling"
+)
 
 TERRITORY = """{
   "topic": "postgres connection pooling",
@@ -393,8 +396,27 @@ def test_the_brief_is_stored_whole(config, ledger, library) -> None:
     a_run(ledger)
     export_run(config, ledger, library, RUN)
 
-    assert "MUST CONTAIN" in read(library, "brief.md")
+    assert "REQUIRED OF EVERY VIDEO" in read(library, "brief.md")
+    assert "PARTS TO COVER" in read(library, "brief.md")
     assert "shows pgbouncer.ini" in read(library, "brief.md")
+
+
+def test_a_brief_stored_under_the_old_headings_is_exported_as_it_was_written(
+    config, ledger, library
+) -> None:
+    """Ledgers hold briefs written before the required-items heading was split
+    in two. Nothing parses a stored brief's sections: the export writes the
+    text it holds, so an old brief comes back word for word under its own
+    headings rather than being refused or rewritten."""
+    old_heading = "MUST " + "CONTAIN"
+    old = f"INTENT\nHow connection pooling works.\n\n{old_heading}\n- shows pgbouncer.ini"
+    ledger.start_run(
+        RUN, "postgres connection pooling", brief=old, brief_version="2/3", model="test-model"
+    )
+
+    export_run(config, ledger, library, RUN)
+
+    assert old in read(library, "brief.md")
 
 
 # -- no content, here as everywhere ------------------------------------------

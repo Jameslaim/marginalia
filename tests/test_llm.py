@@ -534,6 +534,54 @@ def test_no_prompt_names_a_model_family() -> None:
             assert word not in body, f"{path.name} names a model family: {word!r}"
 
 
+def test_no_prompt_names_the_old_required_items_heading() -> None:
+    """The brief's one required-items heading carried two ideas, and checkpoint
+    1 measured the pipeline reading it three ways. It was split into REQUIRED
+    OF EVERY VIDEO and PARTS TO COVER; a prompt still naming the old heading
+    asks the model for a section no brief has any more."""
+    import re as _re
+
+    old = _re.compile(r"must[\s_-]*contain", _re.IGNORECASE)
+    for path in sorted(prompts_dir().rglob("*.md")):
+        assert not old.search(path.read_text(encoding="utf-8")), path.name
+
+
+def test_every_prompt_that_reads_a_brief_names_its_new_sections() -> None:
+    """Found, not listed: any prompt that renders {{ brief }} reads the brief's
+    sections, so each must speak of the parts it covers. The judges and the
+    review apply the relevance rule, so they name the required section too."""
+    import re as _re
+
+    readers = {}
+    for path in prompts_dir().rglob("*.md"):
+        name = path.relative_to(prompts_dir()).with_suffix("").as_posix()
+        text = load_prompt(name).text
+        if _re.search(r"\{\{\s*brief\s*\}\}", text):
+            readers[name] = text
+
+    assert {
+        "review_brief", "judge_metadata", "judge/full", "plan/round",
+        "plan/baseline", "territory/map", "expand_queries",
+    } <= set(readers)
+    for name, text in readers.items():
+        assert "PARTS TO COVER" in text or "PART TO COVER" in text, name
+    for name in ("review_brief", "judge_metadata", "judge/full"):
+        assert "REQUIRED OF EVERY VIDEO" in readers[name], name
+
+
+def test_the_brief_prompts_ask_for_the_six_sections_in_order() -> None:
+    headings = [
+        "INTENT", "REQUIRED OF EVERY VIDEO", "PARTS TO COVER",
+        "ALSO WANTED", "EXCLUDED", "EDGE CASES",
+    ]
+    for name in ("write_brief", "review_brief"):
+        lines = [line.strip() for line in load_prompt(name).text.splitlines()]
+        found = [line for line in lines if line in headings]
+        # write_brief describes each section once; review_brief lists the
+        # order to output in. Either way the six appear, in this order.
+        assert found[-6:] == headings, name
+
+
 def test_a_prompt_renders_its_placeholders(tmp_path: Path) -> None:
     (tmp_path / "p.md").write_text(
         '---\nversion: "3"\n---\nTopic is {{ topic }} and count is {{ count }}.',

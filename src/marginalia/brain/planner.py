@@ -125,7 +125,10 @@ _NO_REVISION = frozenset(
 # Ceilings. One over-enthusiastic reply must not become thirty searches at a
 # hundred quota units each, and truncation is logged rather than silent.
 _MAX_QUERIES = 12
-_MAX_COVERAGE = 12
+# One line per PART TO COVER (at most 8) and per ALSO WANTED item (at most 6),
+# which the brief's limits put at 14. At 12, a brief at its limits had its
+# last ALSO WANTED lines dropped without a word.
+_MAX_COVERAGE = 14
 _MAX_QUERY_WORDS = 12
 _MAX_DETAIL = 240
 _MAX_REASON = 300

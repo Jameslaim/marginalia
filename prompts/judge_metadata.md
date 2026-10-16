@@ -1,8 +1,14 @@
 ---
 name: judge_metadata
-version: "5"
+version: "6"
 stage: metadata
-note: "v5 corrects what happens after a MAYBE. v4 said the opening of the
+note: "v6 states the relevance rule. The brief now separates REQUIRED OF
+  EVERY VIDEO from PARTS TO COVER, and v5 said only 'clearly matches the
+  brief', which never said whether one item was enough or all were needed.
+  Checkpoint 1 measured briefs read both ways. NO now needs metadata that
+  clearly fails a REQUIRED item or hits an EXCLUDED one; a REQUIRED item the
+  metadata cannot show is MAYBE, by rule 8.
+  v5 corrects what happens after a MAYBE. v4 said the opening of the
   transcript is read next, and B3 replaced the opening judge with one that
   reads the whole transcript. The code changed underneath the prompt."
 ---
@@ -66,9 +72,34 @@ brief asks for is strong evidence the video contains it. A chapter list that is
 all sponsor reads, links and calls to subscribe is evidence too, of the other
 kind. No chapters at all means nothing: most videos have none.
 
+## What relevant means
+
+The brief has two sections that decide relevance, and they work differently:
+
+- **REQUIRED OF EVERY VIDEO** — conditions a relevant video meets, all of them.
+- **PARTS TO COVER** — the parts of the subject. A relevant video covers at
+  least one. Nobody expects a single video to cover them all; the library as a
+  whole does that.
+
+A video is relevant when it meets every REQUIRED item, covers at least one
+PART, and hits no EXCLUDED item.
+
+From metadata alone that becomes:
+
+- **NO** only when the metadata clearly fails a REQUIRED item, or clearly hits
+  an EXCLUDED item, or is plainly about a different subject that touches no
+  PART. A video titled "Choosing a road bike saddle" fails a brief whose
+  REQUIRED item is "explains a repair procedure"; that is a NO.
+- **MAYBE** when the metadata cannot show whether a REQUIRED item is met. Most
+  REQUIRED items are about what a video says, and a title rarely settles that.
+  An unknown is not a failure: the transcript is read next and answers it.
+- **Never NO for covering only one PART.** A video about one part of the
+  subject is exactly what the brief asks for.
+
 For each numbered candidate, decide:
 
-YES    — clearly matches the brief. Worth fetching now.
+YES    — clearly matches the brief: meets every REQUIRED item and covers a PART.
+         Worth fetching now.
 NO     — clearly does not match. Do not fetch.
 MAYBE  — you cannot tell from metadata alone.
 
@@ -88,7 +119,8 @@ Weigh your two possible mistakes. They are not equal:
 
 So when you are genuinely uncertain, do not resolve it as NO. Use MAYBE.
 Reserve NO for candidates that are clearly off-brief — a different subject, a
-promotional clip, or something the brief's EXCLUDED section names.
+promotional clip, a clear failure of a REQUIRED item, or something the brief's
+EXCLUDED section names.
 
 DURATION IS NOT DEPTH.
 

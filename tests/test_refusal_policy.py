@@ -157,7 +157,11 @@ def _refusing_client(calls: list[int]) -> LlmClient:
     return LlmClient(make_llm_config(), transport=transport, sleep=lambda _: None)
 
 
-BRIEF = Brief(topic="prompt caching", text="INTENT\nx\nMUST CONTAIN\n- x\nEXCLUDED\n- y", version="1/1")
+BRIEF = Brief(
+    topic="prompt caching",
+    text="INTENT\nx\nREQUIRED OF EVERY VIDEO\n- x\nPARTS TO COVER\n- x\nEXCLUDED\n- y",
+    version="1/1",
+)
 
 
 def test_a_refusal_during_mapping_stops_after_one_call() -> None:

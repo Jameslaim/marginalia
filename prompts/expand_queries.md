@@ -1,7 +1,13 @@
 ---
 name: expand_queries
-version: "1"
+version: "2"
 stage: search
+note: "v2 aims the queries across every PART TO COVER, and writes a part that
+  is a language or a market in that language. Checkpoint 1 measured a
+  library-level language goal with no section of its own: it landed among
+  the required items in 5 of 6 briefs, where no judge could act on it, and
+  reached no search. The brief now carries such goals as parts, and this is
+  where a part in another language becomes a query in it."
 ---
 
 You turn a research brief into a set of video search queries.
@@ -25,6 +31,16 @@ rather than rephrasing one idea {{ count }} times:
 - a specific mechanism, parameter, or sub-component named in the brief
 - an adjacent subtopic that good coverage would have to touch
 - the comparison or decision framing ("X vs Y", "when to use X")
+
+Spread the queries across the brief's PARTS TO COVER, so that every part has at
+least one query aimed at it before any part gets a second. The library is meant
+to cover every part, and a part no query reaches is a part nothing will find.
+
+Where a part is a language or a market — "videos in Spanish as well as English",
+"repairs as done in Brazil" — write at least one query for it in that language,
+the words a person there would type ("reparar fuga de grifo", not a translation
+of the brief's phrasing word for word). A query in English finds English videos,
+so this is the only way such a part reaches the search.
 
 Rules:
 - Each query on its own line. Nothing else on the line.

@@ -1,8 +1,15 @@
 ---
 name: plan_round
-version: "6"
+version: "7"
 stage: plan
-note: "v6 names the KEPT BUT NOT JUDGED section: keepers stage 2 gave no
+note: "v7 assesses coverage against the brief's PARTS TO COVER, then its
+  ALSO WANTED items, and says STOP when every part is covered. The brief's
+  old required-items heading carried both conditions on each video and parts
+  of the subject, and this prompt read it as coverage targets; checkpoint 1
+  measured the two judges reading it differently. Conditions every video
+  meets now sit under REQUIRED OF EVERY VIDEO, which the judges check and
+  which is not a coverage target.
+  v6 names the KEPT BUT NOT JUDGED section: keepers stage 2 gave no
   verdict were listed under KEPT and counted as coverage.
   v5 replaces two vendor names in an example query:
   rule 7 says no prompt names a model family, and the test meant to hold
@@ -60,9 +67,14 @@ about, and a filter on any of them removes content permanently and invisibly.
 ## Read what was kept, not only what was rejected
 
 Coverage is a claim about what the library now holds against the brief, and you
-cannot make it from failures. Work through the brief's MUST CONTAIN and ALSO
-WANTED items one at a time and ask, for each: *did anything kept this round
-actually satisfy this?*
+cannot make it from failures. Work through the brief's PARTS TO COVER one at a
+time, then its ALSO WANTED items, and ask, for each: *did anything kept this
+round actually satisfy this?*
+
+REQUIRED OF EVERY VIDEO is not on that list. Those are conditions every kept
+video already met to be kept — the judges check them — not parts the library
+still has to find. A part that is a language or a market ("videos in Spanish as
+well as English") is covered only by a kept video in that language or market.
 
 - A part satisfied by a kept video is `YES`, and name the video.
 - A part listed under ALREADY IN THE LIBRARY BEFORE THIS RUN is `YES` too, and
@@ -161,8 +173,9 @@ subject" is.
 
 ## Recommending a stop
 
-Say `STOP` when the brief's MUST CONTAIN items are covered by what has been kept
-and further searching would be looking for something already found.
+Say `STOP` when every one of the brief's PARTS TO COVER is covered by what has
+been kept or is already in the library, and further searching would be looking
+for something already found.
 
 Say `CONTINUE` when named gaps remain.
 
@@ -196,11 +209,12 @@ QUERY: prompt caching providers compared
 FROM: gap — comparison across providers
 FILTERS: order=date (provider behaviour changed this year)
 
-RECOMMENDATION: CONTINUE — two MUST CONTAIN items still have nothing against them
+RECOMMENDATION: CONTINUE — two PARTS TO COVER still have nothing against them
 ```
 
-- `COVERAGE` — one line per part of the brief you assessed, in the form
-  `part | YES or NO | detail`. At least three lines. The detail is read by a
+- `COVERAGE` — one line per PART TO COVER, then one per ALSO WANTED item, in
+  the form `part | YES or NO | detail`, using the brief's own wording,
+  shortened if it is long. At least three lines. The detail is read by a
   person later; make it specific.
 - `REVISE` — `add` or `remove`, then `concept` or `vocabulary`, then the term.
   `WHY` on the next line. `EVIDENCE` as well, for every removal.

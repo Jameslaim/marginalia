@@ -993,7 +993,7 @@ def test_a_waiver_under_any_time_recency_is_not_recorded() -> None:
 # ANY/24/18, `langchain` 24/18/12 — and the real run answered 36, wider than any
 # of the ten. Against the 31 videos that run kept, 24 months would have excluded
 # 2, 18 months 4, and 12 months 7, and one of the four is the video the planner
-# named as its evidence that a MUST CONTAIN item was covered.
+# named as its evidence that one of the brief's required items was covered.
 #
 # What makes the widest safe rather than merely wide is the other half of the
 # measurement: the call got the *direction* right 10 of 10 on `langchain`, so

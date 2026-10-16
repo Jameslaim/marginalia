@@ -2567,6 +2567,69 @@ failure streak, because a provider refusing a burst is being authoritative about
 rate. That is rule 24 one layer below the model provider, and a loop that keeps
 asking through a throttle is exactly what produced the 108.
 
+### The brief's required items, split into conditions and parts
+
+**What was measured.** Checkpoint 1 generated 12 briefs on two test topics, three
+samples per topic under two prompt sets, and read every draft and every final in
+full (`agent-walkthrough/checkpoint1/FINDINGS.md`). One heading, MUST CONTAIN,
+carried two different ideas, and the pipeline read it three ways:
+`write_brief` called one item enough ("a video that lacks all of these"), stage 2
+called one enough ("something the brief requires"), stage 1 did not say, and the
+planner treated the items as library coverage targets.
+
+The briefs failed in two opposite directions:
+
+- **A topic made of parts** got 6 to 9 items in every final brief, and three of
+  the six said outright that every part was required — two of them already in
+  the draft, so the review was not the only cause. Stage 2 takes the brief as the
+  authority, so it would reject good single-part videos.
+- **A topic made of conditions** — a real figure, from the right kind of source,
+  with the method — needs every item to hold, and stage 2's "something" would
+  pass a video meeting one.
+
+Three smaller findings came from the same briefs:
+
+- **A library-level goal had no section.** "Include English and other
+  languages" landed in MUST CONTAIN in 5 of 6 finals (4 of 6 drafts), where no
+  judge can act on it and from where it reached no search.
+- **The review broke the size limits in 12 of 12 briefs; every draft kept them.**
+  Up to 16 EXCLUDED and 15 EDGE CASES items, more than six required items in 6 of
+  12, and finals of 711–1,538 words against drafts of 571–798, up to 2.2×.
+  `review_brief` never restated the limits and its checklist only added.
+- **Two of six briefs on one topic made an on-screen screenshot a hard gate.**
+  Stage 1 sees metadata and stage 2 the transcript; neither sees the picture.
+
+**The change.** The brief has six sections: INTENT, REQUIRED OF EVERY VIDEO (1–4,
+conditions every relevant video meets, all of them, kept minimal), PARTS TO COVER
+(2–8, a video qualifies by covering at least one; the library should cover every
+one; library-level goals such as a language or a market are parts), ALSO WANTED
+(3–6), EXCLUDED (3–6) and EDGE CASES (2–4). The relevance rule reads the same
+everywhere: **meets every REQUIRED item, covers at least one PART, hits no
+EXCLUDED item.** Every criterion must be checkable from the title, description or
+transcript.
+
+Every reader of the brief changed with it, which is rule 25's question asked of
+the diff: both brief prompts, both judges (stage 1 says NO only on a clear REQUIRED
+failure or an EXCLUDED hit, and MAYBE when metadata cannot show a REQUIRED item),
+both planner prompts (one coverage line per part, STOP when every part is covered),
+and the map and expansion prompts (queries across every part, and a query in the
+language of a part that is a language, with `relevanceLanguage` set). The review
+now restates the limits and merges or cuts rather than appending. `judge.py`
+refuses a brief missing or emptying either new section. The planner's coverage
+cap rose from 12 to 14, because 8 parts and 6 ALSO WANTED items are fourteen
+lines and the old cap dropped the last two silently.
+
+**Stored briefs are not parsed.** Ledgers hold briefs under the old headings. The
+only section parser is `_brief_problem`, which reads a reply just returned by the
+model; a stored brief is only ever written out verbatim by `marg run export`,
+and `Brief.intent` reads INTENT, whose name did not change. So old briefs keep
+reading as they were written, and a test holds that for the export.
+
+**What this does not settle.** Whether the briefs now keep their limits, place
+library-level goals among the parts and keep conditions minimal is a measurement,
+not a claim: checkpoint 1 is re-run against these prompts before the map layer is
+looked at.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

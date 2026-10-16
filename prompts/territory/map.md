@@ -1,8 +1,13 @@
 ---
 name: map_territory
-version: "4"
+version: "5"
 stage: territory
-note: "v4 replaces a vendor name in the example vocabulary:
+note: "v5 aims the queries across every PART TO COVER, and for a part that is
+  a language or a market requires a query in that language with
+  relevanceLanguage set. Checkpoint 1 measured a library-level language goal
+  that had no section of its own and reached no search; the brief now
+  carries it as a part, and this is where it becomes one.
+  v4 replaces a vendor name in the example vocabulary:
   rule 7 says no prompt names a model family, and the test meant to hold
   that scanned only the top level of prompts/, so this file was never
   checked.
@@ -71,6 +76,26 @@ judgement; the subtraction is not.
 
 **QUERIES** — {{ count }} searches, written from the concepts and vocabulary
 above rather than from the topic words.
+
+**Aim them across every one of the brief's PARTS TO COVER.** Each part should
+have at least one query aimed at it before any part gets a second: the library
+is meant to cover every part, and a part no query reaches is one nothing will
+find. Say which part a query serves in FROM when it came from one
+(`part: blocked drains`).
+
+**A part that is a language or a market needs a query in that language.** Where
+the brief lists a part such as "videos in Spanish as well as English", write at
+least one query in that language — the words a person there would type — and
+set `relevanceLanguage` to its code:
+
+```
+QUERY: reparar fuga de grifo
+FROM: part: videos in Spanish as well as English
+FILTERS: relevanceLanguage=es (the brief asks for Spanish-language videos)
+```
+
+A query in English ranks English videos first, so this is the only way such a
+part reaches the search.
 
 At least half of them should contain a term that does not appear in the topic
 at all. That is the entire point of this exercise: queries made of the topic's

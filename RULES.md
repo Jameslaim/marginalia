@@ -790,6 +790,49 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     transcript did not hold exactly, 121 reach closeness 0.6 against the transcript
     they cite and none against a random one. That is the `[loosely quoted]` line.
 
+27. **A brief separates conditions every video must meet from parts the library
+    must cover.** *(Draft, pending review.)* REQUIRED OF EVERY VIDEO holds one to
+    four conditions, and a relevant video meets all of them. PARTS TO COVER holds
+    two to eight parts of the subject, and a relevant video covers at least one;
+    the library as a whole should cover every one. **Relevant means: every
+    REQUIRED item, at least one PART, no EXCLUDED item** — and every reader of
+    the brief states it that way: both judges, both planner prompts, the map and
+    the expansion.
+
+    One heading used to carry both ideas, and checkpoint 1 measured the cost on
+    12 briefs. The pipeline read it three ways — `write_brief` and stage 2 as
+    one-is-enough, the planner as coverage targets, stage 1 not at all — and the
+    briefs failed in opposite directions. A topic made of parts got 6 to 9 items,
+    and three of six briefs called every part required, so stage 2, which obeys
+    the brief, would reject a good video for covering one part. A topic made of
+    conditions needs all of them, and stage 2's "something the brief requires"
+    would pass a video meeting one. Neither is visible from a run: the first
+    declines good videos, which at stage 1 means never fetching them, rule 8's
+    invisible error; the second is the wrong YES rule 8 names at stage 2.
+
+    **A goal only the library can meet is a part.** "Include English and other
+    languages" had no section and landed among the required items in 5 of 6
+    briefs, where no judge can act on it and from where it reached no search. As
+    a part it is a coverage line for the planner and, at the map, a query in
+    that language with `relevanceLanguage` set.
+
+    **Every criterion must be checkable from the title, description or
+    transcript.** Two of six briefs on one topic made an on-screen screenshot a
+    hard gate; nothing in this pipeline sees the picture, so such a criterion is
+    one no video can be shown to meet.
+
+    **The review keeps the limits; it merges or cuts, never appends.** Drafts kept
+    every limit in 12 of 12 briefs and reviews broke them in 12 of 12 — up to 16
+    EXCLUDED and 15 EDGE CASES items, briefs up to 2.2× longer — because the
+    review prompt never restated the limits and its checklist only added. Every
+    judge reads the whole brief, so each extra item is another way for a good
+    video to fail.
+
+    **Stored briefs are read as they were written.** Ledgers hold briefs under
+    the old heading. Nothing parses a stored brief's sections — the section check
+    reads only a reply just returned, and the export writes the stored text
+    verbatim — so they need no translation, and must not be given one.
+
 ## Structure
 
 ```

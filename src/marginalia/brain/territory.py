@@ -504,7 +504,7 @@ def widest_recency(samples: Sequence[Recency]) -> Recency:
     of the ten. Against the 31 videos that run kept, 24 months would have
     excluded 2, 18 months 4, and 12 months 7 — and among the four is *Building
     Effective Agents with LangGraph*, which the planner named as its evidence
-    that a MUST CONTAIN item was covered. A different sample does not merely
+    that one of the brief's required items was covered. A different sample does not merely
     shrink the library; it invalidates a coverage claim the run reports as fact.
 
     The reasons are individually correct, which is the point. *"The modern
