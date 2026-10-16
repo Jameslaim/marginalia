@@ -550,16 +550,43 @@ _WAIVER_VALUES = frozenset(
 
 
 def _waiver_value(query: PlannedQuery) -> str:
-    """The waiver this query asked for, or `""`. Read before anything is judged.
+    """The waiver marker this query's filters carry, or `""`. Read before
+    anything is judged.
 
     It has to come first because otherwise the ordinary rules see it: `any` is
     not a date, so a waiver would be refused as a malformed `publishedAfter`,
     counted as a filter rejection, and then have the window derived onto it
     anyway — the exact opposite of what the query asked for, arrived at through
     two correct-looking steps.
+
+    Only a query straight from a parser carries the marker. `validate()` moves
+    it to `PlannedQuery.waiver`, which is what every later pass reads.
     """
     value = (query.filters.published_after or "").strip().lower()
     return value if value in _WAIVER_VALUES else ""
+
+
+def waiver_applies(query: PlannedQuery, *, recency: Recency, topic: str = "") -> bool:
+    """Did this query's waiver keep a date window off a search that would
+    otherwise have had one?
+
+    The one definition both the waiver record and the round's counter use, so
+    the two cannot disagree. A waiver under `ANY` recency, or under a user who
+    already forbade the filter, prevented nothing; nor does one on a variant,
+    which is never dated anyway — counting those would be counting no-ops.
+    """
+    return _waiver_applies(query, recency=recency, constraints=user_constraints(topic))
+
+
+def _waiver_applies(
+    query: PlannedQuery, *, recency: Recency, constraints: UserConstraints
+) -> bool:
+    return bool(
+        query.waiver
+        and recency.limited
+        and not constraints.no_date_filter
+        and not query.variant_of
+    )
 
 
 def _derived_why(recency: Recency) -> str:
@@ -611,20 +638,23 @@ def _derive_published_after(
     exactly as it is. Derivation fills an absence; it never overrules a
     judgement that survived the rules.
     """
-    if waiver:
-        # Recorded, not silent, and only when it actually changed the outcome:
-        # a waiver under `ANY` recency, or under a user who already forbade the
-        # filter, prevented nothing and would be a rejection of nothing.
-        if not recency.limited or constraints.no_date_filter:
+    if query.waiver:
+        # A waived query is never dated, on this pass or any later one. Recorded
+        # only by the pass that read the marker (`waiver` is the marker's text
+        # here), and only when it changed the outcome: a waiver under `ANY`
+        # recency, under a user who already forbade the filter, or on a variant
+        # prevented nothing and would be a rejection of nothing. A later pass
+        # meets the waiver already on the query and records nothing, so one
+        # waiver is one record however many times the query is validated.
+        if not waiver or not _waiver_applies(query, recency=recency, constraints=constraints):
             return query, None
         return query, FilterRejection(
             query.text,
             FILTER_FIELD_RECENCY_WAIVER,
             recency.label,
-            # Taken from the query as it was *written*, not as it now stands:
-            # stripping the waiver takes its reason with it, and the reason is
+            # Taken from the query as it was *written*: the marker's reason is
             # the only part of a waiver worth reading back.
-            waiver_reason or "the query asked for material of any age and gave no reason",
+            waiver_reason,
         )
     if not recency.limited or constraints.no_date_filter:
         return query, None
@@ -633,12 +663,9 @@ def _derive_published_after(
 
     cutoff = _months_before(today, recency.months or 0)
     return (
-        PlannedQuery(
-            text=query.text,
-            origin=query.origin,
-            origin_detail=query.origin_detail,
+        replace(
+            query,
             filters=query.filters.with_(FILTER_PUBLISHED_AFTER, cutoff.isoformat()),
-            variant_of=query.variant_of,
             reasons={
                 **query.reasons,
                 # The full window, with no slack. The month of slack in
@@ -721,19 +748,49 @@ def validate(
     That makes this function the only place a hard date filter can be added as
     well as the only place one can be refused, which is what keeps both
     directions inspectable from one read.
+
+    **It is idempotent: `validate(validate(x).kept)` returns the same queries,
+    filters and waivers, and records nothing new.** Every query meets it at
+    least twice — where it was proposed (the map, the planner) and again before
+    its round runs — and it was not, once: the first pass dropped a waiver's
+    marker, so the second derived the window onto exactly the queries the map
+    had exempted (3 of 12 maps at checkpoint 2). A refused filter is gone by the
+    second pass, a derived date is kept as it stands, a waiver lives on
+    `PlannedQuery.waiver` and is recorded only by the pass that read it, and a
+    duplicate was already dropped.
     """
     today = today or datetime.now(timezone.utc).date()
     constraints = user_constraints(topic)
     seen = {key for key in already_run}
-    main_texts = {" ".join(query.text.lower().split()) for query in queries if not query.variant_of}
+    # A variant may name a main query that already ran — earlier this round in a
+    # previous pass, or in an earlier round — and still adds a slice. Without
+    # those texts a second pass over a list whose main query was dropped as a
+    # duplicate would refuse a band the first pass allowed.
+    main_texts = {
+        " ".join(query.text.lower().split()) for query in queries if not query.variant_of
+    } | {key[0] for key in seen}
 
     kept: list[PlannedQuery] = []
     rejections: list[FilterRejection] = []
 
     for query in queries:
         # First, before any rule looks at it: a waiver is not a malformed date.
-        waiver = _waiver_value(query)
-        filters = query.filters.without(FILTER_PUBLISHED_AFTER) if waiver else query.filters
+        # `marker` is the waiver as a parser wrote it (`publishedAfter=any`);
+        # `query.waiver` is one an earlier pass already read. Either way the
+        # query leaves here with the waiver on `waiver` and nothing on
+        # `filters`, so no pass after this one can mistake it for an ordinary
+        # query, and the search provider is never sent `any`.
+        marker = _waiver_value(query)
+        if marker:
+            waiver_reason = (
+                query.reasons.get(FILTER_PUBLISHED_AFTER)
+                or "the query asked for material of any age and gave no reason"
+            )
+        else:
+            waiver_reason = query.waiver
+        filters = (
+            query.filters.without(FILTER_PUBLISHED_AFTER) if waiver_reason else query.filters
+        )
         for name, value in list(filters.as_dict().items()):
             problem = _filter_problem(
                 name,
@@ -762,15 +819,13 @@ def validate(
             )
             filters = filters.without(name)
 
-        candidate = PlannedQuery(
-            text=query.text,
-            origin=query.origin,
-            origin_detail=query.origin_detail,
+        candidate = replace(
+            query,
             filters=filters,
-            variant_of=query.variant_of,
             reasons={
                 name: why for name, why in query.reasons.items() if name in filters.as_dict()
             },
+            waiver=waiver_reason,
         )
 
         # After the refusals and before identity is computed. A derived cutoff
@@ -781,8 +836,8 @@ def validate(
             candidate,
             recency=recency,
             constraints=constraints,
-            waiver=waiver,
-            waiver_reason=query.reasons.get(FILTER_PUBLISHED_AFTER, ""),
+            waiver=marker,
+            waiver_reason=waiver_reason,
             today=today,
         )
         if waived is not None:

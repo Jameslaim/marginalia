@@ -1,8 +1,12 @@
 ---
 name: write_brief
-version: "3"
+version: "4"
 stage: brief
-note: "v3 splits the old required-items heading into REQUIRED OF EVERY VIDEO
+note: "v4 stops naming a real language in the PARTS TO COVER example. At
+  checkpoint 2 the same named-language example, in the map and expansion
+  prompts, put that language in 6 of 6 topic-2 maps even where the brief
+  named another language first; the example now says a second language.
+  v3 splits the old required-items heading into REQUIRED OF EVERY VIDEO
   and PARTS TO COVER.
   Checkpoint 1 measured one heading carrying two ideas: a topic made of parts
   got 6 to 9 items and three of six briefs called every part required, so a
@@ -44,7 +48,7 @@ Two to eight bullet points. The parts of the subject. A video qualifies by
 substantively covering at least one part; nobody expects one video to cover
 them all. The library as a whole should cover every part. A goal that only the
 library as a whole can meet belongs here as a part too — a language, a region
-or a market, for example "videos in Spanish as well as English".
+or a market, for example "videos in a second language as well as English".
 
 ALSO WANTED
 Three to six bullet points. Genuinely useful but not required. These break ties.

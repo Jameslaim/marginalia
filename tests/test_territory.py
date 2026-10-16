@@ -13,7 +13,9 @@ still did.
 
 from __future__ import annotations
 
+import json
 import logging
+from dataclasses import replace
 from datetime import date
 
 import pytest
@@ -24,6 +26,7 @@ from marginalia.brain.territory import (
     parse_map,
     user_constraints,
     validate,
+    waiver_applies,
     widest_recency,
 )
 from marginalia.contracts import (
@@ -32,6 +35,7 @@ from marginalia.contracts import (
     FILTER_PUBLISHED_AFTER,
     FILTER_RELEVANCE_LANGUAGE,
     FILTER_VIDEO_DURATION,
+    ORIGIN_BRIEF,
     ORIGIN_TERRITORY,
     RECENCY_DERIVED_WHY,
     Brief,
@@ -1181,3 +1185,185 @@ def test_widening_does_not_count_the_codes_own_cutoff_as_a_rejection() -> None:
     derived = territory.queries[0].filters.published_after
     assert derived is not None
     assert RECENCY_DERIVED_WHY in territory.queries[0].reasons[FILTER_PUBLISHED_AFTER]
+
+
+# -- validate is idempotent ----------------------------------------------------
+#
+# Every query meets `validate` at least twice: where it was proposed (inside
+# `Mapper.map`, inside `Planner.plan`) and again before its round runs. It was
+# not idempotent: the first pass dropped a waiver's `publishedAfter=any` marker,
+# so the second saw an ordinary query and derived the window onto it. Measured
+# at checkpoint 2 on 3 of 12 maps, on exactly the queries the map had exempted
+# because their material is older than the window.
+
+_WINDOW = Recency(months=12, reason="the fittings changed this year")
+
+_WAIVED = _query(
+    "how taps were fitted before",
+    filters=SearchFilters(published_after="any", order="date"),
+    reasons={FILTER_PUBLISHED_AFTER: "older fittings are only in older videos",
+             FILTER_ORDER: "newest first"},
+)
+_PLAIN = _query("tap washer replacement")
+_REFUSED = _query(
+    "leaking tap fix",
+    filters=SearchFilters(order="loudest", published_after="2031-01-01"),
+)
+_MAIN = _query("drain snake use")
+_VARIANT = _query(
+    "drain snake use",
+    filters=SearchFilters(video_duration="short"),
+    variant_of="drain snake use",
+    reasons={FILTER_VIDEO_DURATION: "adds the short clips relevance buries"},
+)
+_DUPLICATE = _query("Drain  snake USE")
+
+_CASES = {
+    "waiver": [_WAIVED],
+    "derived": [_PLAIN],
+    "refused": [_REFUSED],
+    "variant": [_MAIN, _VARIANT],
+    "duplicate": [_MAIN, _DUPLICATE],
+    "all-together": [_WAIVED, _PLAIN, _REFUSED, _MAIN, _VARIANT, _DUPLICATE],
+}
+
+
+@pytest.mark.parametrize("recency", [_WINDOW, Recency()], ids=["window", "any-time"])
+@pytest.mark.parametrize("case", list(_CASES), ids=list(_CASES))
+def test_validating_twice_changes_nothing_and_records_nothing(case, recency) -> None:
+    """`validate(validate(x).kept)` is `validate(x)`: the same queries, the same
+    filters, the same waivers — and no second record of anything."""
+    first, first_rejections = validate(_CASES[case], recency=recency, today=TODAY)
+    second, second_rejections = validate(first, recency=recency, today=TODAY)
+    third, third_rejections = validate(second, recency=recency, today=TODAY)
+
+    assert second == first
+    assert third == first
+    assert second_rejections == [] and third_rejections == []
+
+
+def test_a_variant_whose_main_query_already_ran_is_kept_on_every_pass() -> None:
+    """A variant may accompany a main query run earlier — in a previous round,
+    or dropped as a duplicate of one. The first pass allows its band; a second
+    pass over the kept list must not refuse it for a main query no longer there."""
+    already = {key for key in (validate([_MAIN], recency=_WINDOW, today=TODAY)[0][0].key,)}
+
+    first, _ = validate([_MAIN, _VARIANT], recency=_WINDOW, today=TODAY, already_run=already)
+    second, second_rejections = validate(first, recency=_WINDOW, today=TODAY, already_run=already)
+
+    assert [query.filters.video_duration for query in first] == ["short"]
+    assert second == first
+    assert second_rejections == []
+
+
+def test_a_waiver_survives_any_number_of_passes_and_is_recorded_once(caplog) -> None:
+    queries = [_WAIVED, _PLAIN]
+    records = []
+    with caplog.at_level(logging.INFO, logger="marginalia.brain.territory"):
+        for _ in range(5):
+            queries, rejections = validate(queries, recency=_WINDOW, today=TODAY)
+            records.extend(rejections)
+
+    waived = queries[0]
+    assert waived.filters.published_after is None, "no date is ever derived onto it"
+    assert waived.filters.order == "date", "its other filters are untouched"
+    assert waived.waiver == "older fittings are only in older videos"
+    assert queries[1].filters.published_after == "2025-08-21", "the window still applies elsewhere"
+
+    assert [record.field for record in records] == [FILTER_FIELD_RECENCY_WAIVER], "one record"
+    messages = [record.getMessage() for record in caplog.records]
+    assert sum("waived the" in message for message in messages) == 1
+    assert not any(
+        "derived publishedAfter" in message and "how taps were fitted" in message
+        for message in messages
+    ), "no pass claims to have dated the waived query"
+    assert sum("derived publishedAfter" in message for message in messages) == 1
+
+
+def test_a_waiver_never_stays_in_the_filters_sent_to_the_search() -> None:
+    """`any` is not a value the search provider accepts, and `filters` is
+    exactly what is sent. Every spelling of the marker leaves validate as
+    state on the query, on every pass."""
+    markers = ["any", "ANY", "any time", "anytime", "all", "none", "off", "unset"]
+    queries = [
+        _query(f"pipe fitting {number}", filters=SearchFilters(published_after=marker))
+        for number, marker in enumerate(markers)
+    ]
+    for recency in (_WINDOW, Recency()):
+        kept = queries
+        for _ in range(3):
+            kept, _ = validate(kept, recency=recency, today=TODAY)
+            assert all(query.filters.published_after is None for query in kept)
+            assert all(query.waiver for query in kept)
+
+
+def test_the_ledger_record_of_a_waived_query_says_so_and_why() -> None:
+    (waived,), _ = validate([_WAIVED], recency=_WINDOW, today=TODAY)
+
+    recorded = json.loads(waived.filters_json())
+
+    assert recorded[FILTER_FIELD_RECENCY_WAIVER] == {
+        "value": "any",
+        "why": "older fittings are only in older videos",
+    }
+    assert FILTER_PUBLISHED_AFTER not in recorded, "a waiver is not a filter that ran"
+    assert recorded[FILTER_ORDER]["value"] == "date"
+
+
+def test_a_waiver_with_no_reason_still_says_it_was_asked_for() -> None:
+    (waived,), rejections = validate(
+        [_query("cast iron pipe repair", filters=SearchFilters(published_after="any"))],
+        recency=_WINDOW,
+        today=TODAY,
+    )
+
+    assert waived.waiver == "the query asked for material of any age and gave no reason"
+    assert rejections[0].reason == waived.waiver
+
+
+@pytest.mark.parametrize(
+    "query, recency, topic, applies",
+    [
+        (replace(_PLAIN, waiver="older fittings"), _WINDOW, "", True),
+        (replace(_PLAIN, waiver="older fittings"), Recency(), "", False),
+        (replace(_PLAIN, waiver="older fittings"), _WINDOW, "the history of plumbing", False),
+        (replace(_VARIANT, waiver="older fittings"), _WINDOW, "", False),
+        (_PLAIN, _WINDOW, "", False),
+    ],
+    ids=["window", "any-time", "user-forbade-dates", "variant", "not-waived"],
+)
+def test_a_waiver_counts_only_when_it_kept_a_window_off(query, recency, topic, applies) -> None:
+    """One definition for the record and the round's counter, so they agree.
+    A waiver that prevented nothing — no window, a user who already forbade
+    dates, a variant that is never dated — is not counted."""
+    assert waiver_applies(query, recency=recency, topic=topic) is applies
+
+
+def test_a_map_waiver_reaches_round_one_without_a_date() -> None:
+    """The path checkpoint 2 measured, end to end in `brain/`: `Mapper.map`
+    validates its own queries, and the round validates them again with the
+    expansion's in front, exactly as `_plan_round` and `_loop` do."""
+    reply = (
+        "CONCEPTS: tap repair\nVOCABULARY: ceramic cartridge\n"
+        "RECENCY: 12 months — the fittings changed this year\n\n"
+        "QUERY: compression tap washer replacement\nFROM: part: older taps\n"
+        "FILTERS: publishedAfter=any (compression taps are only in older videos)\n\n"
+        "QUERY: ceramic cartridge tap repair\nFROM: vocabulary: ceramic cartridge\n"
+        "FILTERS: none\n"
+    )
+    brief = Brief(topic="home plumbing repairs", text="INTENT\nFix taps.", version="1/1")
+
+    territory = Mapper(FakeClient(FakeReply(reply))).map(brief)
+    expansion = [PlannedQuery("fix a dripping tap", ORIGIN_BRIEF, brief.topic)]
+    round_one, rejections = validate(
+        [*expansion, *territory.queries], recency=territory.recency, topic=brief.topic,
+        already_run=set(),
+    )
+
+    by_text = {query.text: query for query in round_one}
+    waived = by_text["compression tap washer replacement"]
+    assert waived.filters.published_after is None
+    assert waived.waiver == "compression taps are only in older videos"
+    assert by_text["ceramic cartridge tap repair"].filters.published_after is not None
+    assert [item.field for item in territory.rejected] == [FILTER_FIELD_RECENCY_WAIVER]
+    assert not any(item.is_recency_waiver for item in rejections), "recorded once, by the map"

@@ -569,6 +569,40 @@ def test_every_prompt_that_reads_a_brief_names_its_new_sections() -> None:
         assert "REQUIRED OF EVERY VIDEO" in readers[name], name
 
 
+def test_no_prompt_names_a_real_language_in_an_example() -> None:
+    """An example shows the format; it must not choose the language. At
+    checkpoint 2 a named-language example went with that language in 6 of 6
+    topic-2 maps, including where the brief named a different language first,
+    and that one reached 2 of 6. The examples now use placeholders."""
+    named = ("spanish", "español", "espanol", "grifo", "hindi", "portuguese", "português")
+    for path in sorted(prompts_dir().rglob("*.md")):
+        body = path.read_text(encoding="utf-8").lower()
+        for word in named:
+            assert word not in body, f"{path.name} names {word!r}"
+
+
+def test_the_map_prompt_carries_none_of_its_old_example_vocabulary() -> None:
+    """Checkpoint 2: example-only vocabulary reached 3 of 3 topic-1 maps with
+    the old examples and 0 of 3 with neutral ones, and two of those terms
+    became searches the brief excluded. The neutral passages are now the
+    prompt's own."""
+    text = load_prompt("territory/map").text.lower()
+    for term in ("cache_control", "cache breakpoint", "ephemeral cache", "react"):
+        assert term not in text, term
+
+
+def test_the_query_prompts_state_which_languages_to_take() -> None:
+    """The rule replaces the example as the thing that picks a language: the
+    brief's languages in its order, spread before any repeats, and otherwise
+    the languages the subject is most made in — never the example's."""
+    for name in ("territory/map", "expand_queries"):
+        text = " ".join(load_prompt(name).text.split())
+        assert "the languages the brief names, in the order it names them" in text, name
+        assert "before any language gets a second" in text, name
+        assert "the languages this subject is most made in" in text, name
+        assert "Never a language because an example mentioned it" in text, name
+
+
 def test_the_brief_prompts_ask_for_the_six_sections_in_order() -> None:
     headings = [
         "INTENT", "REQUIRED OF EVERY VIDEO", "PARTS TO COVER",

@@ -833,6 +833,35 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     reads only a reply just returned, and the export writes the stored text
     verbatim — so they need no translation, and must not be given one.
 
+28. **A gate that runs more than once is idempotent, and what it decided travels on
+    the query as state.** *(Draft, pending review.)* `validate()` runs on every query
+    at least twice — where it was proposed (`Mapper.map`, `Planner.plan`) and again
+    in `_loop` before its round — so `validate(validate(x).kept)` must equal
+    `validate(x)`: the same queries, filters and waivers, and no new record. Running
+    a pure gate twice costs nothing only when that holds; it is what makes the second
+    pass safe to keep as the one path to the provider.
+
+    It did not hold, and the failure was a decision stored as an absence. The first
+    pass honoured a map's `publishedAfter=any` waiver and dropped the marker; the
+    second saw an ordinary query and derived the window onto it — **3 of 12 maps** at
+    checkpoint 2, on exactly the queries the map had exempted because their material
+    is older than the window. Nothing failed and nothing was logged as wrong: the
+    second pass's "derived" line read as the system working. The round's
+    `recency_waived` counted that pass's records and so reported zero.
+
+    So a waiver lives on `PlannedQuery.waiver`, never in `filters` — `filters` is
+    exactly what the search provider is sent, and `any` is not a value it accepts.
+    The pass that reads a marker records and logs the waiver once; a later pass
+    derives nothing, records nothing and logs nothing. A round counts its waivers
+    from the queries it will search, through the same `waiver_applies` the record
+    uses, so one waiver is one count per round however many passes it went through
+    (rule 14). The ledger's `filters_json` shows it under its own key with its
+    reason, because no date ran.
+
+    The general form, for the next gate: **if a pass consumes a marker, it must leave
+    behind something every later pass reads** — or the second pass will make the
+    decision again, without the information the first one had.
+
 ## Structure
 
 ```

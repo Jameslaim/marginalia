@@ -1,8 +1,12 @@
 ---
 name: plan_round
-version: "7"
+version: "8"
 stage: plan
-note: "v7 assesses coverage against the brief's PARTS TO COVER, then its
+note: "v8 stops naming a real language in its language-part example. At
+  checkpoint 2 the same named-language example in the map and expansion
+  prompts put that language in 6 of 6 topic-2 maps; it now says a second
+  language.
+  v7 assesses coverage against the brief's PARTS TO COVER, then its
   ALSO WANTED items, and says STOP when every part is covered. The brief's
   old required-items heading carried both conditions on each video and parts
   of the subject, and this prompt read it as coverage targets; checkpoint 1
@@ -73,8 +77,9 @@ round actually satisfy this?*
 
 REQUIRED OF EVERY VIDEO is not on that list. Those are conditions every kept
 video already met to be kept — the judges check them — not parts the library
-still has to find. A part that is a language or a market ("videos in Spanish as
-well as English") is covered only by a kept video in that language or market.
+still has to find. A part that is a language or a market ("videos in a second
+language as well as English") is covered only by a kept video in that language
+or market.
 
 - A part satisfied by a kept video is `YES`, and name the video.
 - A part listed under ALREADY IN THE LIBRARY BEFORE THIS RUN is `YES` too, and

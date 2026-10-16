@@ -469,6 +469,16 @@ class PlannedQuery:
     # Per filter, in the model's words. Kept beside the value in `filters_json`
     # so that reading the ledger answers "why this filter?" without a rerun.
     reasons: dict[str, str] = field(default_factory=dict)
+    # Why this query asked to escape the derived date window, or "" when it did
+    # not. **State on the query, never a filter.** A reply writes the waiver as
+    # `publishedAfter=any (reason)`; `validate()` moves it here on the pass that
+    # reads it, because `any` is not a value the search provider accepts and
+    # `filters` is exactly what is sent. It used to be dropped instead, so the
+    # second `validate()` every query meets — once where it was proposed, once
+    # before its round runs — saw an ordinary query and derived the window
+    # onto it: measured on 3 of 12 maps, on exactly the queries the map had
+    # exempted because their material is older than the window.
+    waiver: str = ""
 
     @property
     def key(self) -> tuple[str, tuple[tuple[str, str], ...]]:
@@ -494,14 +504,17 @@ class PlannedQuery:
         happened is worse than no row.
         """
         source = self.filters if applied is None else applied
-        return json.dumps(
-            {
-                name: {"value": value, "why": self.reasons.get(name, "")}
-                for name, value in source.as_dict().items()
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
+        recorded = {
+            name: {"value": value, "why": self.reasons.get(name, "")}
+            for name, value in source.as_dict().items()
+        }
+        if self.waiver:
+            # Not a filter that ran — a waiver is the *absence* of one — so it
+            # sits under its own key rather than as `publishedAfter`, and a
+            # reader of the row still sees that the window was kept off this
+            # query, and why.
+            recorded[FILTER_FIELD_RECENCY_WAIVER] = {"value": "any", "why": self.waiver}
+        return json.dumps(recorded, ensure_ascii=False, sort_keys=True)
 
 
 # What a revision does, and to which half of the map. Shared vocabulary: the
@@ -664,6 +677,7 @@ class TerritoryMap:
                         "filters": query.filters.as_dict(),
                         "reasons": query.reasons,
                         "variant_of": query.variant_of,
+                        "waiver": query.waiver,
                     }
                     for query in self.queries
                 ],

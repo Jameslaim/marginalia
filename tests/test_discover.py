@@ -3555,3 +3555,166 @@ def test_a_transcript_that_fits_resets_the_overflow_streak(config, ledger, libra
 
     assert judge.opening_calls == ids
     assert outcome.stopped_because != "context_window"
+
+
+# -- a waiver reaches the search as a waiver, never as a date or a filter -------
+#
+# Checkpoint 2: `Mapper.map` validated its queries, dropping a waiver's marker,
+# and the round validated them again and derived the window onto exactly the
+# queries the map had exempted — 3 of 12 maps. The planner's queries take the
+# same two passes. These run the real mapper and the real planner on a scripted
+# model and record every request the search provider receives.
+
+_PLUMBING = "home plumbing repairs"
+_PLUMBING_BRIEF = Brief(
+    topic=_PLUMBING,
+    text="INTENT\nFix common household plumbing faults.\n" + "x" * 200,
+    version="1/1",
+)
+_WAIVER_SPELLINGS = {"any", "any time", "anytime", "all", "all time", "none", "no", "off", "unset"}
+
+
+class _PlumbingJudge(FakeJudge):
+    def write_brief(self, topic: str, *, max_tokens=None) -> Brief:
+        return _PLUMBING_BRIEF
+
+
+class _ScriptedReply:
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.finish_reason = "stop"
+        self.usage = Usage(requests=1, input_tokens=100, output_tokens=50)
+        self.latency_s = 0.1
+
+
+class _ScriptedModel:
+    """Stands in for the model behind the real mapper or planner."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def complete(self, system, user, *, task=None, max_tokens=None):
+        return _ScriptedReply(self._text)
+
+
+@pytest.fixture()
+def search_requests(monkeypatch: pytest.MonkeyPatch):
+    """Every (query, filters) the search provider is asked for."""
+    requests: list[tuple[str, SearchFilters | None]] = []
+
+    def fake_provider(name, **_):
+        class P:
+            name = "fake"
+            last_filters = None
+
+            def search(self, query, limit=25, filters=None):
+                requests.append((query, filters))
+                self.last_filters = filters
+                return [result("aaaaaaaaaaa")]
+
+            def quota_remaining(self):
+                return None
+
+            def units_spent(self):
+                return 101
+
+            def units_per_search(self):
+                return 101
+
+            def applied_filters(self):
+                return self.last_filters or SearchFilters()
+
+        return P()
+
+    monkeypatch.setattr("marginalia.flow.search.get_search_provider", fake_provider)
+    return requests
+
+
+def _no_waiver_was_sent(requests) -> None:
+    for query, filters in requests:
+        value = ((filters.published_after if filters else None) or "").strip().lower()
+        assert value not in _WAIVER_SPELLINGS, f"{query!r} was sent publishedAfter={value!r}"
+
+
+_WAIVING_MAP = (
+    "CONCEPTS: tap repair\nVOCABULARY: ceramic cartridge\n"
+    "RECENCY: 12 months — the fittings changed this year\n\n"
+    "QUERY: compression tap washer replacement\nFROM: part: older taps\n"
+    "FILTERS: publishedAfter=any (compression taps are only in older videos)\n\n"
+    "QUERY: ceramic cartridge tap repair\nFROM: vocabulary: ceramic cartridge\n"
+    "FILTERS: none\n"
+)
+
+
+def test_a_map_waiver_reaches_the_search_without_a_date(
+    config, ledger, library, client, search_requests
+) -> None:
+    from marginalia.brain.territory import Mapper
+
+    outcome = run(
+        config, ledger, library, client, _PlumbingJudge(queries=[["fix a dripping tap"]]),
+        topic=_PLUMBING, max_rounds=1, mapper=Mapper(_ScriptedModel(_WAIVING_MAP)),
+    )
+
+    sent = dict(search_requests)
+    waived = sent["compression tap washer replacement"]
+    assert waived is None or waived.published_after is None, "no date reached the search"
+    assert sent["ceramic cartridge tap repair"].published_after is not None
+    assert sent["fix a dripping tap"].published_after is not None
+    _no_waiver_was_sent(search_requests)
+
+    # Counted once for the round, recorded once — by the map that read it.
+    assert outcome.rounds[0].recency_waived == 1
+    assert [item.field for item in outcome.territory.rejected] == ["recency-waiver"]
+    assert not any(item.is_recency_waiver for item in outcome.rejected_filters)
+
+    # The ledger row says the query was waived, and why.
+    row = next(
+        row for row in ledger.queries_for_run(outcome.run_id)
+        if row.query == "compression tap washer replacement"
+    )
+    recorded = json.loads(row.filters_json)
+    assert recorded["recency-waiver"]["why"] == "compression taps are only in older videos"
+    assert "publishedAfter" not in recorded
+
+
+_WAIVING_PLAN = (
+    "COVERAGE: older taps | NO | nothing kept shows a compression tap\n\n"
+    "QUERY: old compression tap rebuild\nFROM: gap — older taps\n"
+    "FILTERS: publishedAfter=any (compression taps are only in older videos)\n\n"
+    "QUERY: tap cartridge sizes compared\nFROM: gap — cartridge sizes\nFILTERS: none\n\n"
+    "RECOMMENDATION: CONTINUE — older taps still have nothing against them\n"
+)
+
+
+def test_a_planner_waiver_reaches_the_search_without_a_date(
+    config, ledger, library, client, search_requests
+) -> None:
+    from marginalia.brain.planner import Planner
+
+    territory = TerritoryMap(
+        topic=_PLUMBING, version="1", concepts=["tap repair"], vocabulary=["cartridge"],
+        recency=Recency(months=12, reason="the fittings changed this year"),
+    )
+
+    outcome = run(
+        config, ledger, library, client,
+        _PlumbingJudge(queries=[["fix a dripping tap"], ["unblock a sink"]]),
+        topic=_PLUMBING, max_rounds=2, mapper=FakeMapper(territory),
+        planner=Planner(_ScriptedModel(_WAIVING_PLAN)),
+    )
+
+    round_two = [query for query in outcome.rounds[1].planned]
+    by_text = {query.text: query for query in round_two}
+    assert by_text["old compression tap rebuild"].filters.published_after is None
+    assert by_text["old compression tap rebuild"].waiver
+    assert by_text["tap cartridge sizes compared"].filters.published_after is not None
+
+    sent = [filters for query, filters in search_requests if query == "old compression tap rebuild"]
+    assert sent and all(f is None or f.published_after is None for f in sent)
+    _no_waiver_was_sent(search_requests)
+
+    # One record (the planner's), one count (round two's).
+    assert sum(item.is_recency_waiver for item in outcome.rejected_filters) == 1
+    assert outcome.rounds[1].recency_waived == 1
+    assert outcome.rounds[0].recency_waived == 0

@@ -2630,6 +2630,66 @@ library-level goals among the parts and keep conditions minimal is a measurement
 not a claim: checkpoint 1 is re-run against these prompts before the map layer is
 looked at.
 
+### The map layer: waivers lost to a second validation, and examples that leak
+
+**What was measured.** Checkpoint 2 ran the map layer on the six fixed v2 briefs: 12
+maps of three samples each, under the repo's `territory/map.md` and under a copy whose
+two examples were about plumbing, plus the expansion and the round-1 list exactly as
+`_plan_round` builds it (`agent-walkthrough/checkpoint2/FINDINGS.md`).
+
+- **F1 — a waiver was undone before the search ran.** A map query may exempt itself
+  from the derived date window with `publishedAfter=any (reason)`. Every query meets
+  `validate()` twice — inside `Mapper.map` (or `Planner.plan`), then again in `_loop`
+  before its round — and the function was not idempotent. The first pass honoured the
+  waiver and dropped the marker; the second saw an ordinary query and derived the
+  window onto it. **3 of 12 maps**, on exactly the queries the map had exempted because
+  their material is older than the window. The comment above the second call said
+  running validate twice "costs nothing". The round's `recency_waived` counter was
+  wrong the same way: it counted the round pass's records, and that pass never saw a
+  map or planner waiver as one, so it reported zero.
+- **F2 — the map prompt's examples leaked.** Example-only vocabulary (`cache
+  breakpoint`, `cache_control`, `cached tokens`, `ReAct`) appeared in **3 of 3**
+  topic-1 maps under the repo prompt and **0 of 3** under the plumbing copy, and
+  reached the searches as queries the brief excluded (vendor-specific; agent-framework
+  code).
+- **F3 — a named-language example probably chose the language.** The brief fix added a
+  Spanish example to four prompts. Spanish then appeared in **6 of 6** topic-2 maps
+  and 2 of 3 expansions, including where the brief listed Hindi first; Hindi reached
+  2 of 6. Suggestive rather than proven — Spanish is also a large market — and the
+  same mechanism as F2.
+
+**The change.**
+
+- **`validate()` is idempotent.** A waiver now travels as state on the query,
+  `PlannedQuery.waiver` (its reason), never as a filter: `filters` is exactly what the
+  search provider is sent, and `any` is not a value it accepts. The pass that reads the
+  marker moves it there, records the waiver once, and logs it once; every later pass
+  meets a waived query, derives nothing onto it, records nothing and logs nothing. A
+  variant whose main query already ran keeps its band on a second pass, because
+  `already_run` texts now count as main queries. All three callers — `Mapper.map`,
+  `Planner.plan`, `_loop` — go through it unchanged, so all three are covered.
+- **Counted once per round.** `recency_waived` is computed from the queries the round
+  will search, through `waiver_applies` — the one definition the record also uses — so
+  a waiver from the map or the planner is counted in its round however many passes it
+  went through. A waiver that prevented nothing (`ANY` recency, a user who forbade
+  dates, a variant) is not counted.
+- **The ledger says so.** `filters_json` carries a `recency-waiver` entry with the
+  reason, under its own key rather than as `publishedAfter`, because no date ran; a
+  waived query with no other filter now gets a row value too.
+- **`territory/map.md` v6** adopts the measured plumbing passages for its intro and
+  output example, exactly as tested.
+- **No real language in an example.** `map.md`, `expand_queries.md`, `write_brief.md`
+  and `plan/round.md` say "a second language" or show placeholders, and the two query
+  prompts state the choice: the brief's languages in its order, one query each before
+  any repeats, otherwise the languages the subject is most made in — never one because
+  an example mentioned it.
+
+**Recorded, not changed.** The map's own refusals and waivers are on the stored map
+(`territory.rejected`) and not in `run.rejected_filters`, so the CLI's `filters:` and
+`waived:` lines list the planner's and the rounds' records only; that was already so
+before this change. And F4 — topic 2's window depends on which brief sample a run gets
+(36 months, `ANY`, 24) — is an owner question, not a fix.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

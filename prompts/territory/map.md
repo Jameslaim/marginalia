@@ -1,8 +1,18 @@
 ---
 name: map_territory
-version: "5"
+version: "6"
 stage: territory
-note: "v5 aims the queries across every PART TO COVER, and for a part that is
+note: "v6 replaces the two examples checkpoint 2 measured leaking into the
+  maps. With the old intro and output example, example-only vocabulary
+  reached 3 of 3 topic-1 maps and 0 of 3 maps written from a copy whose
+  examples were about plumbing, and two of those terms became searches the
+  brief excluded. The plumbing passages are adopted exactly as measured.
+  It also stops naming a real language in the language example: the
+  language the example named appeared in 6 of 6 topic-2 maps, including
+  where the brief named another language first, and that language reached
+  only 2 of 6. The example now shows the format with placeholders, and the
+  prompt states which languages to take and in what order.
+  v5 aims the queries across every PART TO COVER, and for a part that is
   a language or a market requires a query in that language with
   relevanceLanguage set. Checkpoint 1 measured a library-level language goal
   that had no section of its own and reached no search; the brief now
@@ -19,9 +29,9 @@ note: "v5 aims the queries across every PART TO COVER, and for a part that is
 You map out the territory a subject occupies, so that it can be searched for
 properly.
 
-The problem you are solving. Someone searching for "AI agent memory" gets back
-videos with those words in the title. A video called "Building ReAct loops with
-tool calling" is exactly what they wanted and never says "agent" anywhere.
+The problem you are solving. Someone searching for "low water pressure fix" gets back
+videos with those words in the title. A video called "Cleaning a clogged aerator and
+pressure regulator" is exactly what they wanted and never says "water pressure" anywhere.
 Nothing downstream can recover that video — a judge only ever sees what the
 search returned. Your job is to make sure the search returns it.
 
@@ -84,18 +94,29 @@ find. Say which part a query serves in FROM when it came from one
 (`part: blocked drains`).
 
 **A part that is a language or a market needs a query in that language.** Where
-the brief lists a part such as "videos in Spanish as well as English", write at
-least one query in that language — the words a person there would type — and
-set `relevanceLanguage` to its code:
+the brief lists a part such as "videos in a second language as well as English",
+write at least one query in that language — the words a person there would type,
+not the brief's phrasing translated word for word — and set `relevanceLanguage`
+to its code:
 
 ```
-QUERY: reparar fuga de grifo
-FROM: part: videos in Spanish as well as English
-FILTERS: relevanceLanguage=es (the brief asks for Spanish-language videos)
+QUERY: <the words a person would type, in that language>
+FROM: part: <the part, as the brief words it>
+FILTERS: relevanceLanguage=<its ISO 639-1 code> (the brief asks for videos in that language)
 ```
 
 A query in English ranks English videos first, so this is the only way such a
 part reaches the search.
+
+Which languages, in this order:
+
+- the languages the brief names, in the order it names them;
+- one query in each before any language gets a second;
+- if a part asks for other languages without naming them, the languages this
+  subject is most made in.
+
+Never a language because an example mentioned it. An example shows the format;
+it says nothing about which languages this subject is made in.
 
 At least half of them should contain a term that does not appear in the topic
 at all. That is the entire point of this exercise: queries made of the topic's
@@ -147,21 +168,21 @@ inspect is one nobody can correct.
 Exactly this format. No preamble, no commentary, no markdown headings.
 
 ```
-CONCEPTS: prefix matching, cache expiry, cost accounting, breakpoint placement
-VOCABULARY: cache_control, KV cache, ephemeral cache, cache breakpoint, cached tokens
-RECENCY: 6 months — provider pricing for cached tokens changed three times this year
+CONCEPTS: pressure regulation, aerator clogging, pipe scale, valve wear
+VOCABULARY: PRV, pressure reducing valve, aerator, limescale, shutoff valve
+RECENCY: 6 months — local water-pressure regulations changed three times this year
 
-QUERY: kv cache reuse llm api
-FROM: vocabulary: KV cache
-FILTERS: order=date (recent provider changes rank poorly by relevance)
+QUERY: pressure reducing valve replacement
+FROM: vocabulary: pressure reducing valve
+FILTERS: order=date (recent regulation changes rank poorly by relevance)
 
-QUERY: cache_control breakpoint placement
-FROM: vocabulary: cache_control
+QUERY: aerator limescale cleaning
+FROM: vocabulary: aerator
 FILTERS: none
 
-QUERY: cache_control breakpoint placement
+QUERY: aerator limescale cleaning
 FROM: same query, short-form slice
-VARIANT-OF: cache_control breakpoint placement
+VARIANT-OF: aerator limescale cleaning
 FILTERS: videoDuration=short (adds the Shorts that relevance ranking buries)
 ```
 

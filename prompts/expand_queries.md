@@ -1,8 +1,13 @@
 ---
 name: expand_queries
-version: "2"
+version: "3"
 stage: search
-note: "v2 aims the queries across every PART TO COVER, and writes a part that
+note: "v3 stops naming a real language or market in its example. At
+  checkpoint 2 the language the example named appeared in 2 of 3 topic-2
+  expansions and 6 of 6 maps, including where the brief named another
+  language first. The prompt now states which languages to take and in
+  what order, and the example names none.
+  v2 aims the queries across every PART TO COVER, and writes a part that
   is a language or a market in that language. Checkpoint 1 measured a
   library-level language goal with no section of its own: it landed among
   the required items in 5 of 6 briefs, where no judge could act on it, and
@@ -36,11 +41,21 @@ Spread the queries across the brief's PARTS TO COVER, so that every part has at
 least one query aimed at it before any part gets a second. The library is meant
 to cover every part, and a part no query reaches is a part nothing will find.
 
-Where a part is a language or a market — "videos in Spanish as well as English",
-"repairs as done in Brazil" — write at least one query for it in that language,
-the words a person there would type ("reparar fuga de grifo", not a translation
-of the brief's phrasing word for word). A query in English finds English videos,
-so this is the only way such a part reaches the search.
+Where a part is a language or a market — "videos in a second language as well
+as English", "repairs as done in a named market" — write at least one query for
+it in that language, the words a person there would type, not a translation of
+the brief's phrasing word for word. A query in English finds English videos, so
+this is the only way such a part reaches the search.
+
+Which languages, in this order:
+
+- the languages the brief names, in the order it names them;
+- one query in each before any language gets a second;
+- if a part asks for other languages without naming them, the languages this
+  subject is most made in.
+
+Never a language because an example mentioned it. An example shows the format;
+it says nothing about which languages this subject is made in.
 
 Rules:
 - Each query on its own line. Nothing else on the line.

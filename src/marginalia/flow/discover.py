@@ -56,7 +56,7 @@ from typing import Sequence
 
 from ..brain.judge import FULL_PROMPT, Judge
 from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
-from ..brain.territory import Mapper, validate
+from ..brain.territory import Mapper, validate, waiver_applies
 from ..config import Config
 from ..contracts import (
     EVIDENCE_CLEAR,
@@ -302,11 +302,17 @@ def _loop(
             return
 
         planned = _plan_round(config, judge, run, number, threads, from_planner)
-        # Validated again, and the planner's queries were validated once already
-        # when the plan was made. That is deliberate rather than sloppy: this is
-        # the only gate between a proposed filter and a search that excludes,
-        # and it is a pure function, so running it twice costs nothing and means
-        # no future path can reach the provider around it.
+        # Validated again: the map's queries were validated inside `Mapper.map`
+        # and the planner's when the plan was made. That is deliberate rather
+        # than sloppy — this is the only gate between a proposed filter and a
+        # search that excludes, so no future path can reach the provider around
+        # it. It costs nothing because `validate` is idempotent, which it was
+        # not until checkpoint 2: the first pass dropped a waiver's marker and
+        # this pass derived the window onto the queries the map had exempted.
+        # A waiver now travels on `PlannedQuery.waiver` and is recorded only by
+        # the pass that read it, so this pass adds no second record and no
+        # misleading "derived" line; what is new here is only this round's own
+        # duplicates and the expansion's queries.
         planned, rejections = validate(
             planned, recency=run.territory.recency, topic=run.brief.topic,
             already_run=seen_queries,
@@ -340,8 +346,17 @@ def _loop(
             duplicates_skipped=sum(
                 1 for item in rejections if item.is_duplicate_query
             ),
+            # Counted off the queries this round will search, not off this
+            # pass's records: a waiver is recorded where it was read — the map,
+            # the planner — so this pass never sees one as new, and counting
+            # records here missed every map and planner waiver. One per waived
+            # query in the round, however many passes it went through.
             recency_waived=sum(
-                1 for item in rejections if item.is_recency_waiver
+                1
+                for query in planned
+                if waiver_applies(
+                    query, recency=run.territory.recency, topic=run.brief.topic
+                )
             ),
             from_threads=bool(threads),
         )
@@ -801,7 +816,9 @@ def _log_query(
         query=query.text,
         origin=query.origin,
         origin_detail=query.origin_detail or None,
-        filters_json=query.filters_json(ran) if ran else None,
+        # A waived query with no other filter still gets a row value: that the
+        # window was kept off it, and why, is the part a reader needs.
+        filters_json=query.filters_json(ran) if ran or query.waiver else None,
         results_count=results,
         provider=provider,
         quota_units=units,
