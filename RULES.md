@@ -791,7 +791,7 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     they cite and none against a random one. That is the `[loosely quoted]` line.
 
 27. **A brief separates conditions every video must meet from parts the library
-    must cover.** *(Draft, pending review.)* REQUIRED OF EVERY VIDEO holds one to
+    must cover.** REQUIRED OF EVERY VIDEO holds one to
     four conditions, and a relevant video meets all of them. PARTS TO COVER holds
     two to eight parts of the subject, and a relevant video covers at least one;
     the library as a whole should cover every one. **Relevant means: every
