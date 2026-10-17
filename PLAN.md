@@ -2690,6 +2690,45 @@ two examples were about plumbing, plus the expansion and the round-1 list exactl
 before this change. And F4 — topic 2's window depends on which brief sample a run gets
 (36 months, `ANY`, 24) — is an owner question, not a fix.
 
+### The brief draft is checked before it is reviewed
+
+**What was measured.** `Judge.write_brief` makes a draft and then a review of it,
+and only the review was checked: the draft was looked at only after the review had
+already failed. Twice in 12 briefs made with the current `write_brief` prompt (once
+in each of two sessions), the draft reasoned to the 16,384-token ceiling and returned
+0 characters. The empty draft went to the review, which wrote a brief from the topic
+alone, and that was recorded as an ordinary reviewed brief — no warning, no field, no
+counter. Finished drafts with that prompt used 7,725–14,007 output tokens; with the
+earlier, shorter prompts 0 of 18 were cut, the largest at 14,469. A longer prompt
+reasons longer, and the reasoning bills against the same ceiling.
+
+**The change.**
+
+- **A draft that is cut off, empty or has no brief section is never reviewed.** One
+  fresh draft is drawn at the same ceiling. A finished draft that only lacks a
+  section still goes to the review, whose job is closing such gaps.
+- **Two unusable drafts stop the run** with `BriefUnusable`, before the run row is
+  written: nothing is searched or recorded, and the message names each attempt and
+  what to change. Going on would spend search quota and store videos judged against
+  a brief written from the topic alone — the invisible mistake — where stopping costs
+  a rerun.
+- **The ceiling doubles to 32,768**, about twice the largest finished draft. Unused
+  headroom costs nothing under per-token billing; the cost of a runaway is that it
+  takes twice as long to be cut.
+- **Recorded on the run (rule 14).** The brief carries its draft attempts, each
+  unusable draft's problem, and whether the review was used; `runs.brief_outcome`
+  stores it, the CLI report prints a line when either happened, the JSON carries it,
+  and the exported `brief.md` says so. An unusable review used to be one log line.
+- **Rule 25's sibling.** A cut query expansion now drops its last line, which may be
+  half a query; the finished lines stand alone. The other model calls already
+  discard a cut reply (map, planner, baseline, selector, stage 2, note) or flag it
+  (answer); stage 1 resolves a cut line toward MAYBE; ask's escalation only reads
+  ids from its first reply and refuses any it cannot match.
+
+**What this does not settle.** Whether the doubled ceiling and one redraw are enough
+is a sampled rate, re-measured on 12 briefs after this change; a topic with many
+parts reasons longest and is the one most likely to need the redraw or reach the stop.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

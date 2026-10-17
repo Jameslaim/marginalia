@@ -1289,3 +1289,180 @@ def test_queries_are_expanded_from_a_brief_that_quotes_template_syntax(caplog) -
     assert queries == ["first query", "second query"]
     assert len(sent) == 1 and sent[0].count(_SOURCE) == 2, "the brief and the concept, once each"
     assert "zqsourcetokenqz" not in caplog.text
+
+
+# -- a draft is checked before it is reviewed ---------------------------------
+#
+# Measured: 2 of 12 drafts with the current prompt reasoned to the token
+# ceiling and returned 0 characters. The empty draft went to the review, which
+# wrote a brief from the topic alone, and the result was recorded as an
+# ordinary reviewed brief — no warning, no field, no counter.
+
+_WHOLE_REVIEW = (
+    "INTENT\nFix the faults a householder meets most often.\n\n"
+    "REQUIRED OF EVERY VIDEO\n- explains why the fault happens\n\n"
+    "PARTS TO COVER\n- leaking taps\n- blocked drains\n\n"
+    "EXCLUDED\n- drain-cleaner adverts\n"
+)
+
+
+def _sending_brief_judge(*replies, tmp_path):
+    """A brief judge whose transport also records the user message of each call."""
+    from conftest import make_config
+
+    script = list(replies)
+    sent: list[str] = []
+
+    def transport(**kwargs):
+        sent.append(kwargs["messages"][-1]["content"])
+        return script.pop(0)
+
+    judge = Judge(LlmClient(make_config(tmp_path).llm, transport=transport, sleep=lambda _: None))
+    return judge, sent
+
+
+def test_an_empty_draft_cut_off_at_the_ceiling_is_drawn_again_not_reviewed(
+    tmp_path, caplog
+) -> None:
+    """The measured failure: `finish_reason=length` and nothing in the text."""
+    judge, sent = _sending_brief_judge(
+        _BriefResponse("", finish_reason="length"),
+        _BriefResponse(_DRAFT),
+        _BriefResponse(_WHOLE_REVIEW),
+        tmp_path=tmp_path,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        brief = judge.write_brief(TOPIC)
+
+    assert len(sent) == 3, "draft, draft again, review"
+    assert _DRAFT.strip() in sent[2], "the review was given the second draft"
+    assert brief.text == _WHOLE_REVIEW.strip()
+    assert brief.draft_attempts == 2
+    assert len(brief.draft_problems) == 1
+    assert brief.draft_problems[0].startswith("cut off at the token ceiling")
+    assert "0 characters" in brief.draft_problems[0]
+    assert brief.final_is == "review"
+    assert "brief draft 1 of 2 unusable" in caplog.text
+
+
+def test_a_cut_draft_with_partial_text_never_reaches_the_review(tmp_path) -> None:
+    """A fragment whose last section is half-written reads as a whole brief to
+    the review. It is drawn again, and its text is sent nowhere."""
+    fragment = (
+        "INTENT\nA half-written account of pipe repair.\n\n"
+        "REQUIRED OF EVERY VIDEO\n- explains the cause\n\nPARTS TO COVER\n- leaking ta"
+    )
+    judge, sent = _sending_brief_judge(
+        _BriefResponse(fragment, finish_reason="length"),
+        _BriefResponse(_DRAFT),
+        _BriefResponse(_WHOLE_REVIEW),
+        tmp_path=tmp_path,
+    )
+
+    brief = judge.write_brief(TOPIC)
+
+    assert "half-written account" not in sent[2], "the fragment was sent nowhere"
+    assert _DRAFT.strip() in sent[2]
+    assert brief.draft_attempts == 2
+    assert f"{len(fragment.strip())} characters" in brief.draft_problems[0]
+
+
+@pytest.mark.parametrize(
+    "bad, problem",
+    [("", "empty"), ("   \n ", "empty"), ("I cannot help with that.", "no brief section")],
+    ids=["empty", "whitespace", "no-sections"],
+)
+def test_a_finished_draft_that_is_not_a_draft_is_drawn_again(bad, problem, tmp_path) -> None:
+    judge, sent = _sending_brief_judge(
+        _BriefResponse(bad), _BriefResponse(_DRAFT), _BriefResponse(_WHOLE_REVIEW),
+        tmp_path=tmp_path,
+    )
+
+    brief = judge.write_brief(TOPIC)
+
+    assert brief.draft_problems == (problem,)
+    assert _DRAFT.strip() in sent[2]
+
+
+def test_a_finished_draft_missing_a_section_is_still_reviewed(tmp_path) -> None:
+    """Closing a draft's gaps is the review's job — a missing EXCLUDED is its
+    most common repair — so only a draft with no brief at all is drawn again."""
+    gappy = "INTENT\nFix taps.\n\nPARTS TO COVER\n- leaking taps\n"
+    judge, sent = _sending_brief_judge(
+        _BriefResponse(gappy), _BriefResponse(_WHOLE_REVIEW), tmp_path=tmp_path
+    )
+
+    brief = judge.write_brief(TOPIC)
+
+    assert len(sent) == 2
+    assert brief.draft_attempts == 1 and brief.draft_problems == ()
+    assert brief.text == _WHOLE_REVIEW.strip()
+
+
+def test_no_usable_draft_stops_before_the_review_and_says_why(tmp_path) -> None:
+    """Two unusable drafts: the run stops before it starts. Nothing is reviewed,
+    and the message names each attempt and what to change."""
+    from marginalia.brain.judge import BriefUnusable
+
+    judge, sent = _sending_brief_judge(
+        _BriefResponse("", finish_reason="length"),
+        _BriefResponse("partial INTENT", finish_reason="length"),
+        tmp_path=tmp_path,
+    )
+
+    with pytest.raises(BriefUnusable) as caught:
+        judge.write_brief(TOPIC)
+
+    assert len(sent) == 2, "never reviewed"
+    message = str(caught.value)
+    assert "attempt 1: cut off" in message and "attempt 2: cut off" in message
+    assert "brief_max_tokens" in message and "Nothing was searched or recorded" in message
+    assert len(caught.value.problems) == 2
+
+
+def test_an_ordinary_brief_records_one_draft_reviewed(tmp_path) -> None:
+    judge, _ = _sending_brief_judge(
+        _BriefResponse(_DRAFT), _BriefResponse(_WHOLE_REVIEW), tmp_path=tmp_path
+    )
+
+    brief = judge.write_brief(TOPIC)
+
+    assert brief.outcome == {
+        "draft_attempts": 1, "draft_problems": [], "review_problem": "", "final_is": "review",
+    }
+
+
+def test_an_unusable_review_is_recorded_on_the_brief(tmp_path) -> None:
+    """The fallback to the unreviewed draft used to be one log line. It is now
+    a field, so the run records it."""
+    judge, _ = _sending_brief_judge(
+        _BriefResponse(_DRAFT), _BriefResponse("", finish_reason="length"), tmp_path=tmp_path
+    )
+
+    brief = judge.write_brief(TOPIC)
+
+    assert brief.text == _DRAFT.strip()
+    assert brief.final_is == "draft"
+    assert brief.review_problem == "cut off at the token ceiling"
+    assert brief.outcome["final_is"] == "draft"
+
+
+def test_a_cut_query_expansion_drops_its_last_line(tmp_path, caplog) -> None:
+    """Rule 25's sibling: the line being written at the ceiling may be half a
+    query, and a fragment is still a valid-looking search. The finished lines
+    stand alone, so they are kept."""
+    from marginalia.contracts import Brief
+
+    judge, _ = _sending_brief_judge(
+        _BriefResponse("fix a dripping tap\nunblock a kitchen sink\nreplace a tap wa",
+                       finish_reason="length"),
+        tmp_path=tmp_path,
+    )
+    brief = Brief(topic=TOPIC, text=_DRAFT, version="1/1")
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.brain.judge"):
+        queries = judge.expand_queries(brief, count=9)
+
+    assert queries == ["fix a dripping tap", "unblock a kitchen sink"]
+    assert "cut off at the token ceiling" in caplog.text

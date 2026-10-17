@@ -1157,6 +1157,30 @@ class Brief:
     topic: str
     text: str
     version: str
+    # How the brief was made, so a run that went ahead on a weakened one says
+    # so on the run rather than in one log line (rule 14). `draft_attempts` is
+    # 1 when the first draft was usable; each unusable draft's problem — cut
+    # off at the token ceiling, empty, no brief sections — is kept in order.
+    # `review_problem` is set when the review was unusable and the draft became
+    # the brief unreviewed.
+    draft_attempts: int = 1
+    draft_problems: tuple[str, ...] = ()
+    review_problem: str = ""
+
+    @property
+    def final_is(self) -> str:
+        """``review`` normally; ``draft`` when the review could not be used."""
+        return "draft" if self.review_problem else "review"
+
+    @property
+    def outcome(self) -> dict[str, object]:
+        """What `runs.brief_outcome` stores and the run report prints."""
+        return {
+            "draft_attempts": self.draft_attempts,
+            "draft_problems": list(self.draft_problems),
+            "review_problem": self.review_problem,
+            "final_is": self.final_is,
+        }
 
     @property
     def intent(self) -> str:

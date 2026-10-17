@@ -673,3 +673,34 @@ def test_a_degraded_decision_shows_its_ranges_in_the_report(config, ledger, libr
     export_run(config, ledger, library, RUN)
 
     assert "relevant: UNAVAILABLE" in read(library, "report.md")
+
+
+def test_the_exported_brief_says_how_it_was_made_when_it_was_not_ordinary(
+    config, ledger, library
+) -> None:
+    ledger.start_run(
+        RUN, "postgres connection pooling", brief=BRIEF, brief_version="5/6",
+        model="test-model",
+        brief_outcome=json.dumps({
+            "draft_attempts": 2,
+            "draft_problems": ["cut off at the token ceiling (32768 output tokens, 0 characters)"],
+            "review_problem": "",
+            "final_is": "review",
+        }),
+    )
+
+    export_run(config, ledger, library, RUN)
+
+    text = read(library, "brief.md")
+    assert "Draft 1 was unusable (cut off at the token ceiling" in text
+    assert "drawn again" in text
+
+
+def test_the_exported_brief_adds_nothing_for_an_ordinary_or_older_run(
+    config, ledger, library
+) -> None:
+    a_run(ledger)
+
+    export_run(config, ledger, library, RUN)
+
+    assert "unusable" not in read(library, "brief.md")

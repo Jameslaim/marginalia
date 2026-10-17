@@ -1553,3 +1553,39 @@ def test_an_existing_ledger_gains_the_relevant_column_and_keeps_every_row(
     assert before["quota"] == 11
     assert quota_after == [(*row, None) for row in quota_before]
     assert old.relevant is None
+
+
+def test_an_older_ledger_gains_brief_outcome_and_keeps_its_runs(tmp_path: Path) -> None:
+    """How a brief was made is recorded on the run. A run made before drafts
+    were checked reads NULL, which is the honest answer: nothing checked."""
+    import sqlite3
+
+    path = tmp_path / "ledger.db"
+    with Ledger(path) as ledger:
+        ledger.start_run("run000000001", "home plumbing", brief="INTENT\nx")
+    # Rebuild `runs` as it was before the column: every other column, same rows.
+    connection = sqlite3.connect(path)
+    columns = [
+        row[1] for row in connection.execute("PRAGMA table_info(runs)")
+        if row[1] != "brief_outcome"
+    ]
+    listed = ", ".join(columns)
+    connection.executescript(
+        f"""
+        CREATE TABLE runs_old AS SELECT {listed} FROM runs;
+        DROP TABLE runs;
+        ALTER TABLE runs_old RENAME TO runs;
+        """
+    )
+    connection.commit()
+    assert "brief_outcome" not in {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+    connection.close()
+
+    with Ledger(path) as ledger:
+        old = ledger.get_run("run000000001")
+        assert old is not None and old.brief_outcome is None
+        ledger.start_run(
+            "run000000002", "home plumbing", brief="INTENT\ny",
+            brief_outcome='{"draft_attempts": 2}',
+        )
+        assert ledger.get_run("run000000002").brief_outcome == '{"draft_attempts": 2}'

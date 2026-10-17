@@ -198,7 +198,10 @@ def discover(
     # The brief costs two requests and must exist before the run row can be
     # written — but the row must exist before any *judging* happens, which is
     # what the ordering rule is protecting. A crash during brief-writing leaves
-    # no run, and also no decisions to explain.
+    # no run, and also no decisions to explain. So does `BriefUnusable`, raised
+    # when no draft was usable: stopping here spends nothing beyond the calls
+    # already made, where a run on a brief written from the topic alone would
+    # spend quota and store what that brief let through.
     brief = judge.write_brief(topic, max_tokens=config.discover.brief_max_tokens)
 
     ledger.start_run(
@@ -207,6 +210,10 @@ def discover(
         brief=brief.text,
         brief_version=brief.version,
         model=client.model,
+        # A retried draft or an unreviewed brief is recorded on the run, not
+        # only logged (rule 14). Stored whenever there is a brief at all, so a
+        # NULL means a run made before drafts were checked.
+        brief_outcome=json.dumps(brief.outcome),
     )
 
     run = DiscoverRun(

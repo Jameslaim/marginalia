@@ -603,3 +603,65 @@ def test_a_genuinely_refused_filter_is_still_named_in_the_run_summary() -> None:
     assert "filters:  1 rejected before executing" in lines
     assert "would have excluded" in lines
     assert "skipped as already run" not in lines
+
+
+# -- how the brief was made ----------------------------------------------------
+
+
+def test_the_report_says_when_a_draft_was_drawn_again_or_the_review_was_unusable(
+    stubbed, capsys
+) -> None:
+    from dataclasses import replace
+
+    stubbed["run"] = fake_run(brief=replace(
+        BRIEF,
+        draft_attempts=2,
+        draft_problems=("cut off at the token ceiling (32768 output tokens, 0 characters)",),
+        review_problem="no EXCLUDED section",
+    ))
+
+    assert main(["discover", "home plumbing"]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "draft 1 unusable (cut off at the token ceiling" in out
+    assert "drawn again" in out
+    assert "review unusable (no EXCLUDED section); the unreviewed draft is the brief" in out
+
+
+def test_an_ordinary_brief_adds_no_line_to_the_report(stubbed, capsys) -> None:
+    assert main(["discover", "home plumbing"]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "unusable" not in out
+
+
+def test_the_json_carries_how_the_brief_was_made(stubbed, capsys) -> None:
+    from dataclasses import replace
+
+    stubbed["run"] = fake_run(brief=replace(BRIEF, draft_attempts=2, draft_problems=("empty",)))
+
+    assert main(["discover", "home plumbing", "--json"]) == EXIT_OK
+
+    body = json.loads(capsys.readouterr().out)
+    assert body["brief_outcome"] == {
+        "draft_attempts": 2, "draft_problems": ["empty"], "review_problem": "",
+        "final_is": "review",
+    }
+
+
+def test_no_usable_draft_ends_the_command_with_one_sentence(
+    configured, monkeypatch, capsys
+) -> None:
+    from marginalia.brain.judge import BriefUnusable
+
+    def no_draft(*args, **kwargs):
+        raise BriefUnusable(["cut off at the token ceiling", "cut off at the token ceiling"])
+
+    monkeypatch.setattr("marginalia.cli.discover", no_draft)
+
+    assert main(["discover", "home plumbing"]) != EXIT_OK
+
+    err = capsys.readouterr().err
+    assert "no usable brief draft after 2 attempt(s)" in err
+    assert "Nothing was searched or recorded" in err
+    assert "Traceback" not in err and "BriefUnusable:" not in err

@@ -60,6 +60,7 @@ from ..llm import (
 log = logging.getLogger(__name__)
 
 __all__ = [
+    "BriefUnusable",
     "FULL_PROMPT",
     "Judge",
     "guesses",
@@ -794,15 +795,42 @@ class Judge:
         A truncated review is quiet in a way the map's was not: `usable` falls
         back to the draft, so the run continues with an *unreviewed* brief and
         one warning line. Everything judged in that run is then measured against
-        a brief that never had its gaps closed.
+        a brief that never had its gaps closed. That fallback is now recorded on
+        the brief (`review_problem`), and so on the run.
+
+        **The draft is checked before it is reviewed.** It used to be checked
+        only after the review had failed, so a draft that reasoned to the token
+        ceiling and returned nothing went to the review as if it were a draft,
+        and the review wrote a brief from the topic alone. Measured: 2 of 12
+        drafts with the current prompt, recorded as ordinary reviewed briefs, no
+        warning. A cut, empty or heading-less draft is now drawn again once —
+        a fresh sample at the same ceiling — and if that one is unusable too,
+        `BriefUnusable` stops the run. That happens before the run row exists,
+        so stopping spends nothing but the calls already made, and it is the
+        visible mistake; going on would spend search quota and store videos
+        judged against a brief nobody wrote from a draft.
         """
         first = self.prompt("write_brief")
-        drafted = self.client.complete(
-            "You write precise research briefs.",
-            first.render(topic=topic),
-            task="write_brief",
-            max_tokens=max_tokens,
-        )
+        problems: list[str] = []
+        drafted: Reply | None = None
+        for _ in range(_DRAFT_ATTEMPTS):
+            candidate = self.client.complete(
+                "You write precise research briefs.",
+                first.render(topic=topic),
+                task="write_brief",
+                max_tokens=max_tokens,
+            )
+            problem = _draft_problem(candidate)
+            if not problem:
+                drafted = candidate
+                break
+            problems.append(problem)
+            log.warning(
+                "judge: brief draft %d of %d unusable (%s)",
+                len(problems), _DRAFT_ATTEMPTS, problem,
+            )
+        if drafted is None:
+            raise BriefUnusable(problems)
 
         second = self.prompt("review_brief")
         revised = self.client.complete(
@@ -828,6 +856,9 @@ class Judge:
             topic=topic,
             text=drafted.text if problem else revised.text,
             version=f"{first.version}/{second.version}",
+            draft_attempts=len(problems) + 1,
+            draft_problems=tuple(problems),
+            review_problem=problem,
         )
 
     def expand_queries(
@@ -848,7 +879,18 @@ class Judge:
             prompt.render(brief=brief.text, count=count, extra=extra),
             task="expand_queries",
         )
-        queries = parse_queries(reply.text, count)
+        text = reply.text
+        if reply.finish_reason == "length":
+            # The line being written when the ceiling hit may be half a query,
+            # and a fragment is still a valid-looking search. Drop that line and
+            # keep the finished ones: unlike a brief or a map, each query stands
+            # alone, so the rest of the list is not made wrong by the cut.
+            text = text.rstrip().rpartition("\n")[0]
+            log.warning(
+                "judge: query expansion was cut off at the token ceiling; "
+                "its last line was dropped as a possible fragment"
+            )
+        queries = parse_queries(text, count)
         if not queries:
             log.warning("judge: query expansion returned nothing parseable; falling back to topic")
             return [brief.topic]
@@ -1093,6 +1135,59 @@ def _brief_problem(reply: Reply) -> str:
     if empty:
         return "empty " + ", ".join(empty) + " section"
     return ""
+
+
+# Two draws of the draft: the first, and one fresh sample when it is unusable.
+# A second draw is the cheap fix for a sampled overrun — the reasoning length
+# varies from call to call, and the ceiling was hit by 2 of 12 drafts, not by a
+# topic. A third would mostly be paying for a ceiling that is set too low or a
+# prompt that does not finish, which is a configuration problem to report.
+_DRAFT_ATTEMPTS = 2
+
+
+def _draft_problem(reply: Reply) -> str:
+    """Why this draft cannot go to the review, or ``""`` if it can.
+
+    Narrower than `_brief_problem` on purpose. The review exists to close a
+    draft's gaps — a missing EXCLUDED section is its most common repair — so a
+    finished draft missing a section is still a draft. What is not a draft:
+
+    - one cut off at the token ceiling, even with text: a fragment whose last
+      section is half-written reads as a whole brief to the review;
+    - an empty one, which is what a reply that spent its whole budget
+      reasoning returns — the review then writes a brief from the topic alone;
+    - one with no brief section at all (a refusal, a preamble, a critique).
+    """
+    if reply.finish_reason == "length":
+        return (
+            f"cut off at the token ceiling ({reply.usage.output_tokens} output tokens, "
+            f"{len(reply.text.strip())} characters)"
+        )
+    if not reply.text.strip():
+        return "empty"
+    if not _brief_sections(reply.text):
+        return "no brief section"
+    return ""
+
+
+class BriefUnusable(RuntimeError):
+    """No usable draft after every attempt. The run stops before it starts.
+
+    Raised before `discover` writes its run row, so nothing is recorded and no
+    search quota is spent. The message says what each attempt returned and
+    what to change, because the likely cause is a ceiling or an effort setting
+    and both are the user's to fix.
+    """
+
+    def __init__(self, problems: Sequence[str]) -> None:
+        self.problems = list(problems)
+        listed = "; ".join(f"attempt {n}: {p}" for n, p in enumerate(self.problems, start=1))
+        super().__init__(
+            f"no usable brief draft after {len(self.problems)} attempt(s) ({listed}). "
+            "Nothing was searched or recorded. If every attempt was cut off, raise "
+            "[discover] brief_max_tokens or lower [llm.tasks.write_brief] reasoning "
+            "effort; otherwise run it again."
+        )
 
 
 def territory_lines(territory: TerritoryMap | None) -> str:

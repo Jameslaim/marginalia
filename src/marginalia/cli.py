@@ -81,6 +81,7 @@ from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
 from .flow.store import reconcile_stored, store_transcript, unreconciled
+from .brain.judge import BriefUnusable
 from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
@@ -133,6 +134,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SelectionFailed as exc:
         # Same shape as AskTooLarge: a sentence naming what happened and
         # what was not sent, rather than a class name and a traceback.
+        return _error(str(exc), EXIT_FAILED)
+    except BriefUnusable as exc:
+        # The run stopped before it started: no draft was usable, so nothing
+        # was searched or recorded. The message names each attempt and what
+        # to change.
         return _error(str(exc), EXIT_FAILED)
     except AskTooLarge as exc:
         # A sentence someone can act on, not a class name and a traceback. The
@@ -378,8 +384,28 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _brief_outcome_lines(brief) -> list[str]:
+    """Only when the brief was not made the ordinary way: one draft, reviewed.
+
+    Rule 14. A retried draft and an unreviewed brief each change what every
+    later verdict was measured against, and both used to be one log line at
+    most — a draft cut off with nothing in it was not even that.
+    """
+    lines = []
+    for number, problem in enumerate(brief.draft_problems, start=1):
+        lines.append(
+            f"          draft {number} unusable ({problem}); drawn again"
+        )
+    if brief.review_problem:
+        lines.append(
+            f"          review unusable ({brief.review_problem}); the unreviewed draft is the brief"
+        )
+    return lines
+
+
 def _discover_report(run: DiscoverRun) -> list[str]:
     lines = [f"brief:    {run.brief.intent}"]
+    lines.extend(_brief_outcome_lines(run.brief))
     lines.extend(_territory_lines(run))
     for report in run.rounds:
         source = "queries from threads" if report.from_threads else "queries"
@@ -629,6 +655,9 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         "brief": run.brief.text,
         "brief_version": run.brief.version,
         "brief_intent": run.brief.intent,
+        # How the brief was made: draft attempts and why any failed, and
+        # whether the review was used. Also stored on the run.
+        "brief_outcome": run.brief.outcome,
         # The map in full, and what it cost. Same argument as printing the
         # brief: when results look wrong the first question is what the run
         # thought this topic covered, and a list of queries is the conclusion

@@ -491,11 +491,37 @@ def _render_brief(run: RunRow) -> str:
             f"# Brief — {run.topic}",
             "",
             f"Run `{run.run_id}`, written by prompt v{run.brief_version or MISSING}.",
+            *_brief_made(run.brief_outcome),
             "",
             run.brief.strip() or "(the run stored no brief)",
             "",
         ]
     )
+
+
+def _brief_made(brief_outcome: str | None) -> list[str]:
+    """How the brief was made, when it was not one draft and one review.
+
+    Nothing for a run made before drafts were checked (NULL) or for the
+    ordinary case, so the line appears exactly when a reader needs it: a
+    retried draft or an unreviewed brief changes what every verdict in the run
+    was measured against.
+    """
+    if not brief_outcome:
+        return []
+    try:
+        outcome = json.loads(brief_outcome)
+    except ValueError:
+        return ["", f"How it was made: {_cell(brief_outcome)}"]
+    lines = []
+    for number, problem in enumerate(outcome.get("draft_problems") or [], start=1):
+        lines.append(f"- Draft {number} was unusable ({problem}) and was drawn again.")
+    if outcome.get("review_problem"):
+        lines.append(
+            f"- The review was unusable ({outcome['review_problem']}); "
+            "this is the unreviewed draft."
+        )
+    return ["", *lines] if lines else []
 
 
 def render_map(run: RunRow, territory: dict[str, Any] | None) -> str:

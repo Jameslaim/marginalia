@@ -3796,3 +3796,64 @@ def test_a_planner_waiver_reaches_the_search_without_a_date(
     assert sum(item.is_recency_waiver for item in outcome.rejected_filters) == 1
     assert outcome.rounds[1].recency_waived == 1
     assert outcome.rounds[0].recency_waived == 0
+
+
+# -- the brief's making is recorded on the run --------------------------------
+
+
+class _RetriedDraftJudge(FakeJudge):
+    def write_brief(self, topic: str, *, max_tokens=None) -> Brief:
+        return replace(
+            BRIEF,
+            draft_attempts=2,
+            draft_problems=("cut off at the token ceiling (32768 output tokens, 0 characters)",),
+        )
+
+
+def test_a_retried_draft_is_recorded_on_the_run(
+    config, ledger, library, client, searches
+) -> None:
+    """Rule 14: on the run, not only in a log line."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, _RetriedDraftJudge(), max_rounds=1)
+
+    stored = json.loads(ledger.get_run(outcome.run_id).brief_outcome)
+    assert stored["draft_attempts"] == 2
+    assert stored["draft_problems"][0].startswith("cut off at the token ceiling")
+    assert stored["final_is"] == "review"
+
+
+def test_an_ordinary_brief_is_recorded_as_one_draft_reviewed(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
+
+    assert json.loads(ledger.get_run(outcome.run_id).brief_outcome) == {
+        "draft_attempts": 1, "draft_problems": [], "review_problem": "", "final_is": "review",
+    }
+
+
+class _NoDraftJudge(FakeJudge):
+    def write_brief(self, topic: str, *, max_tokens=None) -> Brief:
+        from marginalia.brain.judge import BriefUnusable
+
+        raise BriefUnusable(["cut off at the token ceiling", "empty"])
+
+
+def test_no_usable_draft_stops_before_the_run_row_and_any_search(
+    config, ledger, library, client, searches
+) -> None:
+    """Stopping here spends nothing: no run row, no search, no quota. Going on
+    would have searched and stored against a brief written from the topic."""
+    from marginalia.brain.judge import BriefUnusable
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    with pytest.raises(BriefUnusable):
+        run(config, ledger, library, client, _NoDraftJudge(), max_rounds=1)
+
+    assert ledger.list_runs() == []
+    assert searches["calls"] == []

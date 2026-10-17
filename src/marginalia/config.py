@@ -118,7 +118,15 @@ DEFAULT_PLANNER_QUERIES = 6
 # A ceiling sized to the output is therefore sized to the wrong thing — headroom
 # has to cover a reasoning excursion, and unused headroom costs nothing under
 # per-token billing.
-DEFAULT_BRIEF_MAX_TOKENS = 16384
+#
+# **Then the draft hit it.** Six drafts with the current `write_brief` prompt
+# used 7,725–14,007 output tokens when they finished, and one reasoned to the
+# 16,384 ceiling and returned 0 characters; across two sessions, 2 of 12. The
+# earlier, shorter prompts finished 18 of 18 at up to 14,469. The longer the
+# prompt, the longer the reasoning, so the ceiling is doubled to about twice
+# the largest finished draft, and `write_brief` retries one cut draft rather
+# than reviewing an empty one (see `Judge.write_brief`).
+DEFAULT_BRIEF_MAX_TOKENS = 32768
 # The library-coverage call. One line per brief item, so the output is small —
 # but it is the fifth long-structured-output task on this provider and the
 # reasoning is what overruns, not the answer. Sized like the others.

@@ -201,7 +201,9 @@ CREATE TABLE IF NOT EXISTS runs (
   stopped_because TEXT,
   territory_map     TEXT,        -- the map B4 worked from, stored whole
   territory_version TEXT,
-  library_baseline  TEXT         -- what the library already covered, before round 1
+  library_baseline  TEXT,        -- what the library already covered, before round 1
+  -- how the brief was made: draft retries, review fallback
+  brief_outcome     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs(topic);
 
@@ -302,6 +304,11 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # every run made before the planner had a coverage baseline, which is
     # the honest answer: nobody asked.
     ("runs", "library_baseline", "TEXT"),
+    # How the brief was made: how many drafts were drawn and why each unusable
+    # one was, and whether the review was used. NULL on every earlier run,
+    # which is the honest answer — nothing checked a draft before this, and a
+    # cut one went to the review unrecorded.
+    ("runs", "brief_outcome", "TEXT"),
     ("quota", "exhausted_at", "TEXT"),
 )
 
@@ -492,6 +499,8 @@ class RunRow:
     territory_map: str | None = None
     territory_version: str | None = None
     library_baseline: str | None = None
+    # JSON: draft_attempts, draft_problems, review_problem, final_is.
+    brief_outcome: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> RunRow:
@@ -1381,6 +1390,7 @@ class Ledger:
         brief: str,
         brief_version: str | None = None,
         model: str | None = None,
+        brief_outcome: str | None = None,
     ) -> RunRow:
         """Open a run. Written before the first model call, always.
 
@@ -1391,10 +1401,15 @@ class Ledger:
         with self._conn:
             self._conn.execute(
                 """
-                INSERT INTO runs (run_id, topic, brief, brief_version, model, started_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO runs (
+                    run_id, topic, brief, brief_version, model, started_at, brief_outcome
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, normalise_topic(topic), brief, brief_version, model, _utcnow()),
+                (
+                    run_id, normalise_topic(topic), brief, brief_version, model,
+                    _utcnow(), brief_outcome,
+                ),
             )
         log.info("run %s started for %r", run_id, topic)
         return self.get_run(run_id)  # type: ignore[return-value]
