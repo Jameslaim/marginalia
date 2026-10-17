@@ -871,6 +871,18 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     to relax one a part's videos can meet. A stage-1 NO that guesses is MAYBE in
     code, under rule 8, kept in `said` and counted in `guessed_no`.
 
+30. **A reply that feeds another call is checked before it is fed.** A model reply
+    passed into a second call — a draft into its review, a plan into the next round, a
+    query list into the search — must have finished and must be the thing it claims to be.
+    Checked only afterwards, it is not checked at all: the review of an empty draft wrote a
+    brief from the topic alone and looked like a reviewed one (2 of 12 drafts with the
+    `write_brief` v5 prompt at a 16,384-token ceiling). What a step does with an unusable
+    reply depends on the step — the brief draft is drawn again once and then stops the run
+    before anything spends quota or records a decision; a cut query list drops its
+    possibly half-written last line; the map and the planner discard a cut reply — but it
+    is never passed on as if it were whole, and never silently. How the brief was made is
+    recorded on the run (`runs.brief_outcome`).
+
 ## Structure
 
 ```
