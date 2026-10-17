@@ -862,6 +862,15 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     behind something every later pass reads** — or the second pass will make the
     decision again, without the information the first one had.
 
+29. **A REQUIRED item must be one every PART's videos can meet.** A requirement
+    worded around one part's subject rejects the videos of every other part, and
+    both judges obey REQUIRED over the parts and over any edge case: checkpoint 3
+    measured stage 1 refusing 3 explainers of a listed part and stage 2 refusing 2
+    more on their whole transcripts. The brief prompts test each item against each
+    part; the judges read an item so that each part can meet it, never as a licence
+    to relax one a part's videos can meet. A stage-1 NO that guesses is MAYBE in
+    code, under rule 8, kept in `said` and counted in `guessed_no`.
+
 ## Structure
 
 ```
