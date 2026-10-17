@@ -834,7 +834,7 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     verbatim — so they need no translation, and must not be given one.
 
 28. **A gate that runs more than once is idempotent, and what it decided travels on
-    the query as state.** *(Draft, pending review.)* `validate()` runs on every query
+    the query as state.** `validate()` runs on every query
     at least twice — where it was proposed (`Mapper.map`, `Planner.plan`) and again
     in `_loop` before its round — so `validate(validate(x).kept)` must equal
     `validate(x)`: the same queries, filters and waivers, and no new record. Running
