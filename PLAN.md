@@ -2729,6 +2729,66 @@ reasons longer, and the reasoning bills against the same ceiling.
 is a sampled rate, re-measured on 12 briefs after this change; a topic with many
 parts reasons longest and is the one most likely to need the redraw or reach the stop.
 
+### Fetching spread across the round; NOs that rest on what is absent
+
+**What was measured** on the first real round (`d3e5d52d7138`, checkpoint 4):
+
+- **F1 — the run's whole budget went to the first queries.** Stage-1 YES then
+  MAYBE were fetched in discovery order, which is query order, until `max_videos`
+  keepers. 17 queries found 166 candidates (3 YES, 112 MAYBE); queries 0–4 supplied
+  all 40 fetches and all 25 keepers, and 74 candidates from queries 5–16 were never
+  read. Three of the brief's eight parts got no video; one got about a dozen
+  near-duplicates. Reaching `max_videos` in round 1 ends the run, so the planner —
+  whose job is exactly those missing parts — never ran.
+- **F2 — stage 2 refused part-videos for the parts they did not cover.** 11 of 15
+  stage-2 NO reasons listed absent parts; at least two were wrong NOs, one on a
+  video explaining a listed part, one on a video covering three. The prompt already
+  said one part is enough.
+- **F3 — stage 1 refused on absence of evidence.** About 10 of 51 stage-1 NOs rested
+  on a runtime plus what the metadata did not show ("59-second short, no mechanism
+  evidence in metadata"). Of the short clips stage 2 read, 2 of 7 were kept.
+
+**The change.**
+
+- **Each round stores at most its share** of the run's remaining `max_videos`: an
+  even share over the rounds left, rounded up (25 over 3 rounds: 9, then 8, 8), and
+  all of it in the last round — so a single-round run keeps the whole budget.
+- **Fetches are spread across the queries that found them**: one from each query in
+  turn, YES before MAYBE, so a round reads what it searched for rather than its first
+  queries' finds. In each turn a query with fewer reads this run goes first, and
+  among equals the origins alternate (expansion, map, planner) — in first-seen order
+  a 9-keeper round read only the nine expansion queries, which name no part, before
+  the map's part-aimed ones. The unit is the query because every candidate has one; a
+  part is only known for map queries that name it, and the queries were aimed across
+  the parts by the map and the planner.
+- **Nothing is left unread silently.** What a round's share does not reach is carried
+  on the run, counted (`unread_yes`, `unread_maybe`), listed by the query that found
+  it in the report and the JSON, and shown to the planner as FOUND BUT NOT YET READ
+  (`plan/round` v10). The next round reads it in the same queue, queries with nothing
+  read yet first, and a later search
+  that finds it again does not screen it twice (`already_waiting`). If the run stops
+  for want of anything new, the rest of the budget is spent on what is waiting, so a
+  narrow topic's budget does not vanish. Not on a budget stop, and not when the
+  planner judged the brief covered.
+- **Stage 2 (`judge/full` v13)**: a NO opens with one of three grounds — a REQUIRED
+  item failed, an EXCLUDED item hit, no PART covered substantively — and a PART not
+  covered is never one; a YES names its part. The substance bar is unchanged.
+- **Stage 1 (`judge_metadata` v8)**: a NO needs metadata that shows the video off the
+  brief. In code, a NO resting only on absence — "no … evidence / evident /
+  indicated / shown", "too short to", or a bare runtime followed by "no …" — becomes
+  MAYBE unless the reason also names what the metadata shows (a different subject,
+  promotion, news, a meme, an EXCLUDED item), counted as `unshown_no` apart from
+  `guessed_no`. Over all 522 stage-1 NO reasons recorded at checkpoints 3 and 4 it
+  fires on 31, and on none that names an off-brief category.
+- **Rule 25**: the stage-1 cut when the request budget cannot screen every candidate
+  now takes the same spread before cutting.
+
+**Costs, for other kinds of topic.** A narrow single-part topic loses nothing: its few
+keepers fit round 1's share or are read later, and an early stop spends the rest. A
+topic that only one round can serve now stores fewer videos in round 1 and more in the
+rounds the planner directs. The absence guard sends more short clips to stage 2 —
+about one fetch and one read each.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

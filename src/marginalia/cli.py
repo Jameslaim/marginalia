@@ -403,6 +403,13 @@ def _brief_outcome_lines(brief) -> list[str]:
     return lines
 
 
+def _count_by_query(unread) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for entry in unread:
+        counts[entry.query] = counts.get(entry.query, 0) + 1
+    return counts
+
+
 def _discover_report(run: DiscoverRun) -> list[str]:
     lines = [f"brief:    {run.brief.intent}"]
     lines.extend(_brief_outcome_lines(run.brief))
@@ -414,6 +421,8 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             f"{report.candidates} candidates, {report.known} known, "
             f"{report.verdict_no} no, {report.verdict_maybe} maybe "
             f"→ {report.stored} stored"
+            # The round's share of the video budget, when it had one.
+            + (f" of {report.allowance} allowed" if report.allowance else "")
         )
         # Never silent, and never conflated. A round where every fetch failed
         # otherwise reads exactly like a round where the judge rejected
@@ -455,6 +464,15 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             # Stage 1 this time: a NO the judge could state only as a guess,
             # kept as MAYBE (rule 8). Already part of the MAYBE count.
             (report.guessed_no, "stage-1 NO on a guess, kept as MAYBE"),
+            # Stage 1 again, a different ground: a NO resting on what the
+            # metadata did not show rather than on anything it did.
+            (report.unshown_no, "stage-1 NO on missing evidence, kept as MAYBE"),
+            # Never silent: judged worth reading, not fetched because this
+            # round's share of the video budget ran out, carried forward.
+            (report.unread_yes, "stage-1 YES not yet read, carried forward"),
+            (report.unread_maybe, "stage-1 MAYBE not yet read, carried forward"),
+            (report.read_from_earlier, "read from an earlier round's queue"),
+            (report.already_waiting, "found again while queued, not re-screened"),
             (report.filters_rejected, "filters rejected"),
             # Named apart from the line above, because they are opposite
             # directions: a rejected filter widened a search that ran, a
@@ -710,6 +728,16 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "recency_waived": report.recency_waived,
                 "unmarked_currency": report.unmarked_currency,
                 "guessed_no": report.guessed_no,
+                "unshown_no": report.unshown_no,
+                # The round's share of the video budget, and what it left unread,
+                # by the query that found each — so a reader can see which parts
+                # of the search were read and which were carried.
+                "allowance": report.allowance,
+                "unread_yes": report.unread_yes,
+                "unread_maybe": report.unread_maybe,
+                "read_from_earlier": report.read_from_earlier,
+                "already_waiting": report.already_waiting,
+                "unread_by_query": _count_by_query(report.unread),
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next
                 # round, the map revisions it proposed and the ones the code

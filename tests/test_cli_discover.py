@@ -665,3 +665,20 @@ def test_no_usable_draft_ends_the_command_with_one_sentence(
     assert "no usable brief draft after 2 attempt(s)" in err
     assert "Nothing was searched or recorded" in err
     assert "Traceback" not in err and "BriefUnusable:" not in err
+
+
+def test_the_report_says_what_was_left_unread_and_the_round_s_share(stubbed, capsys) -> None:
+    run = fake_run()
+    run.rounds[0].allowance = 9
+    run.rounds[0].unread_yes = 2
+    run.rounds[0].unread_maybe = 5
+    run.rounds[0].unshown_no = 3
+    stubbed["run"] = run
+
+    assert main(["discover", "home plumbing"]) == EXIT_OK
+
+    out = capsys.readouterr().out
+    assert "→ 9 stored of 9 allowed" in out
+    assert "2 stage-1 YES not yet read, carried forward" in out
+    assert "5 stage-1 MAYBE not yet read, carried forward" in out
+    assert "3 stage-1 NO on missing evidence, kept as MAYBE" in out

@@ -3857,3 +3857,209 @@ def test_no_usable_draft_stops_before_the_run_row_and_any_search(
 
     assert ledger.list_runs() == []
     assert searches["calls"] == []
+
+
+# -- the round's fetches: spread across queries, a share of the run's budget ---
+#
+# Checkpoint 4: fetching took YES then MAYBE in discovery order, which is query
+# order, until `max_videos` keepers. Queries 0-4 of 17 supplied all 40 fetches
+# and all 25 keepers; 74 candidates from queries 5-16 were never read; three of
+# the brief's eight parts got nothing; and reaching `max_videos` in round 1
+# ended the run, so the planner never ran.
+
+
+def _vids(prefix: str, count: int) -> list[str]:
+    return [f"{prefix}{index}".ljust(11, prefix)[:11] for index in range(1, count + 1)]
+
+
+def _three_queries(searches) -> dict[str, list[str]]:
+    found = {"q1": _vids("a", 3), "q2": _vids("b", 2), "q3": _vids("c", 1)}
+    for query, ids in found.items():
+        searches[query] = [result(video_id) for video_id in ids]
+    return found
+
+
+def test_fetches_take_one_from_each_query_in_turn(
+    config, ledger, library, client, searches
+) -> None:
+    found = _three_queries(searches)
+    transcripts = FakeTranscripts()
+
+    run(config, ledger, library, client, FakeJudge(queries=[["q1", "q2", "q3"]]),
+        provider=transcripts, max_rounds=1, max_videos=10)
+
+    a, b, c = found["q1"], found["q2"], found["q3"]
+    assert transcripts.fetched == [a[0], b[0], c[0], a[1], b[1], a[2]]
+
+
+def test_yes_before_maybe_survives_the_spread(config, ledger, library, client, searches) -> None:
+    found = _three_queries(searches)
+    transcripts = FakeTranscripts()
+    first_of_q1 = found["q1"][0]
+    judge = FakeJudge(
+        queries=[["q1", "q2", "q3"]], metadata={first_of_q1: (VERDICT_MAYBE, "unclear")}
+    )
+
+    run(config, ledger, library, client, judge, provider=transcripts, max_rounds=1, max_videos=10)
+
+    assert transcripts.fetched[-1] == first_of_q1, "the one MAYBE waits for every YES"
+
+
+def test_round_one_keeps_room_for_the_rounds_after_it(
+    config, ledger, library, client, searches
+) -> None:
+    _three_queries(searches)
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client,
+                  FakeJudge(queries=[["q1", "q2", "q3"], ["nothing new"], []]),
+                  max_rounds=3, max_videos=6, planner=planner)
+
+    first = outcome.rounds[0]
+    assert first.allowance == 2, "an even share: 6 over 3 rounds"
+    assert first.stored == 2
+    assert first.unread_yes == 4 and first.unread_maybe == 0
+    assert planner.calls[:1] == [1], "round 1 no longer ends the run, so the planner runs"
+    assert outcome.rounds[1].read_from_earlier == outcome.rounds[1].stored > 0
+
+
+def test_a_single_round_run_may_spend_the_whole_budget(
+    config, ledger, library, client, searches
+) -> None:
+    _three_queries(searches)
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1", "q2", "q3"]]),
+                  max_rounds=1, max_videos=6)
+
+    assert outcome.rounds[0].allowance == 6
+    assert len(outcome.stored_ids) == 6
+    assert outcome.rounds[0].unread_yes == outcome.rounds[0].unread_maybe == 0
+
+
+def test_what_is_left_unread_is_counted_and_listed_for_the_planner(
+    config, ledger, library, client, searches
+) -> None:
+    found = _three_queries(searches)
+    planner = FakePlanner()
+
+    outcome = run(config, ledger, library, client,
+                  FakeJudge(queries=[["q1", "q2", "q3"], ["nothing new"], []]),
+                  max_rounds=3, max_videos=6, planner=planner)
+
+    first = outcome.rounds[0]
+    waiting = {entry.video_id: entry.query for entry in first.unread}
+    assert len(waiting) == 4
+    assert set(waiting.values()) == {"q1", "q2", "q3"}, "first of q1 and q2 read; the rest wait"
+    assert all(video_id in found[query] for video_id, query in waiting.items())
+    assert planner.seen[0].unread == first.unread, "the planner is shown the same list"
+
+
+def test_a_narrow_topic_spends_the_rest_when_searching_dries_up(
+    config, ledger, library, client, searches
+) -> None:
+    """Round 2 finds nothing new and the run stops — the shares not spent go to
+    the candidates still waiting, rather than vanishing."""
+    _three_queries(searches)
+
+    outcome = run(config, ledger, library, client,
+                  FakeJudge(queries=[["q1", "q2", "q3"], []]),
+                  max_rounds=3, max_videos=6)
+
+    assert outcome.stopped_because == STOP_NO_NEW_VIDEOS
+    assert len(outcome.stored_ids) == 6, "2 in round 1, then the 4 waiting"
+    assert outcome.rounds[-1].unread_yes == 0
+
+
+def test_a_candidate_found_again_while_waiting_is_not_screened_twice(
+    config, ledger, library, client, searches
+) -> None:
+    found = _three_queries(searches)
+    waiting_ids = found["q1"][1:]
+    searches["again"] = [result(video_id) for video_id in waiting_ids]
+    judge = FakeJudge(queries=[["q1", "q2", "q3"], ["again"], []])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=3, max_videos=6)
+
+    assert outcome.rounds[1].already_waiting >= 1
+    assert len(judge.batch_sizes) == 1, "round 2 screened nothing new"
+
+
+def test_an_absent_evidence_no_kept_as_maybe_is_counted_apart_from_a_guess(
+    config, ledger, library, client, searches
+) -> None:
+    class Resolving(FakeJudge):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+            return [
+                MetadataVerdict(candidates[0].video_id, VERDICT_MAYBE, "45-second clip, no evidence",
+                                said=VERDICT_NO, resolved="unshown"),
+                MetadataVerdict(candidates[1].video_id, VERDICT_MAYBE, "likely a promo",
+                                said=VERDICT_NO, resolved="guess"),
+            ]
+
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+
+    outcome = run(config, ledger, library, client, Resolving(), max_rounds=1)
+
+    assert outcome.rounds[0].unshown_no == 1
+    assert outcome.rounds[0].guessed_no == 1
+
+
+def test_spread_fetches_is_round_robin_in_first_seen_source_order() -> None:
+    from marginalia.flow.discover import spread_fetches
+
+    order = spread_fetches(["a1", "a2", "a3", "b1", "c1", "c2"], lambda item: item[0])
+
+    assert order == ["a1", "b1", "c1", "a2", "c2", "a3"]
+    assert spread_fetches([], lambda item: item) == []
+
+
+@pytest.mark.parametrize(
+    "remaining, rounds_left, allowed",
+    [(25, 3, 9), (16, 2, 8), (25, 1, 25), (7, 3, 3), (1, 3, 1), (0, 3, 0)],
+)
+def test_round_allowance_is_an_even_share_of_what_is_left(remaining, rounds_left, allowed) -> None:
+    from marginalia.flow.discover import round_allowance
+
+    assert round_allowance(remaining, rounds_left) == allowed
+
+
+def _entry(video_id, query, origin, verdict=VERDICT_YES, found_in_round=1):
+    from marginalia.contracts import UnreadCandidate
+
+    return UnreadCandidate(
+        result(video_id), MetadataVerdict(video_id, verdict, "on the brief"), query,
+        found_in_round, origin=origin,
+    )
+
+
+def test_fetch_order_alternates_origins_so_one_way_of_searching_cannot_go_first() -> None:
+    """In first-seen order a short round read only the expansion's finds, which
+    name no part, before the map's part-aimed queries ever got a turn."""
+    from marginalia.flow.discover import fetch_order
+
+    entries = [
+        _entry("aaaaaaaaaa1", "e1", ORIGIN_BRIEF), _entry("aaaaaaaaaa2", "e1", ORIGIN_BRIEF),
+        _entry("bbbbbbbbbb1", "e2", ORIGIN_BRIEF),
+        _entry("cccccccccc1", "m1", ORIGIN_TERRITORY), _entry("dddddddddd1", "m2", ORIGIN_TERRITORY),
+    ]
+
+    order = [entry.video_id for entry in fetch_order(entries, {})]
+
+    assert order == ["aaaaaaaaaa1", "cccccccccc1", "bbbbbbbbbb1", "dddddddddd1", "aaaaaaaaaa2"]
+
+
+def test_fetch_order_puts_queries_with_nothing_read_yet_first() -> None:
+    """Across rounds: what an earlier round left waiting is not pushed behind a
+    new round's finds, and a new query is not starved by the backlog."""
+    from marginalia.flow.discover import fetch_order
+
+    entries = [
+        _entry("aaaaaaaaaa2", "old read", ORIGIN_BRIEF, found_in_round=1),
+        _entry("bbbbbbbbbb1", "old unread", ORIGIN_TERRITORY, found_in_round=1),
+        _entry("cccccccccc1", "new", ORIGIN_PLANNER, found_in_round=2),
+    ]
+
+    order = [entry.video_id for entry in fetch_order(entries, {"old read": 1})]
+
+    assert order[-1] == "aaaaaaaaaa2", "the query already read waits for the others"
+    assert set(order[:2]) == {"bbbbbbbbbb1", "cccccccccc1"}

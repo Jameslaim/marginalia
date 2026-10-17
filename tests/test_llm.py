@@ -1250,3 +1250,28 @@ def test_every_prompt_file_renders_as_it_did_before_with_ordinary_values() -> No
             expected = expected.replace("{{ " + key + " }}", value)
 
         assert prompt.render(**values) == expected, name
+
+
+def test_the_stage_two_prompt_names_the_grounds_for_a_no() -> None:
+    """Checkpoint 4: 11 of 15 stage-2 NO reasons listed absent parts, two of
+    them on videos that covered a listed part. A NO opens with its ground; an
+    absent PART is never one; a YES names its part; the substance bar stays."""
+    text = " ".join(load_prompt("judge/full").text.split())
+    assert "A PART the video does not cover is never a ground" in text
+    for ground in ("fails REQUIRED:", "hits EXCLUDED:", "covers no PART substantively"):
+        assert ground in text
+    assert "For a YES, name the PART or PARTS it covers" in text
+    assert "Never list the parts a video does not cover" in text
+    assert "This is not leniency" in text
+
+
+def test_the_stage_one_prompt_does_not_take_absence_for_evidence() -> None:
+    text = " ".join(load_prompt("judge_metadata").text.split())
+    assert "Absence of evidence is not evidence of absence" in text
+    assert "merely fails to show the video is on the brief" in text
+
+
+def test_the_round_planner_is_told_what_is_waiting() -> None:
+    text = " ".join(load_prompt("plan/round").text.split())
+    assert "FOUND BUT NOT YET READ" in text
+    assert "nothing kept and nothing waiting" in text

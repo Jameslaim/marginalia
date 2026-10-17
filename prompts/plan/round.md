@@ -1,8 +1,15 @@
 ---
 name: plan_round
-version: "9"
+version: "10"
 stage: plan
-note: "v9 words a gap's query like the title of a video that meets REQUIRED,
+note: "v10 names the FOUND BUT NOT YET READ section. Each round now stores
+  at most its share of the run's video budget, and fetches are spread across
+  the queries that found them; what a round's share did not reach is carried
+  to the next round and listed here. Checkpoint 4 measured the old order: the
+  first round spent the whole budget on the first 5 of 17 queries, left 74
+  candidates unread and three of the brief's eight parts with nothing, and
+  the planner never ran. A part with candidates waiting needs no new query.
+  v9 words a gap's query like the title of a video that meets REQUIRED,
   the rule the map and the expansion gained in the same change (rule 25).
   Checkpoint 3 measured, on round-one queries, about 4 keepable results in 10
   for that wording and about 0.9 for a part's own vocabulary; nothing has
@@ -118,6 +125,14 @@ the call failed, or the transcript was too large for the model, or the reply was
 cut off. Nobody has read it against the brief, so it satisfies nothing yet, however
 apt its title. Treat the part of the brief it seems to cover as unmet; it will be
 judged again on a later run.
+
+A video under FOUND BUT NOT YET READ was judged worth reading from its metadata,
+and this round's share of the video budget ran out before it was fetched. It joins
+the next round's queue, where a query with nothing read yet goes before one that
+has had a read. It satisfies nothing yet, so a part of the brief it looks
+like it covers is not covered — but it is not a gap either, because candidates for
+it are already queued and another search would find them again. Spend your
+queries on the parts with nothing kept and nothing waiting.
 
 A gap must be **specific**. "More depth needed" is not a gap. "Nothing found
 that shows cache expiry or TTL configuration" is a gap — it names a thing that

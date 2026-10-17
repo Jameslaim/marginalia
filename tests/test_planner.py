@@ -1110,3 +1110,43 @@ def test_the_declined_count_includes_overturned_stage_one_yeses() -> None:
     rendered = render_round(report)
 
     assert "3 declined (2 of them stage-1 YES; declined videos are stored too)" in rendered
+
+
+# -- what the round found and did not read ------------------------------------
+
+
+def test_the_round_shows_what_was_found_but_not_read_and_why() -> None:
+    from marginalia.contracts import (
+        VERDICT_MAYBE, VERDICT_YES, MetadataVerdict, SearchResult, UnreadCandidate,
+    )
+
+    def waiting(video_id, verdict, query):
+        return UnreadCandidate(
+            SearchResult(video_id, f"title {video_id}", "chan", "", 300, None, None),
+            MetadataVerdict(video_id, verdict, "covers a part"),
+            query,
+            1,
+        )
+
+    report = _round(number=1)
+    report.allowance = 2
+    report.unread = [
+        waiting("aaaaaaaaaaa", VERDICT_YES, "blocked drain causes"),
+        waiting("bbbbbbbbbbb", VERDICT_MAYBE, "blocked drain causes"),
+        waiting("ccccccccccc", VERDICT_MAYBE, "low water pressure fix"),
+    ]
+    report.unread_yes, report.unread_maybe = 1, 2
+
+    text = render_round(report)
+
+    assert "FOUND BUT NOT YET READ (3)" in text
+    assert "- blocked drain causes — 2 waiting (1 stage-1 YES)" in text
+    assert "- low water pressure fix — 1 waiting (0 stage-1 YES)" in text
+    assert "[YES] title aaaaaaaaaaa" in text
+    assert "video budget: 2 keepers allowed this round; 1 stage-1 YES and 2 MAYBE left unread" in text
+
+
+def test_a_round_with_nothing_waiting_says_so() -> None:
+    text = render_round(_round(number=1))
+
+    assert "FOUND BUT NOT YET READ (0)" in text

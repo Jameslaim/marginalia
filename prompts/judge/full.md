@@ -1,8 +1,16 @@
 ---
 name: judge_full
-version: "12"
+version: "13"
 stage: full
-note: "v12 reads every REQUIRED item so that each PART can meet it.
+note: "v13 names the three grounds a NO may rest on, and rules out the one it
+  kept reaching for: the PARTS a video does not cover. Checkpoint 4 measured 11
+  of 15 stage-2 NO reasons listing absent parts, two of them wrong NOs — one
+  'explains next-token prediction … but covers no PART beyond a bare next-token
+  framing' on a brief listing that as a part, one covering three parts and
+  refused for the others — under a prompt that already said one part is
+  enough. A NO now opens with its ground, a YES names the part it covers, and
+  the substance bar is unchanged. The five-line reply is unchanged.
+  v12 reads every REQUIRED item so that each PART can meet it.
   Checkpoint 3 cross-checked stage 1 with this judge and found it obeying a
   REQUIRED item read too narrowly for any video on one of the brief's own
   PARTS to meet: a 15-minute explainer of that part was NO because it 'fails
@@ -176,6 +184,24 @@ lists saddle heights and explains nothing still fails "explains". Missing an
 item is still a NO; what is not a NO is failing a reading that no video on a
 listed part could pass.
 
+**A NO rests on one of three grounds, and never on a fourth.** The grounds:
+
+- a REQUIRED item the video fails — name the item;
+- an EXCLUDED item it hits — name the item;
+- no PART covered substantively — it names topics and moves on, or it is
+  setup, promotion or restatement (step 2).
+
+**A PART the video does not cover is never a ground.** The library covers the
+parts between its videos; one video is asked to cover one of them well. A
+cooking brief listing knife skills, stocks and sauces as parts is served by a
+video that teaches stock-making thoroughly and never picks up a knife — "never
+covers knife skills or sauces" is a list of what the library's other videos
+are for, not a fault in this one. If a video covers a part, that part is the
+verdict's subject: say which part, and judge how well it is covered.
+
+This is not leniency. A clip that names three parts in a minute and explains
+none of them covers no part substantively, and is a NO on that ground.
+
 Covering means substantively addressing — not merely saying a word the brief
 also uses. A video that names a part once and moves on has not covered it. The
 brief is the authority: not your sense of what is interesting, not what the
@@ -286,7 +312,10 @@ UNEXPLAINED: kv cache eviction, prefix matching
 - `EVIDENCE` — `CLEAR` or `DEGRADED`.
 - `REASON` — one sentence, specific to this video. Name what the transcript
   actually established, or what about its quality prevented verification. Not a
-  restatement of the verdict. Where any part of it rests on knowledge about the
+  restatement of the verdict. **For a YES, name the PART or PARTS it covers.**
+  **For a NO, open with its ground** — `fails REQUIRED: <item>`, `hits EXCLUDED:
+  <item>`, or `covers no PART substantively` — then say what the transcript
+  showed. Never list the parts a video does not cover. Where any part of it rests on knowledge about the
   subject rather than on the transcript — which in practice means a judgement
   about how current the material is — append
   `[outside knowledge: ...]` saying what you brought.

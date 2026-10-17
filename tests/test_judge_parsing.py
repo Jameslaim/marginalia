@@ -496,3 +496,162 @@ def test_the_metadata_judge_keeps_a_guessed_no_as_maybe(caplog) -> None:
     assert guessed.reason.startswith("build tutorial"), "the judge's own reason is kept"
     assert (refused.verdict, refused.said) == (VERDICT_NO, None)
     assert any("rested on a guess" in record.getMessage() for record in caplog.records)
+
+
+# -- a stage-1 NO resting on what the metadata did not show is MAYBE (rule 8) --
+
+# Checkpoint 4's stage-1 NOs that rest on absence of evidence plus a runtime,
+# verbatim: the metadata failed to show the video was on the brief, and showed
+# nothing that put it off.
+_MEASURED_ABSENCES = (
+    "one-minute clip, no evidence of substantive mechanism explanation",
+    "59-second short, no mechanism evidence in metadata",
+    "short-form clip, no substantive explanation indicated",
+    "41-second clip, tool-as-function claim without mechanism evidence",
+    "36-second clip too thin to substantively explain retrieval mechanism",
+    "50-second definition clip, no substantive mechanism explanation",
+)
+
+
+@pytest.mark.parametrize("reason", _MEASURED_ABSENCES)
+def test_every_measured_absence_is_read_as_absence(reason) -> None:
+    from marginalia.brain.judge import rests_on_absence
+
+    assert rests_on_absence(reason)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "45-second clip, no evidence of technique in the metadata",
+        "a short, nothing in the title shows a repair",
+        "two-minute video, no explanation evident",
+        "brief reel, no named tool",
+    ],
+)
+def test_other_absences_are_read_as_absence(reason) -> None:
+    from marginalia.brain.judge import rests_on_absence
+
+    assert rests_on_absence(reason)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        # Off-subject, and it says so; the length is incidental.
+        "a meme clip, unrelated",
+        "30-second meme clip, unrelated, no evidence of a repair",
+        "prank clip, no mechanism explanation",
+        "product promo, no explanation evident",
+        "news-style story, no evidence of a technique",
+        "short clip about road cycling, a different subject, nothing shows plumbing",
+        "settings tutorial, no mechanism explanation",
+        "drain cleaner advert, no repair shown",
+        "excluded: brief excludes product reviews",
+    ],
+)
+def test_a_reason_that_names_what_the_metadata_shows_keeps_its_no(reason) -> None:
+    from marginalia.brain.judge import rests_on_absence, resolve_stage1_no
+
+    assert not rests_on_absence(reason)
+    assert resolve_stage1_no(VERDICT_NO, reason) == (VERDICT_NO, None, "")
+
+
+def test_an_absent_evidence_no_resolves_to_maybe_on_its_own_ground() -> None:
+    from marginalia.brain.judge import RESOLVED_GUESS, RESOLVED_UNSHOWN, resolve_stage1_no
+
+    assert resolve_stage1_no(VERDICT_NO, _MEASURED_ABSENCES[0]) == (
+        VERDICT_MAYBE, VERDICT_NO, RESOLVED_UNSHOWN,
+    )
+    assert resolve_stage1_no(VERDICT_NO, _MEASURED_GUESSES[0]) == (
+        VERDICT_MAYBE, VERDICT_NO, RESOLVED_GUESS,
+    )
+    # Toward keeping only: a YES or a MAYBE is never touched.
+    assert resolve_stage1_no(VERDICT_YES, _MEASURED_ABSENCES[0]) == (VERDICT_YES, None, "")
+    assert resolve_stage1_no(VERDICT_MAYBE, _MEASURED_ABSENCES[0]) == (VERDICT_MAYBE, None, "")
+
+
+def test_the_metadata_judge_keeps_an_absent_evidence_no_as_maybe(caplog) -> None:
+    from conftest import make_llm_config
+    from marginalia.brain.judge import RESOLVED_UNSHOWN, Judge
+    from marginalia.contracts import Brief
+    from marginalia.llm import LlmClient
+
+    class Reply:
+        def __init__(self, text):
+            message = type("M", (), {"content": text})()
+            self.choices = [type("C", (), {"message": message, "finish_reason": "stop"})()]
+            self.usage = type("U", (), {"prompt_tokens": 1, "completion_tokens": 1})()
+            self.model = "m"
+
+    text = (
+        "1: NO - 45-second clip, no evidence of technique in the metadata\n"
+        "2: NO - a meme clip, unrelated"
+    )
+    judge = Judge(LlmClient(make_llm_config(), transport=lambda **_: Reply(text), sleep=lambda _: None))
+    brief = Brief(
+        topic="t",
+        text="INTENT\nx\nREQUIRED OF EVERY VIDEO\n- x\nPARTS TO COVER\n- x\nEXCLUDED\n- y",
+        version="1/1",
+    )
+    candidates = [
+        SearchResult(f"vid{index:08d}", "title", "chan", "desc", 45, None, None)
+        for index in range(2)
+    ]
+
+    with caplog.at_level(logging.INFO, logger="marginalia"):
+        unshown, refused = judge.judge_metadata(brief, candidates, batch_size=10)
+
+    assert (unshown.verdict, unshown.said, unshown.resolved) == (
+        VERDICT_MAYBE, VERDICT_NO, RESOLVED_UNSHOWN,
+    )
+    assert (refused.verdict, refused.said, refused.resolved) == (VERDICT_NO, None, "")
+    assert any("did not show" in record.getMessage() for record in caplog.records)
+
+
+# -- stage 2: a NO names its ground; an absent PART is not one ----------------
+
+# Checkpoint 4's two wrong stage-2 NOs, verbatim. Each covers at least one of
+# the brief's PARTS and was refused for the PARTS it did not cover.
+_MEASURED_ABSENT_PART_NOS = (
+    "explains next-token prediction and autoregressive generation conceptually "
+    "… never addresses the context window, caching … so it fails most REQUIRED "
+    "items and covers no PART beyond a bare next-token framing",
+    "explains tokenization, context window composition, and next-token prediction "
+    "conceptually, but it never addresses caching … cross-session memory, the harness",
+)
+
+
+@pytest.mark.parametrize("reason", _MEASURED_ABSENT_PART_NOS)
+def test_the_five_line_contract_still_reads_the_measured_reasons(reason) -> None:
+    """The reason's wording is the prompt's to change; the parser must read
+    both the old shape and the new one, verdict unaltered."""
+    reply = (
+        f"VERDICT: NO\nEVIDENCE: CLEAR\nREASON: {reason}\n"
+        "RELEVANT: NONE\nUNEXPLAINED: NONE"
+    )
+    verdict = parse_full(reply, "dQw4w9WgXcQ")
+
+    assert verdict.parsed and verdict.verdict == VERDICT_NO
+
+
+@pytest.mark.parametrize(
+    "verdict_line, reason",
+    [
+        ("YES", "covers the PART blocked drains: explains why grease and hair build a plug"),
+        ("NO", "fails REQUIRED: explains why the fault happens — the transcript lists tools only"),
+        ("NO", "hits EXCLUDED: product adverts for drain cleaners — a sponsored demo throughout"),
+        ("NO", "covers no PART substantively — names taps, drains and pressure in a minute"),
+    ],
+)
+def test_the_new_reason_shapes_parse_under_the_same_contract(verdict_line, reason) -> None:
+    relevant = "00:01:00-00:03:00" if verdict_line == "YES" else "NONE"
+    reply = (
+        f"VERDICT: {verdict_line}\nEVIDENCE: CLEAR\nREASON: {reason}\n"
+        f"RELEVANT: {relevant}\nUNEXPLAINED: NONE"
+    )
+    verdict = parse_full(reply, "dQw4w9WgXcQ")
+
+    assert verdict.parsed
+    assert verdict.verdict == (VERDICT_YES if verdict_line == "YES" else VERDICT_NO)
+    assert verdict.reason == reason

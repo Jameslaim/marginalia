@@ -1,8 +1,15 @@
 ---
 name: judge_metadata
-version: "7"
+version: "8"
 stage: metadata
-note: "v7 makes a guessed NO a MAYBE, keeps a video an EXCLUDED item's own
+note: "v8 says a NO must rest on something the metadata shows to be off the
+  brief, never on what it fails to show. Checkpoint 4 measured about 10 of 51
+  NOs resting on absence of evidence plus a runtime ('59-second short, no
+  mechanism evidence in metadata', 'one-minute clip, no evidence of
+  substantive explanation'); of the short clips stage 2 then read, 2 of 7 were
+  kept. A NO resting on absence is now also resolved to MAYBE in code and
+  counted apart from a guessed one (rule 8, rule 14).
+  v7 makes a guessed NO a MAYBE, keeps a video an EXCLUDED item's own
   exception keeps, and reads a REQUIRED item so it cannot rule out a PART.
   Checkpoint 3 measured 5 of 40 topic-1 NOs whose reason was a guess
   ('likely API tutorial', 'likely setup without mechanism'), and 2 more that
@@ -127,6 +134,17 @@ you are guessing at content you have not seen, and the answer is MAYBE.
 "Build tutorial, likely setup without explanation" is a MAYBE; "a list of
 saddle brands with prices, no explanation in title, description or
 chapters" is a NO, because it names what the metadata does show.
+
+**Absence of evidence is not evidence of absence.** A NO needs metadata that
+shows the video is off the brief: a different subject, a promotion or news
+item, something an EXCLUDED item names, or a REQUIRED item the title and
+description plainly fail. Metadata that merely fails to show the video is on
+the brief is not that — a title is a few words, a description is often empty,
+and neither was written to answer this brief. "45-second clip, no evidence of
+technique in the metadata" is a MAYBE: it names a runtime and something
+missing, and nothing the video is. "45-second clip on bread scoring patterns
+for decoration only" is a NO on a brief requiring the baking science behind a
+technique, because it names what the video is and that fails the item.
 
 **An EXCLUDED item with an exception is hit only when the exception plainly
 does not apply.** Brief writers qualify exclusions — "unless…", "except…",

@@ -52,9 +52,9 @@ import logging
 import re
 import time
 import uuid
-from typing import Sequence
+from typing import Any, Callable, Hashable, Mapping, Sequence, TypeVar
 
-from ..brain.judge import FULL_PROMPT, Judge
+from ..brain.judge import FULL_PROMPT, RESOLVED_UNSHOWN, Judge
 from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
 from ..brain.territory import Mapper, validate, waiver_applies
 from ..config import Config
@@ -81,6 +81,7 @@ from ..contracts import (
     PlannedQuery,
     RoundPlan,
     RoundReport,
+    UnreadCandidate,
     SearchFilters,
     SearchResult,
     TranscriptResult,
@@ -107,6 +108,8 @@ from ..enrich.note import note_refusal
 from .store import reconcile_stored, store_transcript
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 __all__ = ["DiscoverRun", "RoundReport", "discover", "STOP_REASONS"]
 
@@ -383,17 +386,27 @@ def _loop(
 
         if not planned:
             run.stopped_because = STOP_NO_NEW_VIDEOS
+            _spend_remaining(config, ledger, library, client, judge, run, report, providers,
+                             max_videos=max_videos, max_requests=max_requests)
             return
 
         searched: list[tuple[PlannedQuery, int | None]] = []
         candidates = _gather(config, ledger, run, planned, report, searched, library=library)
         if candidates is None:
             run.stopped_because = STOP_NO_SEARCH
+            _spend_remaining(config, ledger, library, client, judge, run, report, providers,
+                             max_videos=max_videos, max_requests=max_requests)
             return
 
+        # This round's share of what is left, so round 1 cannot spend the run
+        # and leave the planner no round to act in. A single-round run gets it
+        # all; so does the last round of any run.
         threads = _judge_round(
             config, ledger, library, client, judge, run, report, candidates, providers,
             max_videos=max_videos, max_requests=max_requests,
+            allowance=round_allowance(
+                max_videos - len(run.stored_ids), max_rounds - number + 1
+            ),
         )
         # Recorded on the round that *produced* them, so a later reader can ask
         # whether round N+1's queries actually came from round N's findings.
@@ -412,6 +425,8 @@ def _loop(
         quiet_rounds = 0 if report.kept else quiet_rounds + 1
         if quiet_rounds >= config.discover.quiet_rounds:
             run.stopped_because = STOP_NO_NEW_VIDEOS
+            _spend_remaining(config, ledger, library, client, judge, run, report, providers,
+                             max_videos=max_videos, max_requests=max_requests)
             return
 
         # The planning call, and only if another round could actually run.
@@ -446,6 +461,40 @@ def _loop(
             )
 
     run.stopped_because = STOP_MAX_ROUNDS
+
+
+def _spend_remaining(
+    config: Config,
+    ledger: Ledger,
+    library: Library,
+    client: LlmClient,
+    judge: Judge,
+    run: DiscoverRun,
+    report: RoundReport,
+    providers: Sequence[TranscriptProvider],
+    *,
+    max_videos: int,
+    max_requests: int,
+) -> None:
+    """When the run stops for want of anything new, read what is still waiting.
+
+    Rounds take a share of `max_videos` so the planner has rounds to act in. If
+    the searching then dries up — a narrow topic whose later rounds find
+    nothing — the shares not spent would simply vanish while candidates stage 1
+    judged worth reading sit unread. So the rest of the budget goes to them,
+    in the same spread order, on the round that stopped. Not done when the run
+    stopped on a budget, or because the planner judged the brief covered.
+    """
+    remaining = max(0, max_videos - len(run.stored_ids))
+    if run.dry_run or not run.backlog or remaining == 0:
+        return
+    stopped = run.stopped_because
+    run.stopped_because = ""
+    _judge_round(
+        config, ledger, library, client, judge, run, report, [], providers,
+        max_videos=max_videos, max_requests=max_requests, allowance=remaining,
+    )
+    run.stopped_because = run.stopped_because or stopped
 
 
 def _assess_library(
@@ -790,6 +839,9 @@ def _gather(
             # queries that returned it, and first-past-the-post would answer it
             # with whichever set happened to run first.
             report.surfaced_by.setdefault(candidate.video_id, set()).add(query.origin)
+            # The first query that found it, which is the unit fetches are
+            # spread across (see `spread_fetches`).
+            report.found_by.setdefault(candidate.video_id, query.text)
             survivors.setdefault(candidate.video_id, candidate.result)
 
     if not answered:
@@ -841,6 +893,95 @@ def _log_query(
     )
 
 
+def spread_fetches(
+    items: Sequence[T],
+    source: Callable[[T], Hashable],
+    rank: Callable[[Hashable], Any] | None = None,
+) -> list[T]:
+    """One from each source in turn, each source in its own order.
+
+    Sources come in the order they first appear, or by ``rank`` when given
+    (stable, so ties keep first-appearance order). The second item of the
+    first source waits for the first item of every other. A pure function of
+    its arguments, so the order can be tested — and simulated on a stored run —
+    without a fetch.
+    """
+    groups: dict[Hashable, list[T]] = {}
+    for item in items:
+        groups.setdefault(source(item), []).append(item)
+    keys = list(groups)
+    if rank is not None:
+        keys.sort(key=rank)
+    queues = [groups[key] for key in keys]
+    order: list[T] = []
+    depth = 0
+    while any(depth < len(queue) for queue in queues):
+        order.extend(queue[depth] for queue in queues if depth < len(queue))
+        depth += 1
+    return order
+
+
+def fetch_order(
+    entries: Sequence[UnreadCandidate], fetched_so_far: Mapping[str, int]
+) -> list[UnreadCandidate]:
+    """The order a round reads its candidates in. YES before MAYBE; within each,
+    one per query in turn.
+
+    Which query goes first in each turn is two rules, both general:
+
+    - **Queries with fewer reads this run first.** A query whose finds have had
+      nothing read yet goes before one that has had a read, whatever round it
+      ran in — so what an earlier round left waiting is not pushed back behind
+      each new round's queries, and a new round's gap queries are not starved
+      by the backlog either.
+    - **Then alternate between origins** — the brief's expansion, the map, the
+      planner — so one way of searching does not take the turn's first places.
+      Measured on run `d3e5d52d7138`: in first-seen order a 9-keeper round read
+      only the nine expansion queries' finds, which name no part, before the
+      map's queries, each aimed at a part.
+    """
+    origins: list[str] = []
+    turn: dict[str, tuple[int, int]] = {}
+    per_origin: dict[str, int] = {}
+    for entry in entries:
+        if entry.query in turn:
+            continue
+        if entry.origin not in origins:
+            origins.append(entry.origin)
+        number = per_origin.get(entry.origin, 0)
+        turn[entry.query] = (number, origins.index(entry.origin))
+        per_origin[entry.origin] = number + 1
+
+    def rank(query: Hashable) -> tuple[int, int, int]:
+        return (fetched_so_far.get(str(query), 0), *turn[str(query)])
+
+    def by_query(entry: UnreadCandidate) -> str:
+        return entry.query
+
+    return spread_fetches(
+        [entry for entry in entries if entry.verdict.verdict == VERDICT_YES], by_query, rank
+    ) + spread_fetches(
+        [entry for entry in entries if entry.verdict.verdict == VERDICT_MAYBE], by_query, rank
+    )
+
+
+def round_allowance(remaining: int, rounds_left: int) -> int:
+    """How many keepers this round may store, of the run's `remaining`.
+
+    An even share of what is left over the rounds left, rounded up, and the
+    whole of it in the last round. Before this the first round could spend the
+    run's entire `max_videos`, which ended the run there: on checkpoint 4 round
+    1 stored all 25, so the planner — whose job is the parts round 1 missed —
+    never ran. A round that stores less than its share leaves the rest to the
+    rounds after it, because each share is taken of what is still unspent.
+    """
+    if remaining <= 0:
+        return 0
+    if rounds_left <= 1:
+        return remaining
+    return -(-remaining // rounds_left)
+
+
 def _judge_round(
     config: Config,
     ledger: Ledger,
@@ -854,9 +995,18 @@ def _judge_round(
     *,
     max_videos: int,
     max_requests: int,
+    allowance: int | None = None,
 ) -> list[str]:
-    if not candidates:
+    """Screen this round's candidates, then fetch and judge within `allowance`.
+
+    ``allowance`` is how many keepers this round may store; ``None`` means the
+    run's whole remaining `max_videos`. What it does not reach is carried on
+    `run.backlog` and recorded on the report, never dropped.
+    """
+    if not candidates and not run.backlog:
         return []
+    if allowance is None:
+        allowance = max(0, max_videos - len(run.stored_ids))
 
     # **Partition before stage 1.** Stage 1 decides whether to *fetch* (rule
     # 13), and a transcript already on disk has nothing left to fetch — so a
@@ -868,7 +1018,14 @@ def _judge_round(
     # later round, and the planner read each repeat as a new finding.
     held: list[SearchResult] = []
     to_screen: list[SearchResult] = []
+    waiting = {entry.video_id for entry in run.backlog}
     for candidate in candidates:
+        if candidate.video_id in waiting:
+            # Judged by stage 1 in an earlier round and queued to be read.
+            # Screening it again would spend a call on a second opinion and
+            # write a second decision row for one video.
+            report.already_waiting += 1
+            continue
         row = ledger.get(candidate.video_id)
         if row is not None and row.status == STATUS_FAILED and row.fail_kind == FAIL_PERMANENT:
             # The provider said this video is gone — deleted, private,
@@ -909,7 +1066,12 @@ def _judge_round(
             affordable,
             len(to_screen),
         )
-        to_screen = to_screen[:affordable]
+        # Spread before cutting, for the reason the fetches are spread: a cut
+        # in discovery order keeps the first queries' finds and drops the
+        # last queries' entirely.
+        to_screen = spread_fetches(
+            to_screen, lambda candidate: report.found_by.get(candidate.video_id, "")
+        )[:affordable]
 
     verdicts = (
         judge.judge_metadata(
@@ -935,10 +1097,13 @@ def _judge_round(
             outcome=verdict.outcome, said=verdict.said,
         )
         if verdict.said == VERDICT_NO:
-            # A NO the judge could state only as a guess, kept as MAYBE. It is
-            # counted under `verdict_maybe` below as well, because that is the
-            # verdict it now has; this says how many got there this way.
-            report.guessed_no += 1
+            # A NO kept as MAYBE, counted by its ground: a guess, or what the
+            # metadata did not show. Also under `verdict_maybe` below, because
+            # that is the verdict it now has; these say how it got there.
+            if verdict.resolved == RESOLVED_UNSHOWN:
+                report.unshown_no += 1
+            else:
+                report.guessed_no += 1
         if verdict.verdict == VERDICT_YES:
             report.verdict_yes += 1
         elif verdict.verdict == VERDICT_NO:
@@ -959,18 +1124,54 @@ def _judge_round(
 
     # Held transcripts first: they cost no fetch and no `max_videos` slot.
     # Then YES before MAYBE — not because it is cheaper (both cost a fetch and a
-    # stage-2 call) but so that when `max_videos` truncates the round, the
+    # stage-2 call) but so that when the allowance truncates the round, the
     # candidates stage 1 was confident about are the ones that got the budget.
-    ordered: list[tuple[SearchResult, object | None]] = [(c, None) for c in held]
-    ordered += [(by_id[v.video_id], v) for v in verdicts if v.verdict == VERDICT_YES]
-    ordered += [(by_id[v.video_id], v) for v in verdicts if v.verdict == VERDICT_MAYBE]
+    #
+    # **Within each, spread across the queries that found them.** Discovery
+    # order is query order, so the budget used to go to the first few queries'
+    # finds: checkpoint 4 fetched all 40 videos from queries 0-4 of 17, left
+    # 74 candidates from queries 5-16 unread, and three of the brief's eight
+    # parts with nothing. Each query was aimed at something, so one from each
+    # in turn reaches what the round searched for. What an earlier round left
+    # unread joins the same queue; `fetch_order` puts queries with nothing read
+    # yet first, and alternates origins among equals.
+    origin_of = {query.text: query.origin for query in report.planned}
+    fresh = [
+        UnreadCandidate(
+            by_id[v.video_id], v, report.found_by.get(v.video_id, ""), report.number,
+            origin=origin_of.get(report.found_by.get(v.video_id, ""), ""),
+        )
+        for v in verdicts
+        if v.verdict in (VERDICT_YES, VERDICT_MAYBE)
+    ]
+    # Waiting first, so that among queries with equal reads an older one wins.
+    pool = run.backlog + fresh
+    run.backlog = []
+    queue = fetch_order(pool, run.fetched_by_query)
+    ordered: list[tuple[SearchResult, object | None, UnreadCandidate | None]] = [
+        (c, None, None) for c in held
+    ] + [(entry.result, entry.verdict, entry) for entry in queue]
+    report.allowance += allowance
+    stored_here = 0
+    stop_at = len(ordered)
 
-    for candidate, verdict in ordered:
+    for index, (candidate, verdict, entry) in enumerate(ordered):
         if len(run.stored_ids) >= max_videos:
             run.stopped_because = STOP_MAX_VIDEOS
-            return _dedupe_concepts(concepts)
+            stop_at = index
+            break
         if _overflowed(run):
-            return _dedupe_concepts(concepts)
+            stop_at = index
+            break
+        if entry is not None and stored_here >= allowance:
+            # This round's share is spent. Not a stop: the rest wait for the
+            # next round, whose planner is told they are waiting.
+            stop_at = index
+            break
+        if entry is not None:
+            run.fetched_by_query[entry.query] = run.fetched_by_query.get(entry.query, 0) + 1
+            if entry.found_in_round < report.number:
+                report.read_from_earlier += 1
 
         # Gate 1 asks whether a video is in the *library*, which since B1 means
         # it has a note. Holding the bytes is a different question, asked in the
@@ -1015,10 +1216,12 @@ def _judge_round(
         # that *died*, when what happened was a budget doing its job.
         if client.usage.requests >= max_requests:
             run.stopped_because = STOP_MAX_REQUESTS
-            return _dedupe_concepts(concepts)
+            stop_at = index
+            break
         if _overspent(config, client):
             run.stopped_because = STOP_MAX_COST
-            return _dedupe_concepts(concepts)
+            stop_at = index
+            break
 
         if is_held:
             report.already_held += 1
@@ -1236,6 +1439,7 @@ def _judge_round(
             # and spend `max_videos` on a download that never happened.
             run.stored_ids.append(candidate.video_id)
             report.stored += 1
+            stored_here += 1
         # The other half of what the planner reads, and the half that makes
         # coverage answerable at all. A planner shown only rejections can only
         # ever learn what to avoid; it needs what was kept to say which part of
@@ -1246,6 +1450,24 @@ def _judge_round(
         # a coverage claim built on one a claim built on a guess.
         report.kept.append(
             _judged(candidate, STAGE_FULL, judgement, too_long=too_long, unnoteable=unnoteable)
+        )
+
+    # Nothing is left unread silently. What the loop did not reach is counted,
+    # listed for the planner, and carried to the next round's queue.
+    leftover = [entry for _, _, entry in ordered[stop_at:] if entry is not None]
+    run.backlog = leftover
+    report.unread = list(leftover)
+    report.unread_yes = sum(1 for e in leftover if e.verdict.verdict == VERDICT_YES)
+    report.unread_maybe = sum(1 for e in leftover if e.verdict.verdict == VERDICT_MAYBE)
+    if leftover:
+        log.info(
+            "discover: round %d left %d judged candidate(s) unread (%d YES, %d MAYBE) "
+            "from %d quer(ies); carried forward",
+            report.number,
+            len(leftover),
+            report.unread_yes,
+            report.unread_maybe,
+            len({(e.found_in_round, e.query) for e in leftover}),
         )
 
     # The threshold is checked where it is reached, not only before a next

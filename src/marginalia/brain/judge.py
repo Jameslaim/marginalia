@@ -68,6 +68,8 @@ __all__ = [
     "parse_full",
     "parse_queries",
     "resolve_guess",
+    "resolve_stage1_no",
+    "rests_on_absence",
     "territory_lines",
 ]
 
@@ -401,9 +403,77 @@ def resolve_guess(verdict: str, reason: str) -> tuple[str, str | None]:
     this way — it read the transcript, and its error that hides is a wrong YES
     (rule 8), so a hedge there is not a reason to keep.
     """
-    if verdict == VERDICT_NO and guesses(reason):
-        return VERDICT_MAYBE, VERDICT_NO
-    return verdict, None
+    verdict, said, _ = resolve_stage1_no(verdict, reason)
+    return verdict, said
+
+
+# A stage-1 reason that rests on what the metadata did NOT show — "no evidence
+# of a mechanism", "no explanation indicated", "too thin to explain" — rather
+# than on anything it did. Checkpoint 4 measured about 10 of 51 NOs in this
+# shape, nearly all on short clips; of the short clips stage 2 went on to read,
+# 2 of 7 were kept. Metadata failing to show a video is on the brief is
+# uncertainty, and rule 8 makes uncertainty MAYBE.
+_ABSENT_RE = re.compile(
+    r"\b(?:no|without|lacks?|lacking)\b[^,;.]{0,40}?"
+    r"\b(?:evidence|evident|indicat(?:ed|ion|es)|visible|shown|apparent)\b"
+    r"|\btoo\s+(?:short|thin|brief)\s+to\b"
+    r"|\bnothing\s+(?:in\s+the\s+(?:title|metadata|description)\s+)?(?:shows|indicates|suggests)\b",
+    re.IGNORECASE,
+)
+# The other shape of the same thing: the only description is a length or a
+# format, followed by what is missing — "59-second short, no mechanism", "one-
+# minute clip, no named source". A clip's length is not evidence about its
+# content (the prompt's DURATION IS NOT DEPTH), so nothing was shown.
+_LENGTH_ONLY_RE = re.compile(
+    r"^\s*(?:an?\s+)?(?:(?:\d+|one|two|three|a)[- ]?(?:second|sec|s|minute|min)s?"
+    r"|short(?:-form)?|brief)(?:[- ](?:long|language))?\s+(?:[\w-]+\s+){0,2}?"
+    r"(?:clip|short|video|reel)\s*,\s*no\b",
+    re.IGNORECASE,
+)
+# What the metadata *did* show that puts a video off the brief. A reason naming
+# one of these keeps its NO even when it also says something is missing: "a
+# meme clip, unrelated" and "product promo, no explanation" rest on what the
+# title and description show. General categories only — none names a subject.
+_SHOWN_OFF_BRIEF_RE = re.compile(
+    r"\b(?:unrelated|different\s+(?:subject|topic|field)|off[- ]topic|not\s+about|promo\w*"
+    r"|advert\w*|sponsor\w*|vendor|product\s+(?:launch|feature|demo)|launch|news|meme"
+    r"|prank|reaction|opinion|excluded|excludes|giveaway|trailer|music|gaming"
+    r"|entertainment|motivational|scam)\b",
+    re.IGNORECASE,
+)
+
+RESOLVED_GUESS = "guess"
+RESOLVED_UNSHOWN = "unshown"
+
+
+def rests_on_absence(reason: str) -> bool:
+    """Does this stage-1 NO rest only on what the metadata did not show?
+
+    False when the reason also names what the metadata did show that is off the
+    brief. Tuned on every stage-1 NO recorded across checkpoints 3 and 4 (522
+    reasons): it fires on 31, and on none that names a different subject, a
+    promotion, news, a meme or an EXCLUDED item. Over-firing is the cheap
+    direction, as for `guesses`: the video is fetched and stage 2 decides.
+    """
+    if _SHOWN_OFF_BRIEF_RE.search(reason):
+        return False
+    return bool(_ABSENT_RE.search(reason) or _LENGTH_ONLY_RE.search(reason))
+
+
+def resolve_stage1_no(verdict: str, reason: str) -> tuple[str, str | None, str]:
+    """A stage-1 NO that guesses, or rests on absence, becomes MAYBE.
+
+    Returns ``(verdict, said, resolved)``: ``said`` is the judge's own word
+    when it was overruled, and ``resolved`` says on which ground — `guess` or
+    `unshown` — so the two are counted apart (rule 14). Toward keeping only.
+    """
+    if verdict != VERDICT_NO:
+        return verdict, None, ""
+    if guesses(reason):
+        return VERDICT_MAYBE, VERDICT_NO, RESOLVED_GUESS
+    if rests_on_absence(reason):
+        return VERDICT_MAYBE, VERDICT_NO, RESOLVED_UNSHOWN
+    return verdict, None, ""
 
 
 def parse_full(text: str, video_id: str) -> FullVerdict:
@@ -963,9 +1033,10 @@ class Judge:
         parsed = parse_batch(reply.text, len(chunk))
         verdicts = []
         for candidate, (word, reason, was_parsed) in zip(chunk, parsed):
-            # The prompt says a guessed NO is MAYBE; this is the half that does
-            # not depend on the model having listened.
-            verdict, said = resolve_guess(word, reason)
+            # The prompt says a guessed NO, or one resting on what the metadata
+            # does not show, is MAYBE; this is the half that does not depend on
+            # the model having listened.
+            verdict, said, resolved = resolve_stage1_no(word, reason)
             verdicts.append(
                 MetadataVerdict(
                     candidate.video_id,
@@ -976,12 +1047,20 @@ class Judge:
                     # gave it no verdict at all.
                     outcome=OUTCOME_JUDGED if was_parsed else OUTCOME_NO_VERDICT,
                     said=said,
+                    resolved=resolved,
                 )
             )
-        guessed = sum(1 for verdict in verdicts if verdict.said is not None)
+        guessed = sum(1 for verdict in verdicts if verdict.resolved == RESOLVED_GUESS)
         if guessed:
             log.info(
                 "judge: %d stage-1 NO(s) rested on a guess — kept as MAYBE (rule 8)", guessed
+            )
+        unshown = sum(1 for verdict in verdicts if verdict.resolved == RESOLVED_UNSHOWN)
+        if unshown:
+            log.info(
+                "judge: %d stage-1 NO(s) rested on what the metadata did not show — "
+                "kept as MAYBE (rule 8)",
+                unshown,
             )
         return verdicts
 

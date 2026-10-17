@@ -113,6 +113,7 @@ __all__ = [
     "VideoRow",
     # discovery runs
     "RoundReport",
+    "UnreadCandidate",
     "DiscoverRun",
     # search runs
     "NEW",
@@ -1212,6 +1213,10 @@ class MetadataVerdict:
     # kept as MAYBE (rule 8) and remembered here as `no`, as stage 2 keeps
     # its own word in `FullVerdict.said`.
     said: str | None = None
+    # Why the NO was resolved to MAYBE, when it was: `guess` (a hedge — "likely
+    # a setup tutorial") or `unshown` (absence of evidence — "59-second short,
+    # no mechanism evidence in metadata"). Two grounds, two counters (rule 14).
+    resolved: str = ""
 
 
 @dataclass(frozen=True)
@@ -1353,6 +1358,29 @@ class VideoRow:
 # -- discovery runs ---------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class UnreadCandidate:
+    """A candidate stage 1 judged worth reading that no fetch has reached yet.
+
+    Carries what a later round needs to fetch and judge it — the search result
+    and its stage-1 verdict — and where it came from, so a report can say which
+    queries' finds were left waiting and the planner can see which parts of the
+    brief already have candidates queued.
+    """
+
+    result: SearchResult
+    verdict: MetadataVerdict
+    query: str
+    found_in_round: int
+    # The query's origin (brief, territory, planner, thread), so fetches can
+    # alternate between the ways a round searched rather than exhaust one.
+    origin: str = ""
+
+    @property
+    def video_id(self) -> str:
+        return self.result.video_id
+
+
 @dataclass
 class RoundReport:
     """What one round did, with every outcome on its own counter.
@@ -1452,6 +1480,29 @@ class RoundReport:
     # measured 5 of 40 topic-1 NOs in this shape, under a prompt that already
     # said uncertainty is MAYBE.
     guessed_no: int = 0
+    # Stage-1 NOs that rested on what the metadata did not show — "no evidence
+    # of a mechanism", "too short to explain" — rather than on anything it
+    # did show, resolved to MAYBE (rule 8). Checkpoint 4 measured about 10 of
+    # 51 in this shape, mostly on short clips; of the short clips stage 2 then
+    # read, 2 of 7 were kept. Also counted in `verdict_maybe`.
+    unshown_no: int = 0
+    # How many keepers this round was allowed to store: the run's remaining
+    # `max_videos` spread over the rounds left, so round 1 cannot spend the
+    # whole run's budget and leave the planner no round to act in.
+    allowance: int = 0
+    # Stage-1 YES and MAYBE this round judged worth reading and did not fetch,
+    # because the allowance ran out first. Carried to the next round's queue,
+    # where queries with nothing read yet go first; never silently dropped. Two
+    # counters, because a YES left unread and a MAYBE left unread are different
+    # amounts of likely coverage.
+    unread_yes: int = 0
+    unread_maybe: int = 0
+    # Candidates a later search returned again while they were already queued
+    # from an earlier round: not screened a second time.
+    already_waiting: int = 0
+    # Of this round's fetches, how many were candidates an earlier round found
+    # and left unread.
+    read_from_earlier: int = 0
     # B4. Filters the validator refused before any search ran. Its own counter,
     # like everything else here: a rejected filter is neither a failure nor a
     # rejection nor a parse problem, and a round that reported it as any of
@@ -1487,6 +1538,13 @@ class RoundReport:
     # about all the queries that surfaced a video, and recording only the first
     # would answer it with whichever set happened to run earlier.
     surfaced_by: dict[str, set[str]] = field(default_factory=dict)
+    # video_id -> the first query this round that returned it as new. The unit
+    # fetches are spread across: discovery order used to spend the whole budget
+    # on the first few queries (checkpoint 4: queries 0-4 of 17 supplied all 40
+    # fetches, and 74 candidates from queries 5-16 were never read).
+    found_by: dict[str, str] = field(default_factory=dict)
+    # What this round left unread, in the order it would have been read.
+    unread: list[UnreadCandidate] = field(default_factory=list)
     # B5. What the round actually decided about, with the judge's own reasons.
     # The counters above say how many; these say which, and the planner cannot
     # reason about coverage from an integer.
@@ -1540,6 +1598,13 @@ class DiscoverRun:
     # `stored_ids` (or `max_videos`); passed to Gate 1 beside it so a later
     # round does not screen, or judge, the same video again.
     read_from_disk: list[str] = field(default_factory=list)
+    # Stage-1 YES and MAYBE no round has fetched yet. In the next round's
+    # queue beside its new finds, and spent by the remaining budget if the run stops
+    # for want of anything new, so a narrow topic's budget does not vanish.
+    backlog: list[UnreadCandidate] = field(default_factory=list)
+    # Fetches spent on each query's finds so far this run. A query with
+    # nothing read yet goes before one that has had a read, in any round.
+    fetched_by_query: dict[str, int] = field(default_factory=dict)
     # Consecutive stage-2 requests refused as too large for the context window,
     # across rounds, reset by any stage-2 call that fitted. See discovery.
     overflow_streak: int = 0

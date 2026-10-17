@@ -60,6 +60,8 @@ from ..contracts import (
     RoundReport,
     TerritoryMap,
     TerritoryRevision,
+    UnreadCandidate,
+    VERDICT_YES,
 )
 from ..llm import LlmClient, LlmConfigError, Prompt, load_prompt, safe_reason
 from .territory import parse_filters, tidy, validate
@@ -604,6 +606,18 @@ def render_round(
     lines.extend(_marked_video_lines(unjudged) or ["- none"])
 
     lines.append("")
+    lines.append(
+        f"FOUND BUT NOT YET READ ({len(report.unread)}) — stage 1 judged these worth "
+        "reading, and this round's share of the video budget ran out before they were "
+        "fetched. They join the next round's queue, where a query with nothing read yet "
+        "goes before one that has had a read, so they are not pushed behind new finds. They "
+        "satisfy nothing yet. Searching for them again only finds what is already "
+        "queued: a part of the brief with candidates waiting here needs no new query, "
+        "and the parts with nothing kept and nothing waiting are the gaps."
+    )
+    lines.extend(_unread_lines(report.unread) or ["- none"])
+
+    lines.append("")
     # Stage-2 rejections first, here and only here. The loop appends every
     # stage-1 NO before any transcript is read, so with 25 or more of those the
     # cap below showed none of the rejections made after reading a transcript —
@@ -653,6 +667,11 @@ def render_round(
         f"{report.degraded} unreadable transcripts"
     )
     lines.append(
+        f"- video budget: {report.allowance} keepers allowed this round; "
+        f"{report.unread_yes} stage-1 YES and {report.unread_maybe} MAYBE left unread "
+        f"and carried forward; {report.read_from_earlier} read from an earlier round"
+    )
+    lines.append(
         f"- {report.failed} fetches failed, {report.no_captions} had no captions, "
         f"{report.already_held} were already on disk "
         f"({report.judged_from_disk} of them judged for this topic from disk, and "
@@ -683,6 +702,35 @@ def _marked_video_lines(videos: Sequence[tuple[int, JudgedVideo]]) -> list[str]:
     ]
     if dropped:
         lines.insert(0, f"- (+{dropped} kept in earlier rounds, not shown)")
+    return lines
+
+
+def _unread_lines(unread: Sequence[UnreadCandidate]) -> list[str]:
+    """What is waiting, by the query that found it, then each title.
+
+    Per query first, because that is the planner's unit: a query that already
+    has finds waiting is a part of the brief with candidates queued, and
+    writing another query for it spends a search on what the next round reads
+    anyway. Titles after, capped and said so like every other list here.
+    """
+    if not unread:
+        return []
+    per_query: dict[str, list[UnreadCandidate]] = {}
+    for entry in unread:
+        per_query.setdefault(entry.query or "(no query recorded)", []).append(entry)
+    lines = [
+        f"- {query} — {len(entries)} waiting "
+        f"({sum(1 for e in entries if e.verdict.verdict == VERDICT_YES)} stage-1 YES)"
+        for query, entries in per_query.items()
+    ]
+    shown = list(unread)[:_MAX_SHOWN]
+    lines.extend(
+        f"  - [{entry.verdict.verdict.upper()}] {entry.result.title[:_MAX_TITLE]} — "
+        f"{entry.verdict.reason}"
+        for entry in shown
+    )
+    if len(unread) > len(shown):
+        lines.append(f"  - (+{len(unread) - len(shown)} more, not shown)")
     return lines
 
 
