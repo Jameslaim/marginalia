@@ -883,6 +883,18 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     is never passed on as if it were whole, and never silently. How the brief was made is
     recorded on the run (`runs.brief_outcome`).
 
+31. **A budget is spent across what was searched for, and a NO names what was seen.** A
+    run-wide cap spent in discovery order lets the first queries' finds crowd out every
+    later query and pre-empt the rounds the planner would use: on one run, 5 of 17 queries
+    supplied all 40 fetches, 74 candidates went unread, three of eight parts got no video,
+    and the planner never ran. Each round stores a share of what is left, reads one
+    candidate per query in turn — queries with nothing read yet first, origins alternating
+    — and carries what it did not reach, counted and shown to the planner, never dropped.
+    And a judge's NO rests on what it saw: at stage 1, something the metadata shows to be
+    off the brief, not what it fails to show; at stage 2, a REQUIRED item failed, an
+    EXCLUDED item hit, or no part covered substantively. At both stages a video on a listed
+    part is judged on that part, and a part it does not cover is never a ground.
+
 ## Structure
 
 ```
