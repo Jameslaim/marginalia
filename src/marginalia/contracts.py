@@ -1738,11 +1738,13 @@ class NoteResult:
     # statements of the writer's own it wrapped in markers, how many spans it
     # listed that could not be applied (not found exactly once, or inside a
     # marker or Verbatim), and why it failed if it did — in which case the
-    # note stands exactly as first written. Rule 14: each its own field.
+    # note stands exactly as first written; and how many listed spans fell
+    # past the span cap and stayed unmarked. Rule 14: each its own field.
     mark_ran: bool = False
     marked: int = 0
     mark_rejected: int = 0
     mark_problem: str = ""
+    mark_capped: int = 0
 
 
 @dataclass

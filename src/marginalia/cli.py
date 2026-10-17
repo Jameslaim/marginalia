@@ -911,10 +911,13 @@ def _cmd_note(args: argparse.Namespace) -> int:
     if ran:
         # Rule 14: what the marking pass did, on its own line, zero included.
         failed_passes = [result for result in ran if result.mark_problem]
+        capped_passes = [result for result in ran if result.mark_capped]
         print(
             f"          marking pass: {sum(r.marked for r in ran)} statement(s) marked in "
             f"{len(ran)} note(s); {sum(r.mark_rejected for r in ran)} listed span(s) not "
-            f"applied; {len(failed_passes)} pass(es) failed, those notes kept as written"
+            f"applied; {len(failed_passes)} pass(es) failed, those notes kept as written; "
+            f"{len(capped_passes)} pass(es) hit the span cap, "
+            f"{sum(r.mark_capped for r in ran)} span(s) past it left unmarked"
         )
     # A refusal stopped the drain before it reached the rest of the queue, and
     # it records no result for the video it was on (rule 24) — so `failed`

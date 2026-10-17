@@ -1322,3 +1322,22 @@ def test_the_marking_prompt_lists_rather_than_rewrites() -> None:
     assert "anything under `## Verbatim`" in text
     assert "that absence is checked against the transcript and is record" in text
     assert "{{ transcript }}" in load_prompt("mark_note").text
+
+
+def test_the_marking_prompt_sees_the_metadata_and_names_what_is_record() -> None:
+    # v1 never saw the metadata and wrapped the channel, the upload date and a
+    # chapter title as outside knowledge; it also wrapped what the speaker does
+    # and counts of it. And its "at most 40 lines" left two notes part-unmarked.
+    raw = load_prompt("mark_note").text
+    text = " ".join(raw.split())
+    assert "{{ metadata }}" in raw
+    assert "anything stated under VIDEO" in text
+    assert "what the speaker says, shows, asks for or does" in text
+    assert "a count or an order of things the reader can see in the video" in text
+    assert "there is no limit" in text
+    assert "At most 40" not in text
+    # v3: what v2 still over-marked (how the video covers a point) and missed
+    # (garbled names identified, vendors named inside an absence, durations).
+    assert "how the video presents or covers something" in text
+    assert "a maker or vendor the video never names" in text
+    assert "time spans" in text

@@ -2828,6 +2828,51 @@ in the map prompt at checkpoint 2.
 **Stored notes.** The one note written under v9 is stale under v10: `marg note --status`
 counts it under `stale`, and the next drain regenerates it unless told otherwise.
 
+#### What the pass cost, what it over-marked, and its cap
+
+**Measured on three videos, one sample each.** The first run gave three things:
+
+- **The gain:** unmarked outside statements fell from 15, 9 and 11 per note (v9) to 2, 0
+  and 3.
+- **The cost:** the pass cost 2.7× the note alone, against a 2× budget.
+- **The cap:** 2 of 3 passes listed exactly 40 spans, v1's limit.
+
+A follow-up ran the pass alone on three fresh v10 drafts. The drafts had 10, 9 and 11
+unmarked statements. "Marked record" counts marked spans whose content the video
+gives; the target is at most 2 per note.
+
+- **The cost is reasoning.** With no `[llm.tasks.mark_note]` block, the provider's
+  default thinking applied. 96-97% of each pass's 19.5k-24.4k output tokens were
+  reasoning, against 437-758 visible. The lever is config (rule 7), and the measured
+  table is in `config.example.toml`.
+- **No reasoning is cheap and erratic.** It cost $0.0025 a pass, about 0.4× the note.
+  It wrapped whole Claims bullets, 13-27 marked record per note, and on one note it
+  left 9 statements unmarked. One v1 pass listed 108 spans, and the old parser
+  silently dropped 68 of them.
+- **Over-marking had a cause.** The pass never saw the metadata the writer was given.
+  Of 19 marked-record spans in the first run's three notes, 6 were the channel, the
+  upload date, the caption kind or a chapter title. The rest were things the speaker
+  says or does, counts of them, absences, or descriptions of how the video covers a
+  point.
+- **`mark_note` v3** is given the metadata (`source_facts`). It names those shapes
+  as record, and names what v2 still missed: garbled names identified, vendors named
+  inside an absence, and durations. At `low` it left 2, 2 and 0 unmarked, with 2, 0
+  and 3 marked record. **It is not cheap:** $0.0126 a pass, and note plus pass is
+  about 3× the note alone. v2 at `low` cost $0.0097 but over-marked 1, 5 and 7.
+- **The cap is now a counted runaway guard, not a silent quota.** Passes with
+  reasoning listed 20-63 spans; the only list over 80 was the 108-span runaway. So:
+  - `_MAX_MARKS` is 80;
+  - parsing keeps every span;
+  - spans past the cap stay unmarked, are logged as a warning, recorded in
+    `NoteResult.mark_capped`, and printed in the note report.
+
+**A marker can misattribute.** One marker in the 5a note, and one in a v9 note of the
+same video, credit a write-premium figure to "the video's own figures". The
+transcript gives no such figure: it is the old prompt's worked example, resurfacing
+inside a marker. That is worse than an unmarked statement, because the marker
+claims a source. No v10 note audited has a marker like this, and none carries the
+figure: 3 from the first run, and 15 from the follow-up (3 drafts × 5 pass settings).
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

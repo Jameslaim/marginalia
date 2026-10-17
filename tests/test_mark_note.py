@@ -32,7 +32,7 @@ from test_note import (
 
 MARK_PROMPT = (
     '---\nname: mark_note\nversion: "1"\n---\n'
-    "Check {{ note }} against {{ transcript }}\n"
+    "Check {{ note }} against {{ transcript }} given {{ metadata }}\n"
 )
 LEAVES_OUT_SPAN = "private detail about leaves out"
 
@@ -120,6 +120,14 @@ def test_a_span_that_appears_twice_is_not_marked() -> None:
     assert body == doubled
 
 
+def test_parsing_keeps_every_listed_span() -> None:
+    # The cap is applied, and counted, by the pass; parsing never drops spans
+    # silently.
+    reply = "\n".join(f"MARK: listed span number {n:03d}" for n in range(55))
+
+    assert len(parse_marks(reply)) == 55
+
+
 # -- the pass in the drain --------------------------------------------------------
 
 
@@ -139,8 +147,33 @@ def test_the_second_pass_marks_what_it_lists_and_counts_it(tmp_path: Path) -> No
     assert len(made.sent) == 2, "one note call, one marking call"
     assert f"[note: {LEAVES_OUT_SPAN}]" in library.read_note("aaaaaaaaaaa")
     assert ledger.get("aaaaaaaaaaa").noted_at is not None
-    # The marking call was fed the finished note and the transcript.
-    assert "Check" in made.sent[1]["messages"][-1]["content"]
+    # The marking call was fed the finished note, the transcript, and the
+    # metadata the writer was given — without it the channel and the upload
+    # date read as outside knowledge and were marked.
+    sent = made.sent[1]["messages"][-1]["content"]
+    assert "Check" in sent
+    assert "CHANNEL:" in sent and "UPLOADED:" in sent and "TODAY:" in sent
+
+
+def test_a_pass_that_hits_the_span_cap_is_counted_not_silent(tmp_path, monkeypatch) -> None:
+    # A cap that is reached leaves the rest unmarked; rule 14 says it is counted
+    # and rule 30 says the reader is told.
+    from marginalia.enrich import note as note_module
+
+    monkeypatch.setattr(note_module, "_MAX_MARKS", 1)
+    config, library, ledger = marking(tmp_path, "aaaaaaaaaaa")
+    script = [GOOD_NOTE, f"MARK: {LEAVES_OUT_SPAN}\nMARK: a second span past the cap\n"
+                         "MARK: a third span past the cap"]
+
+    run = write_notes(
+        config, ledger, library, client(lambda n: script[n]),
+        prompts_directory=marking_prompts(tmp_path),
+    )
+
+    result = run.results[0]
+    assert (result.marked, result.mark_rejected, result.mark_capped) == (1, 0, 2)
+    assert "2 span(s) past the 1-span cap left unmarked" in result.detail
+    assert f"[note: {LEAVES_OUT_SPAN}]" in library.read_note("aaaaaaaaaaa")
 
 
 def _written_body(library) -> str:
@@ -231,11 +264,14 @@ def test_the_note_report_counts_what_the_marking_pass_did(tmp_path, monkeypatch,
                    mark_rejected=1),
         NoteResult("bbbbbbbbbbb", NOTED, "y", version="10", mark_ran=True,
                    mark_problem="cut off at the token ceiling"),
+        NoteResult("ccccccccccc", NOTED, "z", version="10", mark_ran=True, marked=2,
+                   mark_capped=5),
     ]
     monkeypatch.setattr("marginalia.cli.write_notes", lambda *a, **k: run)
 
     main(["note"])
 
     out = capsys.readouterr().out
-    assert ("marking pass: 3 statement(s) marked in 2 note(s); 1 listed span(s) not applied; "
-            "1 pass(es) failed, those notes kept as written") in out
+    assert ("marking pass: 5 statement(s) marked in 3 note(s); 1 listed span(s) not applied; "
+            "1 pass(es) failed, those notes kept as written; "
+            "1 pass(es) hit the span cap, 5 span(s) past it left unmarked") in out

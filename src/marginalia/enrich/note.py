@@ -361,12 +361,20 @@ def _length_refusal(transcript_chars: int, config: NoteConfig) -> tuple[str, str
 # from the note, and the code wraps each one it finds exactly once in a
 # `[note: ...]` marker and changes nothing else. A pass that rewrote the note
 # could drift the record it was meant to protect; this one cannot touch a word
-# of it, and its output is a few lines rather than a second note.
+# of it. Its visible reply is a few hundred tokens; its cost is reasoning — at
+# the provider's default effort, 96-97% of the pass's output tokens — so its
+# effort is set in config, `[llm.tasks.mark_note]`, never here (rule 7).
 
 MARK_PROMPT = "mark_note"
 _MARK_LINE_RE = re.compile(r"^\s*(?:[-*]\s*)?MARK:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _MARK_NONE_RE = re.compile(r"\A\s*(?:`{3}\s*)?NONE\.?\s*(?:`{3})?\s*\Z", re.IGNORECASE)
-_MAX_MARKS = 40
+# A runaway guard, not a quota: spans past it stay unmarked and are counted and
+# printed (rules 14, 30). Measured on three notes of 2-3k words: passes with
+# reasoning listed 20-63 spans; the one list over 80 was 108, from a pass with
+# no reasoning that wrapped whole Claims bullets — record — which is what this
+# guard is for. v1's prompt said "at most 40", and 2 of 3 passes stopped at
+# exactly 40 with more left; the prompt now sets no limit and this cap is it.
+_MAX_MARKS = 80
 # Shorter than this, an exact match is too likely to land on the wrong words.
 _MIN_MARK_CHARS = 12
 _QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019"
@@ -377,7 +385,7 @@ def parse_marks(text: str) -> list[str] | None:
     spans = [m.group(1).strip().strip(_QUOTE_CHARS).strip() for m in _MARK_LINE_RE.finditer(text)]
     spans = [span for span in spans if span]
     if spans:
-        return spans[:_MAX_MARKS]
+        return spans
     if _MARK_NONE_RE.match(text):
         return []
     return None
@@ -428,34 +436,64 @@ def apply_marks(body: str, spans: Sequence[str]) -> tuple[str, int, int]:
     return body, applied, rejected
 
 
-def mark_pass(
-    client: LlmClient, prompt: Prompt, transcript: str, body: str, *, max_tokens: int
-) -> tuple[str, int, int, str]:
-    """One marking call over a finished note. ``(body, marked, rejected, problem)``.
+def source_facts(video_id: str, meta: dict[str, Any] | None) -> str:
+    """What the note-writer was told besides the transcript.
 
-    Rule 30: only a note that has passed `validate_note` and was not cut off is
-    fed in — the caller guarantees it. A failed, cut or unreadable reply leaves
-    the note exactly as written and says why in ``problem``. A refusal is
-    re-raised (rule 24); the caller has already written the note by then.
+    The marking pass needs it too. Without it, the channel, the upload date, the
+    caption kind and the chapter titles look like outside knowledge — they are
+    not in the transcript — and the pass wrapped them: of 19 marked spans whose
+    content was record, across three v10 notes, 6 were these facts.
+    """
+    m = meta or {}
+    return "\n".join([
+        f"TITLE: {m.get('title') or video_id}",
+        f"CHANNEL: {m.get('channel') or 'unknown'}",
+        f"DURATION: {format_duration(m.get('duration_s'))}",
+        f"UPLOADED: {m.get('upload_date') or 'unknown'}",
+        f"CAPTIONS: {m.get('caption_kind') or 'unknown'}",
+        _chapter_line(meta),
+        f"TODAY: {date.today().isoformat()}",
+    ])
+
+
+def mark_pass(
+    client: LlmClient,
+    prompt: Prompt,
+    transcript: str,
+    body: str,
+    *,
+    max_tokens: int,
+    facts: str = "",
+) -> tuple[str, int, int, str, int]:
+    """One marking call over a finished note.
+
+    Returns ``(body, marked, rejected, problem, capped)``. Rule 30: only a note
+    that has passed `validate_note` and was not cut off is fed in — the caller
+    guarantees it. A failed, cut or unreadable reply leaves the note exactly as
+    written and says why in ``problem``. A refusal is re-raised (rule 24); the
+    caller has already written the note by then. ``capped`` is how many listed
+    spans fell past `_MAX_MARKS` and were not applied: a cap that is reached
+    leaves the rest unmarked, so it is counted rather than silent (rule 14).
     """
     try:
         reply = client.complete(
             "You check a note against its transcript and list what it did not mark.",
-            prompt.render(transcript=transcript, note=body),
+            prompt.render(transcript=transcript, note=body, metadata=facts),
             max_tokens=max_tokens,
             task="mark_note",
         )
     except LlmConfigError:
         raise
     except LlmError as exc:
-        return body, 0, 0, f"failed: {safe_reason(exc)[:120]}"
+        return body, 0, 0, f"failed: {safe_reason(exc)[:120]}", 0
     if reply.finish_reason == "length":
-        return body, 0, 0, "cut off at the token ceiling"
+        return body, 0, 0, "cut off at the token ceiling", 0
     spans = parse_marks(reply.text)
     if spans is None:
-        return body, 0, 0, "unreadable reply"
-    marked_body, applied, rejected = apply_marks(body, spans)
-    return marked_body, applied, rejected, ""
+        return body, 0, 0, "unreadable reply", 0
+    capped = max(0, len(spans) - _MAX_MARKS)
+    marked_body, applied, rejected = apply_marks(body, spans[:_MAX_MARKS])
+    return marked_body, applied, rejected, "", capped
 
 
 def note_version(prompts_directory: Any = None) -> str:
@@ -716,11 +754,12 @@ def _one(
     # nothing the pass does — a failure, a cut reply, a refusal that stops the
     # drain — can lose the note this call paid for (rule 30: a failed second
     # pass leaves the first note intact). Only marks are written over it.
-    marked = rejected = 0
+    marked = rejected = capped = 0
     mark_problem = ""
     if marker is not None:
-        marked_body, marked, rejected, mark_problem = mark_pass(
-            client, marker, transcript, body, max_tokens=config.note.max_tokens
+        marked_body, marked, rejected, mark_problem, capped = mark_pass(
+            client, marker, transcript, body, max_tokens=config.note.max_tokens,
+            facts=source_facts(video_id, meta),
         )
         if marked:
             library.write_note(video_id, header + "\n" + marked_body)
@@ -730,6 +769,12 @@ def _one(
             log.info(
                 "note: %s — marking pass wrapped %d statement(s), %d listed span(s) not applied",
                 video_id, marked, rejected,
+            )
+        if capped:
+            log.warning(
+                "note: %s — marking pass listed %d span(s) past the %d-span cap; "
+                "those stay unmarked",
+                video_id, capped, _MAX_MARKS,
             )
 
     detail = f"{reply.usage.output_tokens:,} tokens"
@@ -743,6 +788,8 @@ def _one(
             if mark_problem
             else f", {marked} statement(s) marked by the second pass"
         )
+        if capped:
+            detail += f", {capped} span(s) past the {_MAX_MARKS}-span cap left unmarked"
     return NoteResult(
         video_id,
         NOTED,
@@ -756,6 +803,7 @@ def _one(
         marked=marked,
         mark_rejected=rejected,
         mark_problem=mark_problem,
+        mark_capped=capped,
     )
 
 
