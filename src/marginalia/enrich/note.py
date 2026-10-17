@@ -67,6 +67,7 @@ from ..quotes import (
     note_lines,
     note_sections,
     quoted_spans,
+    section_heading,
     spoken_text,
 )
 from .timestamps import build_index, snap_note
@@ -348,6 +349,115 @@ def _length_refusal(transcript_chars: int, config: NoteConfig) -> tuple[str, str
     return None
 
 
+# -- the marking pass ---------------------------------------------------------
+#
+# Audited on one note written under write_note v9: the record was faithful —
+# every claim supported, every quote exact, every key moment on time — and 14
+# statements of the writer's own knowledge, arithmetic or extrapolation carried
+# no marker, 8 of 10 Leaves-out items among them. Ask reads a note as what the
+# video says (rule 26), so each became something the video would be cited for.
+#
+# **The model lists; the code marks.** The second call returns spans copied
+# from the note, and the code wraps each one it finds exactly once in a
+# `[note: ...]` marker and changes nothing else. A pass that rewrote the note
+# could drift the record it was meant to protect; this one cannot touch a word
+# of it, and its output is a few lines rather than a second note.
+
+MARK_PROMPT = "mark_note"
+_MARK_LINE_RE = re.compile(r"^\s*(?:[-*]\s*)?MARK:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+_MARK_NONE_RE = re.compile(r"\A\s*(?:`{3}\s*)?NONE\.?\s*(?:`{3})?\s*\Z", re.IGNORECASE)
+_MAX_MARKS = 40
+# Shorter than this, an exact match is too likely to land on the wrong words.
+_MIN_MARK_CHARS = 12
+_QUOTE_CHARS = "\"'\u201c\u201d\u2018\u2019"
+
+
+def parse_marks(text: str) -> list[str] | None:
+    """The spans a marking reply lists; ``[]`` for NONE; ``None`` if unreadable."""
+    spans = [m.group(1).strip().strip(_QUOTE_CHARS).strip() for m in _MARK_LINE_RE.finditer(text)]
+    spans = [span for span in spans if span]
+    if spans:
+        return spans[:_MAX_MARKS]
+    if _MARK_NONE_RE.match(text):
+        return []
+    return None
+
+
+def _unmarkable(body: str) -> list[tuple[int, int]]:
+    """Ranges no mark may touch: existing markers, headings, all of Verbatim."""
+    ranges = [(m.start(), m.end()) for m in _NOTE_MARKER_RE.finditer(body)]
+    position, section = 0, None
+    for line in body.splitlines(keepends=True):
+        boundary, name = section_heading(line)
+        if boundary:
+            section = name
+            ranges.append((position, position + len(line)))
+        elif section == "Verbatim":
+            ranges.append((position, position + len(line)))
+        position += len(line)
+    return ranges
+
+
+def apply_marks(body: str, spans: Sequence[str]) -> tuple[str, int, int]:
+    """Wrap each span found exactly once, outside markers and Verbatim.
+
+    Returns ``(body, applied, rejected)``. A span that is too short, holds a
+    bracket or a line break, is not in the note, is there more than once, or
+    falls in a range `_unmarkable` protects is rejected and counted, never
+    guessed at: a mark on the wrong words would move the record into a marker.
+    """
+    applied = rejected = 0
+    for span in spans:
+        if len(span) < _MIN_MARK_CHARS or "[" in span or "]" in span or "\n" in span:
+            rejected += 1
+            continue
+        blocked = _unmarkable(body)
+        hits = []
+        start = body.find(span)
+        while start != -1:
+            end = start + len(span)
+            if not any(start < stop and end > begin for begin, stop in blocked):
+                hits.append(start)
+            start = body.find(span, start + 1)
+        if len(hits) != 1:
+            rejected += 1
+            continue
+        at = hits[0]
+        body = body[:at] + f"[note: {span}]" + body[at + len(span):]
+        applied += 1
+    return body, applied, rejected
+
+
+def mark_pass(
+    client: LlmClient, prompt: Prompt, transcript: str, body: str, *, max_tokens: int
+) -> tuple[str, int, int, str]:
+    """One marking call over a finished note. ``(body, marked, rejected, problem)``.
+
+    Rule 30: only a note that has passed `validate_note` and was not cut off is
+    fed in — the caller guarantees it. A failed, cut or unreadable reply leaves
+    the note exactly as written and says why in ``problem``. A refusal is
+    re-raised (rule 24); the caller has already written the note by then.
+    """
+    try:
+        reply = client.complete(
+            "You check a note against its transcript and list what it did not mark.",
+            prompt.render(transcript=transcript, note=body),
+            max_tokens=max_tokens,
+            task="mark_note",
+        )
+    except LlmConfigError:
+        raise
+    except LlmError as exc:
+        return body, 0, 0, f"failed: {safe_reason(exc)[:120]}"
+    if reply.finish_reason == "length":
+        return body, 0, 0, "cut off at the token ceiling"
+    spans = parse_marks(reply.text)
+    if spans is None:
+        return body, 0, 0, "unreadable reply"
+    marked_body, applied, rejected = apply_marks(body, spans)
+    return marked_body, applied, rejected, ""
+
+
 def note_version(prompts_directory: Any = None) -> str:
     """The version of the prompt currently on disk.
 
@@ -372,6 +482,9 @@ def write_notes(
 ) -> NoteRun:
     """Drain videos that need a note. One transcript, one call, whole thing."""
     prompt = load_prompt("write_note", directory=prompts_directory)
+    marker = (
+        load_prompt(MARK_PROMPT, directory=prompts_directory) if config.note.mark_pass else None
+    )
     run = NoteRun(version=prompt.version, model=client.model)
     started = time.monotonic()
 
@@ -402,7 +515,7 @@ def write_notes(
             # Each video's overflow is its own (see `forget_overflows`).
             client.forget_overflows()
             try:
-                result = _one(config, ledger, library, client, prompt, row)
+                result = _one(config, ledger, library, client, prompt, row, marker=marker)
             except LlmConfigError as exc:
                 # Stop on the first one, and write nothing about this video.
                 # **Aborting the run and condemning the video are different
@@ -448,6 +561,8 @@ def _one(
     client: LlmClient,
     prompt: Prompt,
     row: VideoRow,
+    *,
+    marker: Prompt | None = None,
 ) -> NoteResult:
     video_id = row.video_id
 
@@ -593,13 +708,41 @@ def _one(
     # File first, ledger second. A crash between them costs one model call; the
     # other order would leave a row claiming a note that does not exist, and
     # nothing would ever revisit it.
-    library.write_note(video_id, note_header(video_id, meta) + "\n" + body)
+    header = note_header(video_id, meta)
+    library.write_note(video_id, header + "\n" + body)
     ledger.mark_noted(video_id, version=prompt.version, model=reply.model)
+
+    # The marking pass, on a note already written. Written first so that
+    # nothing the pass does — a failure, a cut reply, a refusal that stops the
+    # drain — can lose the note this call paid for (rule 30: a failed second
+    # pass leaves the first note intact). Only marks are written over it.
+    marked = rejected = 0
+    mark_problem = ""
+    if marker is not None:
+        marked_body, marked, rejected, mark_problem = mark_pass(
+            client, marker, transcript, body, max_tokens=config.note.max_tokens
+        )
+        if marked:
+            library.write_note(video_id, header + "\n" + marked_body)
+        if mark_problem:
+            log.info("note: %s — marking pass %s; note kept as written", video_id, mark_problem)
+        else:
+            log.info(
+                "note: %s — marking pass wrapped %d statement(s), %d listed span(s) not applied",
+                video_id, marked, rejected,
+            )
+
     detail = f"{reply.usage.output_tokens:,} tokens"
     if snapped:
         detail += f", {snapped} timestamp(s) snapped"
     if unfound:
         detail += f", {unfound} of {checked} verbatim quote(s) not in the transcript"
+    if marker is not None:
+        detail += (
+            f", marking pass {mark_problem} — note kept as written"
+            if mark_problem
+            else f", {marked} statement(s) marked by the second pass"
+        )
     return NoteResult(
         video_id,
         NOTED,
@@ -609,6 +752,10 @@ def _one(
         snapped=snapped,
         verbatim_checked=checked,
         verbatim_unfound=unfound,
+        mark_ran=marker is not None,
+        marked=marked,
+        mark_rejected=rejected,
+        mark_problem=mark_problem,
     )
 
 

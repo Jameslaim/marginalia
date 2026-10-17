@@ -907,6 +907,15 @@ def _cmd_note(args: argparse.Namespace) -> int:
             f"{sum(r.verbatim_unfound for r in run.results)} of {checked} verbatim "
             f"quote(s) not found in the transcript, marked in the note"
         )
+    ran = [result for result in run.results if result.mark_ran]
+    if ran:
+        # Rule 14: what the marking pass did, on its own line, zero included.
+        failed_passes = [result for result in ran if result.mark_problem]
+        print(
+            f"          marking pass: {sum(r.marked for r in ran)} statement(s) marked in "
+            f"{len(ran)} note(s); {sum(r.mark_rejected for r in ran)} listed span(s) not "
+            f"applied; {len(failed_passes)} pass(es) failed, those notes kept as written"
+        )
     # A refusal stopped the drain before it reached the rest of the queue, and
     # it records no result for the video it was on (rule 24) — so `failed`
     # stays 0 and this used to exit 0, which a script reads as "every note is

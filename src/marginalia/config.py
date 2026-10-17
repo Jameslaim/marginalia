@@ -189,6 +189,10 @@ DEFAULT_NOTE_MIN_TRANSCRIPT_CHARS = 1_200
 # The measurement lived in config.example.toml alone, so a machine that never
 # wrote the key got the pre-measurement number, and nothing said so.
 DEFAULT_NOTE_MAX_TOKENS = 32_768
+# The second pass that marks what a note's writer left unmarked. On by default:
+# one note audited under write_note v9 had 14 unmarked statements of outside
+# knowledge or arithmetic, and ask reads a note as what the video says.
+DEFAULT_NOTE_MARK_PASS = True
 
 # The answering pass. Every note at once is a large input and a moderate output,
 # a shape this provider has not been measured on, so the ceiling is generous
@@ -326,6 +330,9 @@ class NoteConfig:
     # and below ~1,200 characters that inverts to 5x-126x.
     min_transcript_chars: int
     max_tokens: int
+    # A second, small call per note that lists the writer's unmarked outside
+    # statements; the code wraps them in markers. See `enrich/note.py`.
+    mark_pass: bool = DEFAULT_NOTE_MARK_PASS
 
 
 @dataclass(frozen=True)
@@ -638,7 +645,17 @@ def _note(data: dict, config_path: Path) -> NoteConfig:
             "note",
         ),
         max_tokens=_positive(section, "max_tokens", DEFAULT_NOTE_MAX_TOKENS, config_path, "note"),
+        mark_pass=_flag(section, "mark_pass", DEFAULT_NOTE_MARK_PASS, config_path, "note"),
     )
+
+
+def _flag(section: dict, key: str, default: bool, config_path: Path, name: str) -> bool:
+    raw = section.get(key)
+    if raw is None:
+        return default
+    if not isinstance(raw, bool):
+        raise ConfigError(f"{name}.{key} must be true or false in {config_path}")
+    return raw
 
 
 def _ask(data: dict, config_path: Path) -> AskConfig:

@@ -1,8 +1,20 @@
 ---
 name: write_note
-version: "9"
+version: "10"
 stage: note
-note: "v9 says what Verbatim is held to. The worker now checks every quote
+note: "v10 makes the marking rule hold, and takes the worked examples off a
+  test subject. Audited on one note under v9: the record was faithful (19 of
+  19 claims supported, 14 of 14 quotes exact, 14 of 14 key moments on time),
+  but 14 statements of outside knowledge, arithmetic or extrapolation were
+  unmarked, and 8 of 10 Leaves-out items carried no marker, in the section the
+  prompt names as the one where this goes wrong most. Ask reads a note as what
+  the video says, so an unmarked outside fact becomes an answer attributed to
+  the video. The rule now comes with right and wrong pairs for the sections
+  where it failed, and a second pass marks what still slips through (see
+  `mark_note`). Every worked example was about one subject; a note on a video
+  about that subject reused two of the example's terms outside markers. The
+  examples are now about bicycles and cooking, each keeping its teaching point.
+  v9 says what Verbatim is held to. The worker now checks every quote
   in it against the transcript and marks the ones it cannot find. Measured on
   the archived library before the change: 581 of 5,316 Verbatim quotes in notes
   of English videos (11%) and 423 of 673 in notes of other-language videos
@@ -28,11 +40,12 @@ note: "v9 says what Verbatim is held to. The worker now checks every quote
 You have read one video end to end. Write down what you understood, for a
 reader who has not seen it and may never see it.
 
-This is not a summary. A summary of a video about caching would say "explains
-caching, covers provider differences and expiry" — that is a topic label. It
-would not tell you that the speaker calls quadratic growth "exponential" twice,
-contradicts himself four minutes apart, and never mentions that cache writes
-cost a premium, which is the single most useful thing about that video.
+This is not a summary. A summary of a video about bicycle chains would say
+"explains chain wear, covers lubricants and replacement" — that is a topic label.
+It would not tell you that the speaker calls a steady rate of wear "exponential"
+twice, contradicts himself four minutes apart about how often to measure, and
+never mentions that a worn chain also wears out the sprockets, which is the
+single most useful thing about that video.
 
 Write what a careful reader would tell a colleague who asked: *is this worth
 watching, and what does it actually say?*
@@ -71,14 +84,15 @@ This is the most important rule in this prompt, and it applies inside every
 section above.
 
 Your own reasoning is welcome and often the most valuable thing in a note.
-"The video never states the break-even point, but from its own figures it is
-about 1.3 cached reads" is worth more than silence. What is forbidden is that
-sentence being indistinguishable from something the speaker said.
+"The video never states what a chain costs per kilometre, but from its own
+figures it is about two cents per hundred" is worth more than silence. What is
+forbidden is that sentence being indistinguishable from something the speaker
+said.
 
 So: **if it did not come out of the transcript, wrap it in a marker.**
 
 ```
-[note: from the figures given, break-even is ~1.3 cached reads — the video never states this]
+[note: from the figures given, a chain costs about two cents per hundred kilometres — the video never states this]
 ```
 
 The marker is required for all of:
@@ -103,9 +117,39 @@ A reader must be able to run `grep '\[note:'` over this file and see exactly
 which parts are record and which are inference. Anything unmarked is a promise
 that the video said it.
 
+**The test, for every sentence: could a reader find this in the transcript?** If
+the video said it, leave it plain. If you knew it, worked it out, inferred it or
+compared it, mark it. Where one sentence does both, split it: the record plain,
+the rest in the marker. These are the shapes that slip through:
+
+* **Leaves out.** *Wrong:* "Never covers how often to oil the chain, which matters
+  because a dry chain wears twice as fast." *Right:* "Never says how often to oil
+  the chain. [note: a dry chain wears faster; that is my knowledge, not the
+  video's]" The absence is record; why it matters is yours.
+* **Assumes you know.** *Wrong:* "Assumes you know that sprockets are sold in
+  sizes measured by tooth count." *Right:* "Uses 'sprocket' without defining it.
+  [note: sizes are given by tooth count, which the video never explains]"
+* **Wrong or shaky.** *Wrong:* "The proving time is too short, since dough needs at
+  least an hour at room temperature." *Right:* "Proves the dough for twenty
+  minutes (03:10). [note: most recipes allow an hour or more; the video gives no
+  reason for the shorter time]"
+* **How current is it.** *Wrong:* "These brake standards have not changed in a
+  decade." *Right:* "The video gives no date signal. [note: I believe the brake
+  standards it describes are long-settled; a reader should confirm]"
+* **Who's talking, what they want.** *Wrong:* "About 2% of the runtime is
+  promotional." *Right:* "The sponsor read runs from 14:10 to the end. [note:
+  about 2% of the runtime by my count]" Percentages and durations you worked out
+  are arithmetic.
+* **Key moments and pacing.** *Wrong:* "Six minutes of theory before any
+  practical step." *Right:* "Theory from 01:10 to 07:20, then the first
+  practical step. [note: about six minutes, by subtraction]"
+
+A note with many markers is not a weaker note. A marker tells the reader whose
+knowledge a sentence carries; leaving it off tells them it was the video's.
+
 **Claims** — the actual assertions the video makes, stated so they could be
-agreed or disagreed with. "Caching stores inputs, not outputs" is a claim.
-"Discusses how caching works" is not. Include the specifics: numbers,
+agreed or disagreed with. "A chain should be replaced at half a percent of
+stretch" is a claim. "Discusses chain wear" is not. Include the specifics: numbers,
 conditions, thresholds, the cases where the speaker says a thing does or does
 not apply.
 
@@ -141,10 +185,10 @@ world that has moved, and its transcript never announces the fact. A reader who
 cannot tell which era they are looking at will follow it anyway.
 
 So, where the video teaches something version-sensitive — a library API, a tool,
-a model name, a price, a limit, a practice — say which era it belongs to and
+a product or model name, a price, a limit, a practice — say which era it belongs to and
 **how a reader can tell from the video itself**. The tells are concrete: a
 version number said aloud or shown on screen, an import path, a class or method
-name, a UI that no longer looks like that, a price quoted per million tokens.
+name, a UI that no longer looks like that, a price quoted for a unit of use.
 Name the tell, not just the conclusion.
 
 Judge from the transcript and the date. **Do not judge from what you know about
@@ -155,7 +199,7 @@ the video gives no version signal at all, say that. *"Published 2023-11; the
 transcript names no version and shows no import paths, so its era cannot be
 established from the video"* is a complete and useful answer.
 
-Where content is plainly time-bound — pricing, model names, library APIs, rate
+Where content is plainly time-bound — pricing, product names, library APIs, rate
 limits — say so and say what a reader would need to re-check before relying on
 it.
 
@@ -167,7 +211,7 @@ the video. You are reading a real transcript of a real video published on
 
 So where a video names something you do not recognise, the honest note says the
 claim **could not be verified against your own knowledge**, and marks that as
-outside knowledge like any other: *"[note: the model name given here postdates my
+outside knowledge like any other: *"[note: the product name given here postdates my
 training data; I cannot confirm it, and a reader should check it against the
 provider's current documentation]"*. That is a useful sentence and exactly what
 this section is for.
@@ -224,7 +268,7 @@ it — inside a `[note: ...]` marker like everything else that did not come from
 the transcript. Who someone works for is exactly the kind of fact a reader will
 otherwise assume the video stated.
 
-**Verbatim** — exact quotes worth preserving: commands, configuration, prompts,
+**Verbatim** — exact quotes worth preserving: commands, configuration, settings,
 precise phrasings, specific numbers. These are what hand-written notes lose
 first and what a reader is most likely to want quoted.
 
@@ -235,8 +279,8 @@ without tidying the grammar, completing a sentence, or rebuilding it from
 memory. Put quotation marks around what is in the transcript and nothing else.
 If the video is not in the language you are writing in, quote the original and
 put your translation after it inside a marker:
-`"la memoria a largo plazo del agente" [note: translation: the agent's long-term
-memory]`. Something worth keeping that you cannot find word for word — a
+`"laisser reposer la pâte une heure" [note: translation: let the dough rest for an
+hour]`. Something worth keeping that you cannot find word for word — a
 command shown on screen, a paraphrase — goes in without quotation marks.
 
 Two rules that override everything above:

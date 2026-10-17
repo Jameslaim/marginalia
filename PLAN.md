@@ -2789,6 +2789,45 @@ topic that only one round can serve now stores fewer videos in round 1 and more 
 rounds the planner directs. The absence guard sends more short clips to stage 2 —
 about one fetch and one read each.
 
+### Notes mark what is not from the transcript; neutral note examples
+
+**What was measured** on the first note written in the new library (phase 5a, one
+video, write_note v9). The record was faithful: 19 of 19 claims supported by the
+transcript, 14 of 14 Verbatim quotes exact, 14 of 14 key moments on time, and caption
+errors blamed on the captions. The prompt's central rule was not: **14 statements of
+outside knowledge, arithmetic or extrapolation carried no marker** — in Leaves out (4),
+Assumes you know (3), Wrong or shaky (2), How current is it (2), Who's talking (2) and
+Key moments (1) — and **8 of 10 Leaves-out items were unmarked**, in the section the
+prompt names as the one where this goes wrong most. Ask reads a note as what the video
+says (rule 26), so each unmarked sentence becomes something a video is cited for.
+
+The prompt's worked examples were all about one subject, and a note on a video about
+that subject used two of the examples' terms outside markers — the mechanism measured
+in the map prompt at checkpoint 2.
+
+**The change.**
+
+- **`write_note` v10** states the test for every sentence — could a reader find this in
+  the transcript? — and gives a wrong and a right version for each section where marking
+  failed: what an absence means, an undefined term's explanation, the standard an error
+  is judged against, a date judgement, a percentage of runtime, a pacing duration. Every
+  worked example is now about bicycles or cooking, each keeping its teaching point.
+- **A marking pass (`mark_note` v1)**, one small call per note after the note is written.
+  It lists spans of the note that did not come from the transcript; **the code wraps
+  each span found exactly once in a `[note: ...]` marker and changes nothing else**, so
+  the record cannot drift and the reply is a few lines, not a second note. Spans inside
+  existing markers, headings or Verbatim, spans found more than once or not at all, and
+  very short spans are refused and counted, never guessed at.
+- **Rule 30**: the pass runs only on a note that was validated and not cut off, and the
+  note is written to disk first; a failed, cut or unreadable pass leaves it exactly as
+  written and says why. A refusal still stops the drain (rule 24), after the note is kept.
+- **Rule 14**: each note records whether the pass ran, how many statements it marked, how
+  many listed spans it could not apply, and why it failed if it did; the drain prints a
+  line for the pass, zero included. `[note] mark_pass` turns it off.
+
+**Stored notes.** The one note written under v9 is stale under v10: `marg note --status`
+counts it under `stale`, and the next drain regenerates it unless told otherwise.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

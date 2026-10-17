@@ -58,6 +58,10 @@ def make_note_config(**overrides: object) -> NoteConfig:
         "max_transcript_chars": 400_000,
         "min_transcript_chars": 1_200,
         "max_tokens": 8192,
+        # Off here, on in production. The note tests script one reply per note
+        # and describe the writer; the marking pass has its own tests, which
+        # turn it on.
+        "mark_pass": False,
     }
     values.update(overrides)
     return NoteConfig(**values)  # type: ignore[arg-type]

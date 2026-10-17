@@ -1288,3 +1288,37 @@ def test_the_stage_one_prompt_judges_a_part_video_on_its_part() -> None:
     assert "it is not a fence around one angle of it" in text
     assert "A NO still stands" in text
 
+
+
+def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:
+    """The phase-5a audit: a faithful record and 14 unmarked outside statements,
+    8 of 10 Leaves-out items among them. And every worked example was about one
+    subject; a note on a video about that subject reused two of its terms
+    outside markers. The examples now come from bicycles and cooking."""
+    text = load_prompt("write_note").text
+    flat = " ".join(text.split())
+    for subject_word in ("cach", "break-even", "premium", "token", "inputs, not outputs",
+                         "agente", "memoria"):
+        assert subject_word not in text.lower(), subject_word
+    assert "could a reader find this in the transcript?" in flat
+    assert "These are the shapes that slip through" in flat
+    for section in ("Leaves out.", "Assumes you know.", "Wrong or shaky.",
+                    "How current is it.", "Who's talking, what they want.",
+                    "Key moments and pacing."):
+        assert f"**{section}** *Wrong:*" in flat, section
+    # Each teaching point kept: a mislabelled rate, a self-contradiction, an
+    # omitted cost, arithmetic in a marker, a claim versus a topic label, and a
+    # quote in its own language with the translation in a marker.
+    assert '"exponential"' in flat and "contradicts himself" in flat
+    assert "[note: from the figures given" in flat
+    assert "is a claim." in flat and "is not." in flat
+    assert "[note: translation:" in flat
+
+
+def test_the_marking_prompt_lists_rather_than_rewrites() -> None:
+    text = " ".join(load_prompt("mark_note").text.split())
+    assert "You do not rewrite the note" in text
+    assert "MARK:" in text and "NONE" in text
+    assert "anything under `## Verbatim`" in text
+    assert "that absence is checked against the transcript and is record" in text
+    assert "{{ transcript }}" in load_prompt("mark_note").text

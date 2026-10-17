@@ -1734,6 +1734,15 @@ class NoteResult:
     snapped: int = 0
     verbatim_checked: int = 0
     verbatim_unfound: int = 0
+    # The marking pass (`mark_note`): whether it ran, how many unmarked
+    # statements of the writer's own it wrapped in markers, how many spans it
+    # listed that could not be applied (not found exactly once, or inside a
+    # marker or Verbatim), and why it failed if it did — in which case the
+    # note stands exactly as first written. Rule 14: each its own field.
+    mark_ran: bool = False
+    marked: int = 0
+    mark_rejected: int = 0
+    mark_problem: str = ""
 
 
 @dataclass
