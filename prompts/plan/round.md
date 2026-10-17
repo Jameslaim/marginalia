@@ -1,8 +1,13 @@
 ---
 name: plan_round
-version: "8"
+version: "9"
 stage: plan
-note: "v8 stops naming a real language in its language-part example. At
+note: "v9 words a gap's query like the title of a video that meets REQUIRED,
+  the rule the map and the expansion gained in the same change (rule 25).
+  Checkpoint 3 measured, on round-one queries, about 4 keepable results in 10
+  for that wording and about 0.9 for a part's own vocabulary; nothing has
+  measured a planner query yet.
+  v8 stops naming a real language in its language-part example. At
   checkpoint 2 the same named-language example in the map and expansion
   prompts put that language in 6 of 6 topic-2 maps; it now says a second
   language.
@@ -136,6 +141,11 @@ Sources worth drawing on, in rough order of value:
 Do not simply restate the brief. Round one already searched the brief's own
 words and the territory map's; a query indistinguishable from those has already
 been run and will be discarded as a duplicate.
+
+Word a query aimed at a part like the title of a video that meets every
+REQUIRED item, not only like the part. A part's own vocabulary finds every
+video on that subject, most of them the kind REQUIRED rules out; the words that
+kind of video carries in its title are what find it.
 
 Each query: two to seven words, plausibly typed by a person, no operators.
 

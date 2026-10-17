@@ -1,8 +1,16 @@
 ---
 name: expand_queries
-version: "3"
+version: "4"
 stage: search
-note: "v3 stops naming a real language or market in its example. At
+note: "v4 words a query like the title of a video that meets REQUIRED, as
+  well as spreading the queries across the PARTS.
+  Checkpoint 3 measured topic 2's first round: 4 queries worded like
+  the videos REQUIRED asks for (case-study or real-case wording)
+  returned about 4 keepable results in 10 (8, 4, 3 and 2), and the other 13,
+  mostly a part's own vocabulary, about 0.9 (0 to 2); part vocabulary
+  returned how-to videos about the part. A small sample, and the best query
+  was also the only one in its language, so the effect is moderate.
+  v3 stops naming a real language or market in its example. At
   checkpoint 2 the language the example named appeared in 2 of 3 topic-2
   expansions and 6 of 6 maps, including where the brief named another
   language first. The prompt now states which languages to take and in
@@ -41,10 +49,21 @@ Spread the queries across the brief's PARTS TO COVER, so that every part has at
 least one query aimed at it before any part gets a second. The library is meant
 to cover every part, and a part no query reaches is a part nothing will find.
 
+Word each query like the title of a video that meets every REQUIRED item, not
+only like the part it aims at. A part says what a video is about; REQUIRED OF
+EVERY VIDEO says what kind of video it must be. A query made only of a part's
+own vocabulary finds every video on that subject, and most of them are the
+kind REQUIRED rules out. If a cycling brief requires "a rider's own measured
+results", `saddle height adjustment` finds how-to videos, and `changed my
+saddle height results` finds the riders. Put the words that kind of video
+carries in its title into most queries; a video can meet REQUIRED with a title
+that never says so, so keep some queries on the subject's words alone.
+
 Where a part is a language or a market — "videos in a second language as well
 as English", "repairs as done in a named market" — write at least one query for
 it in that language, the words a person there would type, not a translation of
-the brief's phrasing word for word. A query in English finds English videos, so
+the brief's phrasing word for word, and worded like the videos REQUIRED asks
+for. A query in English finds English videos, so
 this is the only way such a part reaches the search.
 
 Which languages, in this order:

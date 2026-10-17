@@ -62,9 +62,11 @@ log = logging.getLogger(__name__)
 __all__ = [
     "FULL_PROMPT",
     "Judge",
+    "guesses",
     "parse_batch",
     "parse_full",
     "parse_queries",
+    "resolve_guess",
     "territory_lines",
 ]
 
@@ -365,6 +367,42 @@ def _asserts_currency_unmarked(reason: str) -> bool:
     if not any(word in lowered for word in _CURRENCY_WORDS):
         return False
     return not any(phrase in lowered for phrase in _ATTRIBUTION_PHRASES)
+
+
+# A stage-1 reason that guesses at what the video contains. Stage 1 sees a
+# title, a channel, a description and a chapter list, so a NO it can state only
+# as a likelihood is uncertainty, and rule 8 says uncertainty is MAYBE.
+#
+# **Hedges only, and on purpose.** `seems`, `appears` and `suggests` are the
+# ordinary register of reading metadata — "the title suggests a product promo"
+# names what the metadata shows — and would turn honest rejections into
+# fetches. `may` counts only before a word it hedges, so "May 2024" is a date.
+# Over-firing is the cheap direction here: a guessed NO kept as MAYBE costs one
+# fetch and a stage-2 read, and stage 2 then decides.
+_GUESS_RE = re.compile(
+    r"\b(?:likely|unlikely|probably|presumably|possibly|perhaps"
+    r"|might|may\s+(?:be|not|have|only|just|well)|could\s+be)\b",
+    re.IGNORECASE,
+)
+
+
+def guesses(reason: str) -> bool:
+    """Does this stage-1 reason rest on a guess about the video's content?"""
+    return _GUESS_RE.search(reason) is not None
+
+
+def resolve_guess(verdict: str, reason: str) -> tuple[str, str | None]:
+    """A NO that guesses becomes MAYBE. Returns ``(verdict, said)``.
+
+    ``said`` is the judge's own word when it was overruled, ``None`` otherwise.
+    Only a NO is resolved: a YES or a MAYBE that hedges has already sent the
+    video to be read, which is what a hedge asks for. Stage 2 is not resolved
+    this way — it read the transcript, and its error that hides is a wrong YES
+    (rule 8), so a hedge there is not a reason to keep.
+    """
+    if verdict == VERDICT_NO and guesses(reason):
+        return VERDICT_MAYBE, VERDICT_NO
+    return verdict, None
 
 
 def parse_full(text: str, video_id: str) -> FullVerdict:
@@ -881,18 +919,29 @@ class Judge:
             ]
 
         parsed = parse_batch(reply.text, len(chunk))
-        return [
-            MetadataVerdict(
-                candidate.video_id,
-                verdict,
-                reason,
-                was_parsed,
-                # `parse_batch` marks a position unparsed only when the reply
-                # gave it no verdict at all.
-                outcome=OUTCOME_JUDGED if was_parsed else OUTCOME_NO_VERDICT,
+        verdicts = []
+        for candidate, (word, reason, was_parsed) in zip(chunk, parsed):
+            # The prompt says a guessed NO is MAYBE; this is the half that does
+            # not depend on the model having listened.
+            verdict, said = resolve_guess(word, reason)
+            verdicts.append(
+                MetadataVerdict(
+                    candidate.video_id,
+                    verdict,
+                    reason,
+                    was_parsed,
+                    # `parse_batch` marks a position unparsed only when the reply
+                    # gave it no verdict at all.
+                    outcome=OUTCOME_JUDGED if was_parsed else OUTCOME_NO_VERDICT,
+                    said=said,
+                )
             )
-            for candidate, (verdict, reason, was_parsed) in zip(chunk, parsed)
-        ]
+        guessed = sum(1 for verdict in verdicts if verdict.said is not None)
+        if guessed:
+            log.info(
+                "judge: %d stage-1 NO(s) rested on a guess — kept as MAYBE (rule 8)", guessed
+            )
+        return verdicts
 
     # -- stage 2: the whole transcript, one per call -----------------------
 

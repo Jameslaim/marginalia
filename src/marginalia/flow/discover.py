@@ -172,7 +172,15 @@ def discover(
     planner: Planner | None = None,
     provider: TranscriptProvider | None = None,
 ) -> DiscoverRun:
-    """Run the loop. Writes nothing to the library when ``dry_run`` is set."""
+    """Run the loop.
+
+    With ``dry_run`` set it fetches nothing and stores nothing: no transcript,
+    no note, no ``videos`` row and no ``decisions`` row — the last because a
+    ``no`` row would poison Gate 2 for the real run that follows. It is not
+    inert. The ledger still records the run with its brief, its territory map,
+    every query it searched and the search quota those queries spent, because
+    the searches really ran and the quota is really gone.
+    """
     limits = config.discover
     max_rounds = max_rounds if max_rounds is not None else limits.max_rounds
     max_videos = max_videos if max_videos is not None else limits.max_videos
@@ -917,8 +925,13 @@ def _judge_round(
     for verdict in verdicts:
         _log(
             ledger, run, verdict.video_id, STAGE_METADATA, verdict.verdict, verdict.reason,
-            outcome=verdict.outcome,
+            outcome=verdict.outcome, said=verdict.said,
         )
+        if verdict.said == VERDICT_NO:
+            # A NO the judge could state only as a guess, kept as MAYBE. It is
+            # counted under `verdict_maybe` below as well, because that is the
+            # verdict it now has; this says how many got there this way.
+            report.guessed_no += 1
         if verdict.verdict == VERDICT_YES:
             report.verdict_yes += 1
         elif verdict.verdict == VERDICT_NO:

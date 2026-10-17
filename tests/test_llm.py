@@ -603,6 +603,86 @@ def test_the_query_prompts_state_which_languages_to_take() -> None:
         assert "Never a language because an example mentioned it" in text, name
 
 
+def _flat(name: str) -> str:
+    return " ".join(load_prompt(name).text.split())
+
+
+def test_both_judges_read_a_required_item_so_every_part_can_meet_it() -> None:
+    """Checkpoint 3: a REQUIRED item read too narrowly for any video on one of
+    the brief's own PARTS to meet. Stage 1 refused 3 explainers of that part,
+    and stage 2 refused an explainer and a walkthrough of it on their whole
+    transcripts, both obeying REQUIRED over the part and the brief's own edge
+    case. Both judges now state the reading rule, and its limit."""
+    for name in ("judge_metadata", "judge/full"):
+        text = _flat(name)
+        assert "Read every REQUIRED item so that each PART can meet it" in text, name
+        assert "would fail every video on one of the brief's own PARTS" in text, name
+        assert "the kind of treatment the item demands" in text, name
+        assert "still fails" in text, f"{name} must say the rule does not relax an item"
+
+
+def test_the_brief_prompts_check_each_required_item_against_each_part() -> None:
+    """The same failure, where it starts. `write_brief` and `review_brief`
+    checked for requirements that are really parts, not for a requirement a
+    part's own videos cannot meet — and an edge case does not repair it."""
+    write = _flat("write_brief")
+    assert "one that a good video on any single part can meet" in write
+    assert "test each item against each part" in write
+    assert "does not rescue a part that a REQUIRED item rules out" in write
+
+    review = _flat("review_brief")
+    assert "A REQUIRED item that a PART's own videos cannot meet" in review
+    assert "Test every REQUIRED item against every PART" in review
+    assert "An EDGE CASE saying single-part videos count does not repair this" in review
+
+
+def test_the_metadata_judge_says_a_guessed_no_is_maybe() -> None:
+    """Rule 8, checkpoint 3: 5 of 40 topic-1 NOs rested on "likely ...", and 2
+    refused videos an exclusion's own exception keeps. The code resolves the
+    first shape too (`resolve_guess`); the prompt is still where it is asked."""
+    text = _flat("judge_metadata")
+    assert "A NO must rest on what the metadata shows, never on what it suggests" in text
+    assert "the answer is MAYBE" in text
+    assert "An EXCLUDED item with an exception is hit only when the exception plainly does not apply" in text
+
+
+def test_the_query_prompts_word_a_query_like_a_video_that_meets_required() -> None:
+    """Checkpoint 3, topic 2 round 1: queries worded like the videos REQUIRED
+    asks for returned about 4 keepable results in 10, a part's own vocabulary
+    about 0.9. Every prompt that writes queries says so (rule 25: the planner
+    writes them too)."""
+    for name in ("territory/map", "expand_queries", "plan/round"):
+        text = _flat(name)
+        assert "like the title of a video that meets every REQUIRED item" in text, name
+    for name in ("territory/map", "expand_queries"):
+        text = _flat(name)
+        assert "keep some queries on" in text, f"{name} must keep vocabulary-only queries"
+        assert "worded like the videos REQUIRED asks for" in text, f"{name}: the language query too"
+
+
+def test_the_new_rules_use_neutral_examples() -> None:
+    """The examples for these rules are about plumbing and cycling. Checkpoint 2
+    measured example vocabulary leaking into maps; an example drawn from a test
+    topic would hand the next run that topic's words."""
+    banned = ("language model", "token", "cach", "memory", "facebook", "earning", "moneti")
+    passages = (
+        ("judge_metadata", "**Read every REQUIRED item", "For each numbered candidate"),
+        ("judge/full", "**Read every REQUIRED item", "Covering means substantively"),
+        ("territory/map", "**Word a query like the title", "**A part that is a language"),
+        ("expand_queries", "Word each query like the title", "Where a part is a language"),
+        ("plan/round", "Word a query aimed at a part", "Each query: two to seven words"),
+        ("write_brief", "Every item must be one", "PARTS TO COVER"),
+        ("review_brief", "- A REQUIRED item that a PART", "- Parts that are really requirements"),
+    )
+    for name, begin, finish in passages:
+        text = load_prompt(name).text
+        opened = text.index(begin)
+        passage = text[opened : text.index(finish, opened)].lower()
+        for word in banned:
+            assert word not in passage, f"{name}: {word!r}"
+
+
+
 def test_the_brief_prompts_ask_for_the_six_sections_in_order() -> None:
     headings = [
         "INTENT", "REQUIRED OF EVERY VIDEO", "PARTS TO COVER",

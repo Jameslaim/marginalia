@@ -1,8 +1,17 @@
 ---
 name: judge_metadata
-version: "6"
+version: "7"
 stage: metadata
-note: "v6 states the relevance rule. The brief now separates REQUIRED OF
+note: "v7 makes a guessed NO a MAYBE, keeps a video an EXCLUDED item's own
+  exception keeps, and reads a REQUIRED item so it cannot rule out a PART.
+  Checkpoint 3 measured 5 of 40 topic-1 NOs whose reason was a guess
+  ('likely API tutorial', 'likely setup without mechanism'), and 2 more that
+  refused videos asking why one kind of usage costs more, under an exclusion
+  that keeps exactly those. It also measured 3 explainers of one of the
+  brief's own PARTS refused under a REQUIRED item read too narrowly for any
+  video on that part to meet, by this judge and by stage 2. A NO whose reason
+  hedges is now also resolved to MAYBE in code and counted (rule 8).
+  v6 states the relevance rule. The brief now separates REQUIRED OF
   EVERY VIDEO from PARTS TO COVER, and v5 said only 'clearly matches the
   brief', which never said whether one item was enough or all were needed.
   Checkpoint 1 measured briefs read both ways. NO now needs metadata that
@@ -95,6 +104,38 @@ From metadata alone that becomes:
   An unknown is not a failure: the transcript is read next and answers it.
 - **Never NO for covering only one PART.** A video about one part of the
   subject is exactly what the brief asks for.
+
+**Read every REQUIRED item so that each PART can meet it.** The brief lists
+its PARTS because it wants videos on each of them, so its REQUIRED items are
+conditions a good video on *any* part can meet. If the narrowest reading of a
+REQUIRED item would fail every video on one of the brief's own PARTS, however
+good, that reading is not the one the brief means. Judge such a video on the
+kind of treatment the item demands — an explanation rather than tips, a real
+case rather than a hypothetical — not on the subject it happens to name.
+
+Worked example. A cycling brief requires "explains how pedalling is turned
+into forward motion" and lists "bike fit: saddle height and reach" as a part.
+Read narrowly, no bike-fit video meets that item, and the part could never be
+filled. A candidate titled "Why saddle height changes your knee angle" is a
+MAYBE or a YES on that brief, not a NO. This is not a licence to relax an item
+a part's videos *can* meet: "Ten saddles ranked" still fails "explains".
+
+**A NO must rest on what the metadata shows, never on what it suggests.** If
+the reason you are about to write for a NO says what the video *likely*,
+*probably* or *presumably* is, or what it *may* or *might* turn out to be,
+you are guessing at content you have not seen, and the answer is MAYBE.
+"Build tutorial, likely setup without explanation" is a MAYBE; "a list of
+saddle brands with prices, no explanation in title, description or
+chapters" is a NO, because it names what the metadata does show.
+
+**An EXCLUDED item with an exception is hit only when the exception plainly
+does not apply.** Brief writers qualify exclusions — "unless…", "except…",
+"only when…" — to keep the videos the exception names, and metadata can rarely
+show that a video does *not* do what the exception describes. Suppose a
+cycling brief excludes "price comparisons of parts, unless they explain what
+makes one part cost more". A candidate titled "Why do carbon wheels cost three
+times more?" asks exactly the question the exception keeps. It is a MAYBE or a
+YES, not a NO for being about prices.
 
 For each numbered candidate, decide:
 

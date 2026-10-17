@@ -1,8 +1,16 @@
 ---
 name: review_brief
-version: "4"
+version: "5"
 stage: brief
-note: "v4 follows write_brief v3: six sections, the old required-items
+note: "v5 looks for a REQUIRED item that a PART's own videos cannot meet,
+  and fixes the item rather than the edge cases. Checkpoint 3 measured a
+  reviewed brief that required something worded around the inside of one
+  mechanism while listing the systems around it as a part: stage 1 refused 3
+  explainers of that part, and stage 2 refused an explainer and a walkthrough
+  of it on their whole transcripts. Its edge case said a single-part video is
+  relevant, and both judges obeyed REQUIRED over it. v4 checked for
+  requirements that are really parts, which is a different failure.
+  v4 follows write_brief v3: six sections, the old required-items
   heading split into REQUIRED OF EVERY VIDEO and PARTS TO COVER, and the limits restated here.
   Checkpoint 1 measured the review breaking the limits in 12 of 12 briefs
   while every draft kept them, reaching 16 EXCLUDED and 15 EDGE CASES items
@@ -54,6 +62,16 @@ ruin a library:
   means a video must cover the whole subject at once to be kept. "Covers
   fixing a leaking tap" and "covers clearing a blocked drain" are two parts of
   home plumbing, not two requirements.
+- A REQUIRED item that a PART's own videos cannot meet. Test every REQUIRED
+  item against every PART in turn: would a good video devoted to that part
+  alone meet the item as worded? If not, the brief contradicts itself — it
+  asks for videos on the part and then rejects them — and both judges obey
+  REQUIRED, so the part is never filled. "Explains how the supply pipes carry
+  water" rules out every video on "clearing a blocked drain". Reword the item
+  as the condition it was reaching for ("explains why the fault happens, not
+  only the fix"), which every part's videos can meet, or move its subject into
+  PARTS. An EDGE CASE saying single-part videos count does not repair this;
+  the judges read REQUIRED first.
 - Parts that are really requirements. If a video lacking one would not belong
   in the library at all, it is a requirement, and leaving it under PARTS lets
   a video that meets none of the real conditions in. "The repair is explained

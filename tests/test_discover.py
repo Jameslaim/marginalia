@@ -1522,6 +1522,84 @@ def test_a_dry_run_records_its_queries_but_not_its_decisions(
     assert ledger.decisions_for_run(outcome.run_id) == []
 
 
+def test_a_dry_run_records_the_run_its_map_and_its_queries(
+    config, ledger, library, client, searches
+) -> None:
+    """What `discover()`'s docstring now says a dry run writes. It used to say
+    "writes nothing to the library", and checkpoint 3 found a run row, the
+    territory, query rows and quota rows. The searches really ran; the ledger
+    says so, and only videos and decisions stay unwritten."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+
+    outcome = run(config, ledger, library, client, FakeJudge(queries=[[]]),
+                  max_rounds=1, dry_run=True, mapper=FakeMapper(mapped("a map query")))
+
+    row = ledger.get_run(outcome.run_id)
+    assert row is not None and row.brief == BRIEF.text
+    assert row.territory_map, "the territory map is stored"
+    assert [q.query for q in ledger.queries_for_run(outcome.run_id)] == ["a map query"]
+    assert ledger.list_by_status() == [] and ledger.decisions_for_run(outcome.run_id) == []
+
+
+def test_the_dry_run_docstring_no_longer_claims_it_writes_nothing() -> None:
+    doc = " ".join((discover.__doc__ or "").split())
+    assert "writes nothing" not in doc
+    for written in ("run", "territory map", "query", "quota"):
+        assert written in doc, written
+
+
+# -- a stage-1 NO that guesses is MAYBE (rule 8) ----------------------------
+
+
+def test_a_guessed_no_is_fetched_counted_and_logged_with_the_judges_word(
+    config, ledger, library, client, searches
+) -> None:
+    """The judge resolves a guessed NO to MAYBE and keeps its `no` in `said`.
+    The loop must then treat it as the MAYBE it is — fetched and read — count
+    it on its own counter, and store the judge's word beside the verdict, the
+    way stage 2's `said` is stored (rule 8)."""
+    from marginalia.contracts import OUTCOME_JUDGED
+
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    judge = FakeJudge(
+        metadata={
+            "aaaaaaaaaaa": (VERDICT_MAYBE, "likely a setup tutorial", True, OUTCOME_JUDGED, VERDICT_NO),
+            "bbbbbbbbbbb": (VERDICT_NO, "off topic"),
+        }
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    report = outcome.rounds[0]
+    assert (report.guessed_no, report.verdict_maybe, report.verdict_no) == (1, 1, 1)
+    assert judge.opening_calls == ["aaaaaaaaaaa"], "a guessed NO is read, not refused"
+    assert [video.video_id for video in report.rejected] == ["bbbbbbbbbbb"]
+    stage_one = {
+        row.video_id: (row.verdict, row.said)
+        for row in ledger.decisions_for_run(outcome.run_id)
+        if row.stage == STAGE_METADATA
+    }
+    assert stage_one == {"aaaaaaaaaaa": (VERDICT_MAYBE, VERDICT_NO), "bbbbbbbbbbb": (VERDICT_NO, None)}
+
+
+def test_a_guessed_no_does_not_block_the_next_run_on_the_topic(
+    config, ledger, library, client, searches
+) -> None:
+    """Gate 2 reads stage-1 NOs as final. A guess stored as `no` would have
+    hidden the video from every later run on the topic; stored as MAYBE it
+    stays a candidate."""
+    from marginalia.contracts import OUTCOME_JUDGED
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    guessed = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "probably a promo", True, OUTCOME_JUDGED, VERDICT_NO)},
+        openings={"aaaaaaaaaaa": (VERDICT_MAYBE, "unsure", [])},
+    )
+    run(config, ledger, library, client, guessed, max_rounds=1)
+
+    assert ledger.topic_rejection("aaaaaaaaaaa", TOPIC) is None
+
+
 # -- B4: filters reach the provider, validated -----------------------------
 
 

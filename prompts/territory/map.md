@@ -1,8 +1,16 @@
 ---
 name: map_territory
-version: "6"
+version: "7"
 stage: territory
-note: "v6 replaces the two examples checkpoint 2 measured leaking into the
+note: "v7 words a query like the title of a video that meets REQUIRED, as
+  well as aiming it at a PART.
+  Checkpoint 3 measured topic 2's first round: 4 queries worded like
+  the videos REQUIRED asks for (case-study or real-case wording)
+  returned about 4 keepable results in 10 (8, 4, 3 and 2), and the other 13,
+  mostly a part's own vocabulary, about 0.9 (0 to 2); part vocabulary
+  returned how-to videos about the part. A small sample, and the best query
+  was also the only one in its language, so the effect is moderate.
+  v6 replaces the two examples checkpoint 2 measured leaking into the
   maps. With the old intro and output example, example-only vocabulary
   reached 3 of 3 topic-1 maps and 0 of 3 maps written from a copy whose
   examples were about plumbing, and two of those terms became searches the
@@ -93,11 +101,23 @@ is meant to cover every part, and a part no query reaches is one nothing will
 find. Say which part a query serves in FROM when it came from one
 (`part: blocked drains`).
 
+**Word a query like the title of a video that meets every REQUIRED item, not
+only like its part.** A part says what a video is about; the REQUIRED items say
+what kind of video it must be. A query made only of a part's vocabulary finds
+every video on that subject, and most of them are the kind REQUIRED rules out.
+If a plumbing brief requires "explains why the fault happens, not only the
+fix", `drain unblocker` finds product demonstrations, and `why drains keep
+blocking` finds the explanations. If it requires "a homeowner's own repair,
+with what it cost", `blocked drain fixed myself cost` finds them where
+`drain snake` does not. Put the words that kind of video carries in its title
+into most queries. A video can meet REQUIRED with a title that never says so,
+so keep some queries on the vocabulary alone.
+
 **A part that is a language or a market needs a query in that language.** Where
 the brief lists a part such as "videos in a second language as well as English",
 write at least one query in that language — the words a person there would type,
-not the brief's phrasing translated word for word — and set `relevanceLanguage`
-to its code:
+not the brief's phrasing translated word for word, worded like the videos
+REQUIRED asks for — and set `relevanceLanguage` to its code:
 
 ```
 QUERY: <the words a person would type, in that language>

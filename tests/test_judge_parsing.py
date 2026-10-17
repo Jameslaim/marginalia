@@ -386,3 +386,113 @@ def test_the_judge_never_sees_a_caption_flag() -> None:
     today, not irrelevant."""
     described = _describe(1, _candidate(has_captions=False))
     assert "caption" not in described.lower()
+
+
+# -- a stage-1 NO that guesses is MAYBE (rule 8) ----------------------------
+
+# The five checkpoint-3 topic-1 NOs whose reason was a guess, verbatim.
+_MEASURED_GUESSES = (
+    "inference engine video with sponsor read, likely serving optimization",
+    "build tutorial for memory chatbots, likely setup without mechanism",
+    "coding agent memory tool setup, likely product/tutorial focused",
+    "framework setup walkthrough, likely API tutorial without mechanism",
+    "framework walkthrough, likely setup without inference mechanism",
+)
+
+
+@pytest.mark.parametrize("reason", _MEASURED_GUESSES)
+def test_every_measured_guess_is_read_as_a_guess(reason) -> None:
+    from marginalia.brain.judge import guesses
+
+    assert guesses(reason)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "probably a drain unblocker advert",
+        "unlikely to explain why the fault happens",
+        "may be a product demo with no explanation",
+        "might only list saddle brands",
+        "could be a sponsored review",
+        "presumably a setup walkthrough",
+    ],
+)
+def test_the_other_hedges_are_guesses_too(reason) -> None:
+    from marginalia.brain.judge import guesses
+
+    assert guesses(reason)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        # The honest shapes: each names what the metadata shows.
+        "product promo, brief excludes vendor marketing",
+        "the title suggests a product promo",
+        "appears in the description as a saddle price list",
+        "seems to be about road cycling, not plumbing",
+        # Subject matter, not a hedge.
+        "about maximum likelihood estimation, a different subject",
+        "published May 2024, a news clip with no explanation",
+        "a probability lecture, unrelated to the brief",
+    ],
+)
+def test_a_reason_that_names_the_evidence_is_not_a_guess(reason) -> None:
+    """Tuned to miss rather than over-fire, though over-firing is the cheap
+    direction here: `seems`, `appears` and `suggests` are how metadata is read,
+    and counting them would turn honest rejections into fetches."""
+    from marginalia.brain.judge import guesses
+
+    assert not guesses(reason)
+
+
+def test_a_guessed_no_resolves_to_maybe_and_remembers_the_no() -> None:
+    from marginalia.brain.judge import resolve_guess
+
+    assert resolve_guess(VERDICT_NO, _MEASURED_GUESSES[0]) == (VERDICT_MAYBE, VERDICT_NO)
+
+
+def test_only_a_no_is_resolved() -> None:
+    """A YES or a MAYBE that hedges has already sent the video to be read."""
+    from marginalia.brain.judge import resolve_guess
+
+    assert resolve_guess(VERDICT_YES, "likely a full explanation") == (VERDICT_YES, None)
+    assert resolve_guess(VERDICT_MAYBE, "could be conceptual only") == (VERDICT_MAYBE, None)
+    assert resolve_guess(VERDICT_NO, "product promo, brief excludes it") == (VERDICT_NO, None)
+
+
+def test_the_metadata_judge_keeps_a_guessed_no_as_maybe(caplog) -> None:
+    """Through the real `judge_metadata`: the prompt says a guessed NO is
+    MAYBE, and this is the half that does not depend on the model listening."""
+    from conftest import make_llm_config
+    from marginalia.brain.judge import Judge
+    from marginalia.contracts import OUTCOME_JUDGED, Brief
+    from marginalia.llm import LlmClient
+
+    class Reply:
+        def __init__(self, text):
+            message = type("M", (), {"content": text})()
+            self.choices = [type("C", (), {"message": message, "finish_reason": "stop"})()]
+            self.usage = type("U", (), {"prompt_tokens": 1, "completion_tokens": 1})()
+            self.model = "m"
+
+    text = "1: NO - build tutorial, likely setup without explanation\n2: NO - off topic"
+    judge = Judge(LlmClient(make_llm_config(), transport=lambda **_: Reply(text), sleep=lambda _: None))
+    brief = Brief(
+        topic="t",
+        text="INTENT\nx\nREQUIRED OF EVERY VIDEO\n- x\nPARTS TO COVER\n- x\nEXCLUDED\n- y",
+        version="1/1",
+    )
+    candidates = [
+        SearchResult(f"vid{index:08d}", "title", "chan", "desc", 600, None, None)
+        for index in range(2)
+    ]
+
+    with caplog.at_level(logging.INFO, logger="marginalia"):
+        guessed, refused = judge.judge_metadata(brief, candidates, batch_size=10)
+
+    assert (guessed.verdict, guessed.said, guessed.outcome) == (VERDICT_MAYBE, VERDICT_NO, OUTCOME_JUDGED)
+    assert guessed.reason.startswith("build tutorial"), "the judge's own reason is kept"
+    assert (refused.verdict, refused.said) == (VERDICT_NO, None)
+    assert any("rested on a guess" in record.getMessage() for record in caplog.records)

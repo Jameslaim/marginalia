@@ -1,8 +1,16 @@
 ---
 name: judge_full
-version: "11"
+version: "12"
 stage: full
-note: "v11 states the relevance rule over the brief's new sections. Step 1
+note: "v12 reads every REQUIRED item so that each PART can meet it.
+  Checkpoint 3 cross-checked stage 1 with this judge and found it obeying a
+  REQUIRED item read too narrowly for any video on one of the brief's own
+  PARTS to meet: a 15-minute explainer of that part was NO because it 'fails
+  every REQUIRED item', and a walkthrough of the same part was NO because it
+  'covers no PART'. Stage 1 refused 3 explainers of that part the same way.
+  The brief's own edge case said a single-part video is relevant, and both
+  judges read REQUIRED first. The five-line reply is unchanged.
+  v11 states the relevance rule over the brief's new sections. Step 1
   said 'substantively address something the brief requires', which counts
   one item as enough; checkpoint 1 measured briefs whose items were
   conditions that must all hold, where one is not enough, and briefs whose
@@ -149,6 +157,24 @@ one PART, and hits no EXCLUDED item (step 4). A plumbing brief that requires
 blocked drains and low water pressure as parts is satisfied by a video that
 explains a blocked drain thoroughly and never mentions taps; it is not
 satisfied by a video that tours all three and explains none of them.
+
+**Read every REQUIRED item so that each PART can meet it.** The brief lists its
+PARTS because it wants videos on each of them, so its REQUIRED items are
+conditions a good video on *any* part can meet. If the narrowest reading of a
+REQUIRED item would fail every video on one of the brief's own PARTS, however
+good, that reading is not the one the brief means: judge the video on the kind
+of treatment the item demands — an explanation rather than tips, a real case
+rather than a hypothetical — not on the subject it happens to name. A cycling
+brief that requires "explains how pedalling is turned into forward motion" and
+lists "bike fit: saddle height and reach" as a part is met by a video that
+explains why saddle height changes the knee's angle and load, though it never
+mentions the chain. And a video that substantively covers what a PART names
+has covered that PART, whatever its title calls the subject.
+
+This does not relax an item a part's videos *can* meet. A bike-fit video that
+lists saddle heights and explains nothing still fails "explains". Missing an
+item is still a NO; what is not a NO is failing a reading that no video on a
+listed part could pass.
 
 Covering means substantively addressing — not merely saying a word the brief
 also uses. A video that names a part once and moves on has not covered it. The

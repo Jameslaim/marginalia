@@ -280,6 +280,21 @@ def test_gate_2_drops_are_surfaced(configured, monkeypatch, capsys) -> None:
     assert "3 previously rejected" in capsys.readouterr().out
 
 
+def test_guessed_nos_are_surfaced_in_the_report_and_the_json(configured, monkeypatch, capsys) -> None:
+    """Rule 14: a stage-1 NO kept as MAYBE because its reason was a guess is
+    its own outcome. Without its own line it is indistinguishable from a MAYBE
+    the judge chose."""
+    run = fake_run()
+    run.rounds[0].guessed_no = 2
+    monkeypatch.setattr("marginalia.cli.discover", lambda *a, **k: run)
+
+    main(["discover", "prompt caching"])
+    assert "2 stage-1 NO on a guess, kept as MAYBE" in capsys.readouterr().out
+
+    main(["discover", "prompt caching", "--json"])
+    assert json.loads(capsys.readouterr().out)["rounds"][0]["guessed_no"] == 2
+
+
 def test_a_clean_round_stays_terse(configured, monkeypatch, capsys) -> None:
     """The extra clauses appear only when they have something to report."""
     monkeypatch.setattr("marginalia.cli.discover", lambda *a, **k: fake_run())

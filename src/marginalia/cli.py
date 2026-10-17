@@ -426,6 +426,9 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             # is era knowledge carrying a verdict without being marked as
             # coming from outside the transcript.
             (report.unmarked_currency, "dated an API unmarked"),
+            # Stage 1 this time: a NO the judge could state only as a guess,
+            # kept as MAYBE (rule 8). Already part of the MAYBE count.
+            (report.guessed_no, "stage-1 NO on a guess, kept as MAYBE"),
             (report.filters_rejected, "filters rejected"),
             # Named apart from the line above, because they are opposite
             # directions: a rejected filter widened a search that ran, a
@@ -677,6 +680,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "duplicates_skipped": report.duplicates_skipped,
                 "recency_waived": report.recency_waived,
                 "unmarked_currency": report.unmarked_currency,
+                "guessed_no": report.guessed_no,
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next
                 # round, the map revisions it proposed and the ones the code

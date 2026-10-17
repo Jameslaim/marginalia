@@ -1183,6 +1183,11 @@ class MetadataVerdict:
     # `judged` unless the batch call failed or this position was missing from
     # the reply. Either way the verdict is MAYBE (rule 8); this says why.
     outcome: str = OUTCOME_JUDGED
+    # The judge's own verdict word, when the stored one resolves it. Set only
+    # for a NO whose reason was a guess — "likely a setup tutorial" — which is
+    # kept as MAYBE (rule 8) and remembered here as `no`, as stage 2 keeps
+    # its own word in `FullVerdict.said`.
+    said: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1416,6 +1421,13 @@ class RoundReport:
     # of 4 currency claims unmarked on the second `langchain` run, which is what
     # a rule living only in a prompt is worth.
     unmarked_currency: int = 0
+    # Stage-1 NOs whose reason was a guess about content the metadata does not
+    # show ("likely", "probably"), resolved to MAYBE. Also counted in
+    # `verdict_maybe`, which is the verdict they now have; not `unparsed`,
+    # because the reply was well formed and the judge did say NO. Checkpoint 3
+    # measured 5 of 40 topic-1 NOs in this shape, under a prompt that already
+    # said uncertainty is MAYBE.
+    guessed_no: int = 0
     # B4. Filters the validator refused before any search ran. Its own counter,
     # like everything else here: a rejected filter is neither a failure nor a
     # rejection nor a parse problem, and a round that reported it as any of

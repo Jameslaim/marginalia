@@ -1,8 +1,15 @@
 ---
 name: write_brief
-version: "4"
+version: "5"
 stage: brief
-note: "v4 stops naming a real language in the PARTS TO COVER example. At
+note: "v5 requires every REQUIRED item to be one a good video on any single
+  PART can meet. Checkpoint 3 measured a brief whose first REQUIRED item was
+  worded around the inside of one mechanism while one of its PARTS was the
+  systems around it: stage 1 refused 3 explainers of that part, and stage 2,
+  reading whole transcripts, refused an explainer and a walkthrough of it for
+  failing every REQUIRED item. The brief's own edge case said a single-part
+  video is relevant; both judges read REQUIRED first.
+  v4 stops naming a real language in the PARTS TO COVER example. At
   checkpoint 2 the same named-language example, in the map and expansion
   prompts, put that language in 6 of 6 topic-2 maps even where the brief
   named another language first; the example now says a second language.
@@ -42,6 +49,13 @@ One to four bullet points. Conditions that every relevant video meets, all of
 them. Keep this minimal: only what makes a video belong in this library at
 all, never a part of the subject. "Explains how the repair works, not just a
 list of tips" is a condition; "covers fixing a leaking tap" is a part.
+Every item must be one that a good video on any single part can meet. Before
+moving on, test each item against each part: would a video devoted to that one
+part, done well, meet it as worded? If not, the item names a subject rather
+than a condition. A home-plumbing brief that requires "explains how the supply
+pipes carry water" and lists "clearing a blocked drain" as a part rules out
+every drain video, since drains are waste pipes; "explains why the fault
+happens, not only the fix" is the condition it meant.
 
 PARTS TO COVER
 Two to eight bullet points. The parts of the subject. A video qualifies by
@@ -63,7 +77,9 @@ each with the answer you want applied.
 
 A video is relevant when it meets every REQUIRED item, covers at least one
 PART, and hits no EXCLUDED item. Write each section so that rule gives the
-right answer.
+right answer. Both judges read REQUIRED first: an EDGE CASE saying a
+single-part video counts does not rescue a part that a REQUIRED item rules
+out, so fix the item instead.
 
 Rules:
 - Write for a judge who will see only this brief, a list of the subject's
