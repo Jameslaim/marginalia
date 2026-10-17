@@ -1275,3 +1275,16 @@ def test_the_round_planner_is_told_what_is_waiting() -> None:
     text = " ".join(load_prompt("plan/round").text.split())
     assert "FOUND BUT NOT YET READ" in text
     assert "nothing kept and nothing waiting" in text
+
+
+def test_the_stage_one_prompt_judges_a_part_video_on_its_part() -> None:
+    """The stage-1 sibling of judge/full v13 (rule 25): an absent PART is never a
+    ground, a part's description is not a fence around one angle of it, and a NO
+    still stands on a REQUIRED item the metadata shows failing."""
+    text = " ".join(load_prompt("judge_metadata").text.split())
+    assert "A video on a listed PART is judged on that part" in text
+    assert "An absent PART is never a ground" in text
+    assert "not for holding a YES back to MAYBE" in text
+    assert "it is not a fence around one angle of it" in text
+    assert "A NO still stands" in text
+

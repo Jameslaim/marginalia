@@ -1,8 +1,19 @@
 ---
 name: judge_metadata
-version: "8"
+version: "9"
 stage: metadata
-note: "v8 says a NO must rest on something the metadata shows to be off the
+note: "v9 says a video on a listed PART is judged on that part, and an absent
+  PART is never a ground, here as judge/full v13 already says for stage 2.
+  Re-judged under v8 with search-length metadata, stage 1 still read PARTS
+  narrowly or weighed the ones a video lacks: a tokenizer explainer was NO as
+  'tokenizer training comparison, not LLM context or counts' though
+  tokenization is a listed part; a vector-database explainer was NO as
+  'internals, not LLM context or harness' though the external-systems part
+  names vector search; a protocol explainer for exposing tools was NO as
+  'setup rather than context mechanics'; and with full metadata a harness
+  explainer went YES to MAYBE as 'may not cover context/tokens'. A stage-1 NO
+  is never read again, so each is rule 8's invisible error.
+  v8 says a NO must rest on something the metadata shows to be off the
   brief, never on what it fails to show. Checkpoint 4 measured about 10 of 51
   NOs resting on absence of evidence plus a runtime ('59-second short, no
   mechanism evidence in metadata', 'one-minute clip, no evidence of
@@ -111,6 +122,30 @@ From metadata alone that becomes:
   An unknown is not a failure: the transcript is read next and answers it.
 - **Never NO for covering only one PART.** A video about one part of the
   subject is exactly what the brief asks for.
+
+**A video on a listed PART is judged on that part.** When the metadata shows a
+candidate is about one of the brief's PARTS, that part is what you judge it on:
+
+- **An absent PART is never a ground** — not for a NO, and not for holding a YES
+  back to MAYBE. "Covers X but not Y" describes what the library's other videos
+  are for.
+- **A PART's description says what the library wants within that part; it is not
+  a fence around one angle of it.** A video on the part's subject that takes a
+  different angle — how it is built rather than how it is used, a comparison
+  rather than a walkthrough — is still on that part. If you cannot tell whether
+  its angle serves the part, that is a MAYBE: the transcript is read next.
+- **A NO still stands** where the metadata shows a REQUIRED item fails — the video
+  is about something the brief rules out, such as a different subject or a
+  treatment the REQUIRED item excludes — or shows an EXCLUDED item.
+
+Worked example. A home-plumbing brief lists "blocked drains: why they clog and
+how to clear them" and "low water pressure: causes and fixes" as parts, and
+requires "explains why the fault happens, not only the fix". A candidate titled
+"Drain snake vs hydro-jetting: how each clears a clog" is on the blocked-drains
+part from a tools angle; it is a MAYBE or a YES, not a NO for "tool comparison,
+not why drains clog". "How a pressure-reducing valve works" is on the
+low-pressure part and is judged on it, whatever it says about drains. "Ten
+bathroom paint colours for 2025" is a NO: a different subject, on no part.
 
 **Read every REQUIRED item so that each PART can meet it.** The brief lists
 its PARTS because it wants videos on each of them, so its REQUIRED items are
