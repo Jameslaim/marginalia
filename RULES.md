@@ -895,6 +895,18 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     EXCLUDED item hit, or no part covered substantively. At both stages a video on a listed
     part is judged on that part, and a part it does not cover is never a ground.
 
+32. **A checking pass lists; code applies; a capped list is counted.** A second model
+    pass over generated text returns spans or labels, never rewritten text, and code makes
+    the change, so the record cannot drift. If the pass fails, is cut off or cannot be
+    read, the first output stands unchanged and the failure is counted. When code limits
+    how many items a reply may supply, the parser keeps them all, applies up to the limit,
+    and records and prints how many it left unapplied — a limit stated only in the prompt
+    is not a guard: "at most 40 lines" silently stopped 2 of 3 marking passes at exactly
+    40. Measured on the note-marking pass: unmarked outside statements fell from 11.7 to
+    1.3 per note with record marked as inference at 1.7, and with no reasoning the same
+    pass wrapped plain record wholesale (13–30 per note), so a checking pass's reasoning
+    setting is part of its design.
+
 ## Structure
 
 ```
