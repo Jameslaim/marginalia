@@ -324,6 +324,21 @@ _EDIT_MAX = 2
 # what keeps it holding as the library grows.
 _EDIT_NEXT_MIN = 7
 
+# A second pass for a typo that mixes a case change with an edit — `ftLrcHMzLQ`
+# written for `FTfLrcHMzLQ` is 3 edits case-sensitively, 1 once both are
+# folded. Distances are compared folded; what is returned is still the library's
+# own spelling, and nothing folded is stored or written (rule 5). Its own bounds,
+# because folding brings ids closer: the library's closest folded pair is 7
+# edits apart (1 pair at 7, 5 at 8), against 9 case-sensitive, and random
+# 11-character ids folded to 38 symbols gave no pair within 6 in libraries of
+# 100 and 300. One folded edit, with every other id at least 6 away, holds by
+# the triangle inequality while the closest pair stays at 7; a wrong link would
+# need the model to have made 6 or more folded edits to the id it meant. It runs
+# only when the case-sensitive pass found nothing within `_EDIT_MAX` — never to
+# overrule that pass's refusal on its own margin.
+_FOLD_EDIT_MAX = 1
+_FOLD_NEXT_MIN = 6
+
 
 def edit_distance(a: str, b: str) -> int:
     """Optimal-string-alignment distance: substitutions, insertions, deletions
@@ -345,16 +360,37 @@ def edit_distance(a: str, b: str) -> int:
 
 def _nearest(token: str, known: Sequence[str]) -> IdEdit | None:
     """The library id ``token`` is a typo of, if it is close to exactly one and
-    far from every other; otherwise None."""
+    far from every other; otherwise None. Case-sensitive first, then folded
+    (`_FOLD_EDIT_MAX`)."""
     scored = sorted((edit_distance(token, video_id), video_id) for video_id in known)
-    if not scored or scored[0][0] == 0 or scored[0][0] > _EDIT_MAX:
+    if not scored or scored[0][0] == 0:
         return None
     # A one-id library has no second id; the margin is then the token's length,
     # the farthest any id can be.
-    second = scored[1][0] if len(scored) > 1 else max(len(token), 11)
-    if second < _EDIT_NEXT_MIN:
+    far = max(len(token), 11)
+    if scored[0][0] <= _EDIT_MAX:
+        second = scored[1][0] if len(scored) > 1 else far
+        if second < _EDIT_NEXT_MIN:
+            return None
+        return IdEdit(
+            written=token, video_id=scored[0][1], distance=scored[0][0], next_nearest=second
+        )
+    folded = sorted(
+        (edit_distance(token.lower(), video_id.lower()), video_id) for video_id in known
+    )
+    # Folded distance 0 is a case-only difference: the case repair's, not this one's.
+    if folded[0][0] == 0 or folded[0][0] > _FOLD_EDIT_MAX:
         return None
-    return IdEdit(written=token, video_id=scored[0][1], distance=scored[0][0], next_nearest=second)
+    second = folded[1][0] if len(folded) > 1 else far
+    if second < _FOLD_NEXT_MIN:
+        return None
+    return IdEdit(
+        written=token,
+        video_id=folded[0][1],
+        distance=folded[0][0],
+        next_nearest=second,
+        case_folded=True,
+    )
 
 
 def _find_id(
@@ -383,6 +419,11 @@ def _find_id(
       ID: `VIg_7sqS2D` for `VIg_7sqS2dE`.
     * **Edit distance, with a margin.** A token within `_EDIT_MAX` edits of
       exactly one library ID, with every other at least `_EDIT_NEXT_MIN` away.
+    * **Edit distance with case folded, with its own margin.** When nothing is
+      within `_EDIT_MAX` case-sensitively: a token within `_FOLD_EDIT_MAX`
+      folded edits of exactly one library ID, every other at least
+      `_FOLD_NEXT_MIN` away. Measured need: `ftLrcHMzLQ` for `FTfLrcHMzLQ`, a
+      dropped character and a case change, 3 edits apart but 1 folded.
 
     **Why edit distance is now allowed, when this docstring used to forbid it.**
     The objection was right and still holds: two YouTube IDs one character apart
@@ -752,8 +793,9 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
         log.info("ask: repaired a mis-cased video id in %s", fragment)
     for edit in edited:
         log.info(
-            "ask: repaired a mistyped video id to %s (%d edit(s); next-nearest %d)",
-            edit.video_id, edit.distance, edit.next_nearest,
+            "ask: repaired a mistyped video id to %s (%d %sedit(s); next-nearest %d)",
+            edit.video_id, edit.distance, "case-folded " if edit.case_folded else "",
+            edit.next_nearest,
         )
     return CitationScan(
         citations=citations, unparsed=unparsed, repaired=repaired, edited=edited
@@ -1153,15 +1195,28 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
             lines.append(f"- no such loaded video: {video_id}")
         # The id as the answer wrote it — the answer's own characters — and the
         # library's spelling it was repaired to, with the distance and margin.
+        plain = [item for item in answer.edited if not item.case_folded]
+        folded = [item for item in answer.edited if item.case_folded]
         lines.append(
-            f"- {len(answer.edited)} citation id(s) repaired by edit distance against"
+            f"- {len(plain)} citation id(s) repaired by edit distance against"
             f" the library (at most {_EDIT_MAX} edits, every other id at least"
             f" {_EDIT_NEXT_MIN} away)"
         )
-        for item in answer.edited:
+        for item in plain:
             lines.append(
                 f"- repaired: {item.written} -> {item.video_id}"
                 f" ({item.distance} edit(s); next-nearest id {item.next_nearest} away)"
+            )
+        lines.append(
+            f"- {len(folded)} citation id(s) repaired by edit distance with case folded"
+            f" (at most {_FOLD_EDIT_MAX} folded edit(s), every other id at least"
+            f" {_FOLD_NEXT_MIN} away)"
+        )
+        for item in folded:
+            lines.append(
+                f"- repaired: {item.written} -> {item.video_id}"
+                f" ({item.distance} case-folded edit(s); next-nearest id"
+                f" {item.next_nearest} away, folded)"
             )
         for item in answer.unverified_speech:
             mark = "loosely quoted sentence" if item.loose else "sentence not in the source"

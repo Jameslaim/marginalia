@@ -12,10 +12,13 @@ from __future__ import annotations
 from marginalia.ask import (
     _EDIT_MAX,
     _EDIT_NEXT_MIN,
+    _FOLD_EDIT_MAX,
+    _FOLD_NEXT_MIN,
     check_grounding,
     edit_distance,
     load_notes,
     render_answer,
+    scan_citations,
 )
 from marginalia.contracts import Answer, IdEdit
 
@@ -73,3 +76,75 @@ def test_the_summary_line_counts_edit_repairs_apart_from_case_repairs() -> None:
 
     assert "1 id(s) repaired, " in line
     assert "1 mistyped id(s) repaired by edit distance, " in line
+
+
+# -- the case-folded pass (F3) ----------------------------------------------
+#
+# A dropped character plus a case change: 3 edits case-sensitively, 1 folded.
+# Neither the case repair (a full match) nor the edit repair caught it.
+
+MEANT = "FTfLrcHMzLQ"
+MIXED = "ftLrcHMzLQ"
+
+
+def test_a_typo_mixing_a_case_change_and_an_edit_is_repaired_folded() -> None:
+    assert edit_distance(MIXED, MEANT) == 3
+    assert edit_distance(MIXED.lower(), MEANT.lower()) == 1
+    assert (_FOLD_EDIT_MAX, _FOLD_NEXT_MIN) == (1, 6)
+
+    scan = scan_citations(f"[{MIXED} 04:10]", [MEANT, OTHER])
+
+    assert [c.video_id for c in scan.citations] == [MEANT], "the library's spelling"
+    assert scan.citations[0].raw.startswith(f"[{MEANT} ")
+    assert [(e.written, e.video_id, e.distance, e.case_folded) for e in scan.edited] == [
+        (MIXED, MEANT, 1, True)
+    ]
+    assert scan.unparsed == []
+
+
+def test_the_folded_pass_refuses_when_another_id_is_near_once_folded() -> None:
+    near = "FTfLrcHMzQQ"  # 2 folded edits from what was written: inside the margin
+
+    scan = scan_citations(f"[{MIXED} 04:10]", [MEANT, near])
+
+    assert scan.citations == []
+    assert scan.edited == []
+    assert len(scan.unparsed) == 1
+
+
+def test_the_folded_pass_allows_one_folded_edit_only() -> None:
+    scan = scan_citations("[ftLrcHMzQQ 04:10]", [MEANT])  # 2 folded edits
+
+    assert scan.citations == []
+
+
+def test_the_folded_pass_never_overrules_a_case_sensitive_refusal() -> None:
+    """A token the case-sensitive pass found close, and refused on its margin,
+    is not handed to the folded pass, whose margin is smaller."""
+    scan = scan_citations(f"[{TYPED} 11:23]", [ID, "aYfZN8tXAQz"])
+
+    assert scan.citations == []
+    assert scan.edited == []
+
+
+def test_a_case_sensitive_repair_is_not_marked_folded() -> None:
+    scan = scan_citations(f"[{TYPED} 11:23]", [ID])
+
+    assert [e.case_folded for e in scan.edited] == [False]
+
+
+def test_the_record_and_the_summary_count_folded_repairs_as_their_own_kind() -> None:
+    from marginalia.cli import _ask_summary
+
+    answer = Answer(question="q", text="t", version="1", model="m",
+                    edited=[IdEdit(TYPED, ID, 1, 10), IdEdit(MIXED, MEANT, 1, 8, case_folded=True)])
+
+    rendered = render_answer(answer, asked_at="2026-10-21T00:00:00Z")
+    line = _ask_summary(answer)
+
+    assert "- 1 citation id(s) repaired by edit distance against the library" in rendered
+    assert "- 1 citation id(s) repaired by edit distance with case folded" in rendered
+    assert (f"- repaired: {MIXED} -> {MEANT} (1 case-folded edit(s); next-nearest id 8 away,"
+            " folded)") in rendered
+    assert "1 mistyped id(s) repaired by edit distance, " in line
+    assert "1 mistyped id(s) repaired by case-folded edit distance, " in line

@@ -1236,9 +1236,14 @@ def _ask_summary(answer: Answer) -> str:
         # The model got a video ID's casing wrong and the parser covered for it.
         # Worth seeing rather than inferring from a debug log.
         line += f"{len(answer.repaired)} id(s) repaired, "
-    if answer.edited:
+    plain = sum(1 for item in answer.edited if not item.case_folded)
+    folded = len(answer.edited) - plain
+    if plain:
         # Its own count: a different rule from case and prefix, with a margin.
-        line += f"{len(answer.edited)} mistyped id(s) repaired by edit distance, "
+        line += f"{plain} mistyped id(s) repaired by edit distance, "
+    if folded:
+        # And the folded pass apart from it: its own bounds, its own count.
+        line += f"{folded} mistyped id(s) repaired by case-folded edit distance, "
     line += (
         f"{answer.requests} requests, ${answer.cost_usd:.4f}, "
         f"{_elapsed(answer.elapsed_s)}, v{answer.version}"

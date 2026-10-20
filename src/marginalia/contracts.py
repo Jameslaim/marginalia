@@ -1909,13 +1909,16 @@ class IdEdit:
     ``written`` is the token as the answer wrote it, ``video_id`` the library's
     own spelling it resolved to (rule 5: never normalised), ``distance`` its edit
     distance, and ``next_nearest`` the distance to the next-closest library ID —
-    the margin that made the repair safe.
+    the margin that made the repair safe. ``case_folded`` says both distances
+    were counted with case folded — a typo that also changed a letter's case —
+    under that pass's own bounds; ``video_id`` is the library's spelling either way.
     """
 
     written: str
     video_id: str
     distance: int
     next_nearest: int
+    case_folded: bool = False
 
 
 @dataclass(frozen=True)
