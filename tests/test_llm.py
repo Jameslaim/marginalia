@@ -1315,6 +1315,25 @@ def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:
     assert "[note: translation:" in flat
 
 
+def test_the_note_prompt_guards_absence_claims_and_what_a_transcript_cannot_show() -> None:
+    """v11. Of about 170 absence or property statements in 7 notes, 3 were false
+    (a brief explanation reported as none, twice with the explanation in the
+    note's own Claims) and 3 described a screen or an edit the transcript cannot
+    show. The guidance targets the mechanism and leaves the sections' reach."""
+    prompt = load_prompt("write_note")
+    flat = " ".join(prompt.text.split())
+    assert prompt.version == "11"
+    assert '"Never" is a claim about the whole transcript' in flat
+    assert "say how briefly and where" in flat
+    assert "in your own **Claims** section" in flat
+    assert "You read a transcript; you did not watch the video." in flat
+    assert "never an edit" in flat
+    assert "said aloud or shown on screen" not in flat
+    assert "an edit was made there" not in flat
+    for subject_word in ("cach", "token", "context window", "agente", "memoria"):
+        assert subject_word not in prompt.text.lower(), subject_word
+
+
 def test_the_marking_prompt_lists_rather_than_rewrites() -> None:
     text = " ".join(load_prompt("mark_note").text.split())
     assert "You do not rewrite the note" in text

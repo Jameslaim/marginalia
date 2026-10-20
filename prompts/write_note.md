@@ -1,8 +1,23 @@
 ---
 name: write_note
-version: "10"
+version: "11"
 stage: note
-note: "v10 makes the marking rule hold, and takes the worked examples off a
+note: "v11 is about absence claims and what a transcript cannot show. Read
+  against their transcripts, 7 notes made about 170 statements of absence or
+  property, over 97% of them true. 3 were false: twice an item listed under
+  Assumes you know as never explained was explained briefly, once with the
+  explanation recorded in the note's own Claims; once a Leaves out 'never
+  distinguishes X from Y' where the video makes the distinction in one passage.
+  5 more were overstated ('no code', 'no trade-off') where the video gave one
+  briefly. 3 were observations a transcript cannot support: pacing gaps and an
+  edit point the caption timings do not show, and 'shows no screen' in a note
+  that cited the video's diagram. 2 of the 3 false claims were in notes on
+  non-English videos; the longest video (59 minutes) was clean. So the risk is a
+  brief mention, not length. The sections keep their reach; the guidance now
+  says to check the transcript and Claims before writing 'never', to say how
+  briefly and when instead, and to describe only what the transcript and its
+  timings show.
+  v10 makes the marking rule hold, and takes the worked examples off a
   test subject. Audited on one note under v9: the record was faithful (19 of
   19 claims supported, 14 of 14 quotes exact, 14 of 14 key moments on time),
   but 14 statements of outside knowledge, arithmetic or extrapolation were
@@ -144,6 +159,36 @@ the rest in the marker. These are the shapes that slip through:
   practical step." *Right:* "Theory from 01:10 to 07:20, then the first
   practical step. [note: about six minutes, by subtraction]"
 
+**"Never" is a claim about the whole transcript, and the brief mention is where
+it fails.** An absence claim — never explains, never distinguishes, no code, no
+trade-off, no conversion — is record only if it is true of every line. The
+measured failures were all one shape: the video did cover the point, once and
+briefly, and the note said it never did. That risk is higher when the transcript
+is in a language other than the one you are writing in, so search it in its own
+language, not in yours. Before you write "never", look for the point in the
+transcript and in your own **Claims** section. If the video touches it at all,
+say how briefly and where, instead of "never":
+
+* *Wrong:* "Never says how to measure chain stretch." *Right:* "Mentions
+  measuring stretch once, in one sentence (04:12), without saying how. [note:
+  a chain checker or a ruler over twelve links are the usual ways]"
+* *Wrong:* "Never distinguishes kneading from folding." *Right:* "Distinguishes
+  kneading from folding in one passage (06:30–06:45), then uses the words
+  interchangeably."
+
+This keeps the sections' reach: a thin treatment is still worth reporting, as
+thin, with its moment. It only stops a brief explanation from being reported as
+none.
+
+**You read a transcript; you did not watch the video.** Do not describe what is
+on screen — a diagram, a slide, code, a face, a gesture — unless the speaker says
+it aloud ("as this diagram shows"), and then attribute it to what was said.
+"Shows no code on screen" is something a transcript cannot tell you. The same
+holds for the timeline: caption lines overlap and their timings jump without any
+cut, so do not report a gap, a pause or an edit unless the timestamps of two
+consecutive lines show it, and then give both timestamps and call it a gap in
+the captions — never an edit, which is a guess about how the video was made.
+
 A note with many markers is not a weaker note. A marker tells the reader whose
 knowledge a sentence carries; leaving it off tells them it was the video's.
 
@@ -177,6 +222,12 @@ easy to read straight past, because by the end of a transcript every term in it
 feels familiar. A term the speaker uses once, in passing, as though everyone
 knows it is exactly what this section is for.
 
+Before an item goes on this list, check that the video does not explain it —
+in the transcript, and in your own **Claims** section, which may already record
+the explanation. A term explained in one line is not unexplained: if the line is
+too thin to rely on, list it as "explained only in passing (02:10)" rather than
+as never explained.
+
 **How current is it** — whether what this video teaches still holds.
 
 You are given `PUBLISHED`. Use it. A video is not wrong because it is old, and
@@ -187,8 +238,9 @@ cannot tell which era they are looking at will follow it anyway.
 So, where the video teaches something version-sensitive — a library API, a tool,
 a product or model name, a price, a limit, a practice — say which era it belongs to and
 **how a reader can tell from the video itself**. The tells are concrete: a
-version number said aloud or shown on screen, an import path, a class or method
-name, a UI that no longer looks like that, a price quoted for a unit of use.
+version number said aloud, an import path, a class or method name, a UI the
+speaker describes that no longer looks like that, a price quoted for a unit of
+use.
 Name the tell, not just the conclusion.
 
 Judge from the transcript and the date. **Do not judge from what you know about
@@ -253,9 +305,10 @@ the sentence, which is tolerable for jumping and wrong for quoting, and both
 are done with these.
 
 Pacing is signal: if eleven minutes go to setup and ninety seconds to the most
-actionable content, say so. If a transcript has conspicuous timing gaps between
-lines, an edit was made there; note it where it is striking, but do not
-speculate about what was cut.
+actionable content, say so, with the timestamps that show it. A gap is worth a
+line only when two consecutive caption lines' timestamps show one; give both
+timestamps and call it a gap in the captions, not an edit, and do not speculate
+about what was cut.
 
 **Who's talking, what they want** — the speaker, their affiliation, what is
 being sold, whether there is a sponsor, and roughly what share of the runtime
