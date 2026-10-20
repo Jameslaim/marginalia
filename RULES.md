@@ -907,6 +907,18 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     pass wrapped plain record wholesale (13–30 per note), so a checking pass's reasoning
     setting is part of its design.
 
+33. **A model's output is checked against what it describes, not only against its own
+    shape.** A reading that parses can still name nothing: a time later than the video's
+    end, a quote not in the transcript. Every place that reads such a value from model
+    output counts the ones that name nothing, on their own line, zero included, and any
+    tolerance comes from measured data — caption end-times run up to 4.5 s past a video's
+    listed duration, so a time is unplaceable only past the later of the duration and the
+    last caption's end plus 5 s. A note whose readings mostly name nothing is drawn once
+    more and then refused, never repaired by guessing what was meant: one note wrote 62 of
+    63 times in a broken shape, the snapper placed none and said nothing, and it was
+    recorded as current. Elsewhere — ask's citations — the count is reported, not acted
+    on.
+
 ## Structure
 
 ```
