@@ -15,7 +15,7 @@ marker (rule 25).
 **Each straddle is resolved one way or the other, and counted** (rule 14):
 
 * **outside** — the quoted unit is moved out of the marker, because the
-  transcript holds it at the line's own moment;
+  transcript holds it at the unit's own moment;
 * **inside** — the marker grows to hold the whole unit, when that evidence is
   missing or weak;
 * **refused** — a marker whose content was only the quoted unit, once the unit
@@ -23,12 +23,17 @@ marker (rule 25).
 
 **Which side needs evidence, and weak evidence keeps the unit inside.**
 Slightly discounting record is cheap; leaving the writer's words unmarked is the
-expensive error. Evidence is tied to the line's own timestamps: the unit must
-occur in the transcript within `_NEAR_MS` of a time the same line cites. Of the
-53 straddled units in the stored notes, 30 occur somewhere in their transcript
-and 27 within 30 seconds of a timestamp on their line; the count does not grow
-from 30 to 120 seconds. "Somewhere in the transcript" is not used: a writer's
-correction can occur elsewhere in its own transcript. A single short word is
+expensive error. Evidence is tied to the unit's own timestamp: the unit must
+occur in the transcript within `_NEAR_MS` of a time that belongs to it (see
+`_own_stamps`). Of the 53 straddled units in the stored notes, 30 occur
+somewhere in their transcript and 27 within 30 seconds of a timestamp on their
+line; the count does not grow from 30 to 120 seconds. "Somewhere in the
+transcript" is not used: a writer's correction can occur elsewhere in its own
+transcript. "Any timestamp on the line" was used first, and is not enough: a
+line listing five caption garbles, each with its own time and the writer's
+correction after it, had one correction said 24 seconds before a *different*
+garble's time, and it was put outside — the writer's guess read as caption
+record. A single short word is
 weak evidence even at the right moment — a common word turns up within any
 30 seconds of speech — so a unit must have two words, or one of at least
 `_MIN_FLAT` letters, to be put outside.
@@ -41,7 +46,7 @@ from __future__ import annotations
 
 import re
 
-from ..contracts import MarkerSettle
+from ..contracts import MarkerSettle, NoteCitation
 from ..quotes import flatten
 from .timestamps import parse_note_timestamps
 
@@ -60,10 +65,17 @@ _UNIT_RE = re.compile(
 )
 _SINGLE_RE = re.compile(r"(?<![\w'])'[^'\n]{2,}?'(?![\w'])")
 
-# The line's own moment, measured: see the module docstring.
+# The unit's own moment, measured: see the module docstring.
 _NEAR_MS = 30_000
 # One word shorter than this is too common to place by itself.
 _MIN_FLAT = 6
+
+# Where a clause ends: a semicolon, or a sentence's end. A full stop inside a
+# timestamp (`00:01:02.500`) is followed by a digit, so it is not one.
+_CLAUSE_END_RE = re.compile(r";|[.!?](?=\s|$)")
+# A letter, so two timestamps with only punctuation, digits or spaces between
+# them (`(2:50, 3:00)`, `2:50–3:00`) are one group: one moment cited twice.
+_LETTER_RE = re.compile(r"[^\W\d_]")
 
 _CUE_RE = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*-->[^\]]*\]\s*(.*)$")
 
@@ -128,6 +140,52 @@ def _straddles(start: int, end: int, unit_start: int, unit_end: int) -> str | No
     return None
 
 
+def _own_stamps(
+    plain: str, unit: tuple[int, int], units: list[tuple[int, int]]
+) -> list[int]:
+    """The times that belong to one quoted unit, or none.
+
+    Timestamps next to each other form one group (`_LETTER_RE`). A unit owns
+    the group nearest to it **within its own clause**: a line that lists
+    several quotes, each with its time, separates them with semicolons or
+    sentences, and a time across that boundary belongs to another quote. A
+    clause with no time of its own borrows the line's only when the line has
+    exactly one group — a heading time for the whole line. Otherwise, and when
+    two groups are equally near, nothing belongs to the unit and it stays
+    inside the marker: the cheap direction. Timestamps and clause ends inside
+    a quoted unit are the quote's words, not the note's, and are not read.
+    """
+
+    def outside(position: int) -> bool:
+        return not any(start <= position < end for start, end in units)
+
+    citations = [c for c in parse_note_timestamps(plain) if outside(c.start)]
+    if not citations:
+        return []
+    groups: list[list[NoteCitation]] = [[citations[0]]]
+    for citation in citations[1:]:
+        if _LETTER_RE.search(plain[groups[-1][-1].end : citation.start]):
+            groups.append([citation])
+        else:
+            groups[-1].append(citation)
+    ends = [m.start() for m in _CLAUSE_END_RE.finditer(plain) if outside(m.start())]
+    low = max((end for end in ends if end < unit[0]), default=-1)
+    high = min((end for end in ends if end >= unit[1]), default=len(plain))
+    mine = [group for group in groups if low < group[0].start and group[-1].end <= high]
+    if not mine:
+        return [c.ms for c in groups[0]] if len(groups) == 1 else []
+
+    def distance(group: list[NoteCitation]) -> int:
+        if group[0].start >= unit[1]:
+            return group[0].start - unit[1]
+        return max(0, unit[0] - group[-1].end)
+
+    ranked = sorted(mine, key=distance)
+    if len(ranked) > 1 and distance(ranked[0]) == distance(ranked[1]):
+        return []
+    return [c.ms for c in ranked[0]]
+
+
 def settle_markers(body: str, transcript: str) -> tuple[str, MarkerSettle]:
     """Move every marker boundary that cuts a quoted unit off it. Counted."""
     cues = _cues(transcript)
@@ -158,7 +216,6 @@ def settle_markers(body: str, transcript: str) -> tuple[str, MarkerSettle]:
         if not units:
             continue
         checked += 1
-        stamps = [citation.ms for citation in parse_note_timestamps(line)]
         changed = False
         keep: list[bool] = [True] * len(parsed.markers)
 
@@ -174,7 +231,8 @@ def settle_markers(body: str, transcript: str) -> tuple[str, MarkerSettle]:
                 # case always grows the marker (the gloss cannot be moved
                 # without moving words), so no evidence is read for it.
                 text = parsed.plain[unit_start + 1 : unit_end - 1]
-                if kind == "within" or not strong(text, stamps):
+                own = _own_stamps(parsed.plain, (unit_start, unit_end), units)
+                if kind == "within" or not strong(text, own):
                     # Inside: the marker grows to hold the whole unit.
                     marker[0] = min(marker[0], unit_start)
                     marker[1] = max(marker[1], unit_end)

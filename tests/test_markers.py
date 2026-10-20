@@ -2,7 +2,7 @@
 
 Measured on 37 stored notes: 53 marker boundaries sat inside a quoted unit, in
 22 notes. Each one is now resolved — the unit kept inside the marker, or put
-outside it when the transcript holds it at the line's own moment, or the marker
+outside it when the transcript holds it at the unit's own moment, or the marker
 refused — and counted (rule 14). Weak evidence keeps the unit inside: slightly
 discounting record is cheap, leaving the writer's words unmarked is not.
 """
@@ -163,3 +163,74 @@ def test_the_note_report_counts_quotations_cut_by_markers(tmp_path, monkeypatch,
     assert ("quotations: 3 marker boundary(ies) cut one: 2 kept inside, 1 put outside, "
             "0 refused; 1 single-quoted unit(s) not handled; 7 line(s) held a marker and a "
             "quotation") in out
+
+
+# -- the unit's own timestamp (F1) ------------------------------------------
+#
+# Evidence was read from any timestamp on the line. A line listing caption
+# garbles, each with its own time and the writer's correction after it, had one
+# correction said near a *different* garble's time, and it was put outside.
+
+LISTED = (
+    "[00:00:10.000 --> 00:00:14.000] the cash is warmed every night\n"
+    "[00:05:00.000 --> 00:05:04.000] the kv cache is cleared much later\n"
+)
+
+
+def test_a_correction_said_near_another_quote_s_time_is_kept_inside() -> None:
+    line = (
+        '- garbles: "the cash is warmed" (00:12, [note: probably "the kv cache] is '
+        'cleared"); "the kv case" (05:01, [note: probably "the kv cache"])\n'
+    )
+
+    out, settle = settle_markers(line, LISTED)
+
+    assert (settle.straddles, settle.kept_inside, settle.put_outside) == (1, 1, 0)
+    assert out.index("[note: probably") < out.index('"the kv cache is cleared"')
+    assert "".join(words(out).split()) == "".join(words(line).split()), "only brackets move"
+
+
+def test_a_quote_said_at_its_own_clause_s_time_is_put_outside() -> None:
+    line = (
+        '- "the kv case" (05:01, [note: the captions say "the kv cache] is '
+        'cleared"); "the cash" (00:12, [note: probably "cache"])\n'
+    )
+
+    _out, settle = settle_markers(line, LISTED)
+
+    assert (settle.straddles, settle.put_outside, settle.kept_inside) == (1, 1, 0)
+
+
+def test_a_line_s_only_time_belongs_to_every_clause_on_it() -> None:
+    line = '- (00:12) The captions. Then [note: a garble of "the cash is warmed] every night"\n'
+
+    _out, settle = settle_markers(line, LISTED)
+
+    assert (settle.put_outside, settle.kept_inside) == (1, 0)
+
+
+def test_a_clause_without_a_time_on_a_line_with_several_keeps_the_unit_inside() -> None:
+    line = (
+        '- (00:12) one thing; (05:01) another; [note: a garble of "the cash is '
+        'warmed] every night"\n'
+    )
+
+    _out, settle = settle_markers(line, LISTED)
+
+    assert (settle.put_outside, settle.kept_inside) == (0, 1)
+
+
+def test_of_two_times_in_one_clause_the_nearer_decides() -> None:
+    near_own = '- 05:01 a [note: garble of "the cash is warmed] every night" 00:12\n'
+    near_other = '- 00:12 a [note: garble of "the cash is warmed] every night" 05:01\n'
+
+    assert settle_markers(near_own, LISTED)[1].put_outside == 1
+    assert settle_markers(near_other, LISTED)[1].put_outside == 0
+
+
+def test_two_times_equally_near_keep_the_unit_inside() -> None:
+    # Five characters either side once the marker's brackets are read out.
+    line = '- 00:12 x [note: y "the cash is warmed]" y x 05:01\n'
+
+    _out, settle = settle_markers(line, LISTED)
+    assert (settle.straddles, settle.put_outside, settle.kept_inside) == (1, 0, 1)
