@@ -331,9 +331,11 @@ _EDIT_NEXT_MIN = 7
 # because folding brings ids closer: the library's closest folded pair is 7
 # edits apart (1 pair at 7, 5 at 8), against 9 case-sensitive, and random
 # 11-character ids folded to 38 symbols gave no pair within 6 in libraries of
-# 100 and 300. One folded edit, with every other id at least 6 away, holds by
-# the triangle inequality while the closest pair stays at 7; a wrong link would
-# need the model to have made 6 or more folded edits to the id it meant. It runs
+# 100 and 300, and 4 or 5 pairs at 6 (none closer) in libraries of 1,000. One
+# folded edit, with every other id at least 6 away, holds by the triangle
+# inequality while the closest pair stays at 7; past that, the margin refuses
+# repairs near the few close pairs instead of guessing. A wrong link would need
+# the model to have made 6 or more folded edits to the id it meant. It runs
 # only when the case-sensitive pass found nothing within `_EDIT_MAX` — never to
 # overrule that pass's refusal on its own margin.
 _FOLD_EDIT_MAX = 1
