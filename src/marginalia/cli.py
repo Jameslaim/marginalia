@@ -907,6 +907,20 @@ def _cmd_note(args: argparse.Namespace) -> int:
             f"{sum(r.verbatim_unfound for r in run.results)} of {checked} verbatim "
             f"quote(s) not found in the transcript, marked in the note"
         )
+    timed = [result for result in run.results if result.timestamps.total or result.redrawn]
+    if timed:
+        # Rule 14: timestamps that name no moment in the video, on their own
+        # line, printed whenever any were counted, zero included — a note whose
+        # citations all pointed past its end used to be reported exactly like a
+        # good one.
+        print(
+            f"          timestamps: {sum(r.timestamps.unplaceable for r in timed)} of "
+            f"{sum(r.timestamps.total for r in timed)} name no moment in the video, in "
+            f"{sum(1 for r in timed if r.timestamps.unplaceable)} note(s); "
+            f"{sum(r.timestamps.in_tolerance for r in timed)} within the caption tolerance "
+            f"past the listed end; {sum(1 for r in timed if r.redrawn)} note(s) drawn twice, "
+            f"{sum(1 for r in timed if r.redrawn and r.outcome == FAILED)} of them not written"
+        )
     ran = [result for result in run.results if result.mark_ran]
     if ran:
         # Rule 14: what the marking pass did, on its own line, zero included.
@@ -1189,6 +1203,7 @@ def _ask_summary(answer: Answer) -> str:
         f"ask:      {answer.notes_loaded} notes, "
         f"{len(answer.citations) + len(answer.unparsed)} citation-shaped, "
         f"{len(answer.citations)} parsed, {len(answer.unparsed)} unparsed, "
+        f"{len(answer.past_end)} past the end of their video, "
     )
     if answer.repaired:
         # The model got a video ID's casing wrong and the parser covered for it.
@@ -1514,6 +1529,26 @@ def _cmd_snap_timestamps(args: argparse.Namespace) -> int:
             reasons[reason] = reasons.get(reason, 0) + 1
     for reason, count in sorted(reasons.items(), key=lambda item: -item[1]):
         print(f"left:     {count:3d}  {reason}")
+
+    # Rule 14: "left alone" mixes citations the snapper could not improve with
+    # readings that name no moment in the video. The second kind gets its own
+    # line, per note and in total, zero included.
+    checked = [result for result in results if not result.error]
+    for result in checked:
+        if result.timestamps.unplaceable:
+            _report(
+                "unplaced",
+                result.video_id,
+                f"{result.timestamps.unplaceable} of {result.timestamps.total} timestamp(s) "
+                f"name no moment in the video",
+            )
+    print(
+        f"placing:  {sum(r.timestamps.unplaceable for r in checked)} of "
+        f"{sum(r.timestamps.total for r in checked)} timestamp(s) cannot be placed in their "
+        f"video, in {sum(1 for r in checked if r.timestamps.unplaceable)} note(s); "
+        f"{sum(r.timestamps.in_tolerance for r in checked)} within the caption tolerance "
+        f"past the listed end"
+    )
 
     print(
         f"run:      {snapped} snapped, {left} left alone, {failed} skipped, "

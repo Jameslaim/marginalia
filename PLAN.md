@@ -2873,6 +2873,55 @@ inside a marker. That is worse than an unmarked statement, because the marker
 claims a source. No v10 note audited has a marker like this, and none carries the
 figure: 3 from the first run, and 15 from the follow-up (3 drafts × 5 pass settings).
 
+### A note's timestamps must name moments its video has
+
+**What was measured.** One of 37 notes wrote every moment as seconds and hundredths
+in a clock shape. Read as minutes:seconds, all of them fell past the end of a
+5½-minute video. 16 of its 63 readings could not be parsed at all: a field of 60 or
+more, or minutes past 99. The snapper placed none of them, and nothing said so: no
+counter, no warning, and the note was recorded as current. Ask cites notes by
+timestamp, so every citation from it would have linked to nothing. The transcript
+was well formed; the fault was one draw of the note.
+
+**The change.**
+
+- **Counted (rule 14).** `check_timestamps` reads every clock-shaped reading, wider
+  than the snapper's parser on purpose. It counts a reading as unplaceable when it
+  is malformed, or later than the video's end plus `END_TOLERANCE_MS`. The end is
+  the later of the listed duration and the last caption's end time. Each count is
+  recorded on `NoteResult.timestamps`, logged when above zero, and printed on its
+  own line in the note report. Readings past the listed duration but inside the
+  tolerance are counted apart: they are caption end times, not errors.
+- **The tolerance is measured.** Over the 37 notes (2,738 readings):
+  - valid readings ran up to 2.0s past the listed duration;
+  - caption end times ran up to 4.5s past it;
+  - past the later of the two, the largest valid overshoot was 0.1s;
+  - the broken note's readings were 23s to over half an hour late.
+
+  5s separates them with room on both sides.
+- **Not written whole (rule 30).** If more than half a note's readings are
+  unplaceable, the note is drawn once more. If the second draw is no better, the
+  note is not written. The video is recorded as a failed attempt and stays due.
+- **Never repaired.** A malformed reading has several plausible meanings, and a
+  moved timestamp looks authoritative. So recovery is not attempted; the redraw
+  is the repair.
+- **Rule 25:**
+  - `snap-timestamps` prints the same count per note and in total;
+  - ask counts answer citations later than the cited video's end (`Answer.past_end`),
+    lists them in the answer record, and prints the count on its summary line.
+
+**Where it could misfire.**
+
+- **No listed duration and no cue lines.** There is no end to check against, so
+  nothing is called unplaceable (`checked` is False). It errs toward silence, not
+  toward a false alarm.
+- **Ask without a listed duration.** Ask judges only videos with a listed
+  duration, and reads a transcript only to confirm a citation already past that
+  duration plus the tolerance.
+- **Clock-shaped readings that are not times.** A ratio needs two-digit fields to
+  be counted, so 16:9 and 100:1 are not. A score or a version number written as
+  12:30 would be counted, and judged against the video's length like any time.
+
 ### Structural rules
 
 - `providers/` is a folder because it is the part guaranteed to break. Adding a source

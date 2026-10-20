@@ -70,7 +70,13 @@ from ..quotes import (
     section_heading,
     spoken_text,
 )
-from .timestamps import build_index, snap_note
+from .timestamps import (
+    build_index,
+    check_timestamps,
+    snap_note,
+    transcript_end_ms,
+    unusable,
+)
 
 log = logging.getLogger(__name__)
 
@@ -661,86 +667,132 @@ def _one(
         )
 
     meta = library.read_meta(video_id)
-    try:
-        reply = client.complete(
-            "You read a transcript once, whole, and write down what you understood.",
-            prompt.render(
-                title=(meta or {}).get("title") or video_id,
-                channel=(meta or {}).get("channel") or "unknown",
-                duration=format_duration((meta or {}).get("duration_s")),
-                upload_date=(meta or {}).get("upload_date") or "unknown",
-                # **Passed in, not left to the model to infer.** A model with a
-                # 2024 cutoff read a 2026-04 video, concluded the model name in
-                # it was a hallucination, called the source speculative and
-                # marked its real pricing wrong. `How current is it` is
-                # mandatory, so a model that cannot place itself in time gets
-                # every era judgement wrong, confidently. Rule 16 passes `today`
-                # into the territory validator for the same reason.
-                today=date.today().isoformat(),
-                # Automatic captions mangle exactly the technical terms a note
-                # is most interested in. The reader must be told which errors
-                # are the speaker's and which are the transcriber's.
-                caption_kind=(meta or {}).get("caption_kind") or "unknown",
-                chapters=_chapter_line(meta),
-                transcript=transcript,
-            ),
-            max_tokens=config.note.max_tokens,
-            task="write_note",
-        )
-    except LlmConfigError:
-        # A bad key or an unknown model fails identically for every video.
-        # Draining thirty-six of them to say so is a waste of everyone's time.
-        raise
-    except LlmRequestTooLarge:
-        # This transcript is past the model's window; the next one may not be.
-        # Its own outcome, beside the character ceiling's, and not a failure:
-        # it says nothing about the provider, so it must not feed the streak
-        # that stops a drain.
-        log.warning("note: %s is too large for the model's context window — skipped", video_id)
-        return NoteResult(video_id, SKIPPED, "too large for the model's context window")
-    except LlmError as exc:
-        log.info("note: %s failed (%s)", video_id, safe_reason(exc))
-        return NoteResult(video_id, FAILED, f"transient: {safe_reason(exc)[:120]}")
+    index = build_index(transcript)
+    end_ms = transcript_end_ms(transcript)
+    # Rule 30: a note whose timestamps mostly name no moment in the video is not
+    # written as if it were whole. It is drawn once more — the measured failure
+    # was one draw's slip into a malformed clock shape, while 36 other notes under
+    # the same prompt wrote well-formed times — and if the second draw is no better, the
+    # note is not written and the video stays due. Never repaired in place: a
+    # malformed reading has several plausible meanings, and choosing one would
+    # be the authoritative-looking guess `timestamps.py` exists to refuse.
+    redrawn = False
+    for attempt in (1, 2):
+        try:
+            reply = client.complete(
+                "You read a transcript once, whole, and write down what you understood.",
+                prompt.render(
+                    title=(meta or {}).get("title") or video_id,
+                    channel=(meta or {}).get("channel") or "unknown",
+                    duration=format_duration((meta or {}).get("duration_s")),
+                    upload_date=(meta or {}).get("upload_date") or "unknown",
+                    # **Passed in, not left to the model to infer.** A model with a
+                    # 2024 cutoff read a 2026-04 video, concluded the model name in
+                    # it was a hallucination, called the source speculative and
+                    # marked its real pricing wrong. `How current is it` is
+                    # mandatory, so a model that cannot place itself in time gets
+                    # every era judgement wrong, confidently. Rule 16 passes `today`
+                    # into the territory validator for the same reason.
+                    today=date.today().isoformat(),
+                    # Automatic captions mangle exactly the technical terms a note
+                    # is most interested in. The reader must be told which errors
+                    # are the speaker's and which are the transcriber's.
+                    caption_kind=(meta or {}).get("caption_kind") or "unknown",
+                    chapters=_chapter_line(meta),
+                    transcript=transcript,
+                ),
+                max_tokens=config.note.max_tokens,
+                task="write_note",
+            )
+        except LlmConfigError:
+            # A bad key or an unknown model fails identically for every video.
+            # Draining thirty-six of them to say so is a waste of everyone's time.
+            raise
+        except LlmRequestTooLarge:
+            # This transcript is past the model's window; the next one may not be.
+            # Its own outcome, beside the character ceiling's, and not a failure:
+            # it says nothing about the provider, so it must not feed the streak
+            # that stops a drain.
+            log.warning("note: %s is too large for the model's context window — skipped", video_id)
+            return NoteResult(video_id, SKIPPED, "too large for the model's context window")
+        except LlmError as exc:
+            log.info("note: %s failed (%s)", video_id, safe_reason(exc))
+            return NoteResult(
+                video_id, FAILED, f"transient: {safe_reason(exc)[:120]}", redrawn=redrawn
+            )
 
-    if reply.finish_reason == "length":
-        # A fragment, refused before it can pass for a note. `validate_note`
-        # only asks that every section be present and non-empty, and the last
-        # section is the one a ceiling cuts: a reply that stopped two lines into
-        # `## Verbatim` passed, and was stored as complete. Every other
-        # long-output call here already discards a truncated reply.
-        log.info("note: %s hit the token ceiling; the reply is a fragment", video_id)
+        if reply.finish_reason == "length":
+            # A fragment, refused before it can pass for a note. `validate_note`
+            # only asks that every section be present and non-empty, and the last
+            # section is the one a ceiling cuts: a reply that stopped two lines into
+            # `## Verbatim` passed, and was stored as complete. Every other
+            # long-output call here already discards a truncated reply.
+            log.info("note: %s hit the token ceiling; the reply is a fragment", video_id)
+            return NoteResult(
+                video_id,
+                FAILED,
+                f"truncated: hit the {config.note.max_tokens:,}-token ceiling",
+                redrawn=redrawn,
+            )
+
+        body = reply.text.strip()
+        try:
+            validate_note(body)
+        except NoteInvalid as exc:
+            # Not retried here. A whole transcript has just been paid for, and a
+            # second reading of the same prompt is more likely to cost twice than
+            # to succeed. The video stays retryable for the next run.
+            log.info("note: %s produced an invalid note (%s)", video_id, exc)
+            return NoteResult(video_id, FAILED, f"invalid: {exc}", redrawn=redrawn)
+
+        # Two corrections before the note is written, both pure and both free: the
+        # transcript is already in hand. Timestamps first, because the snapper
+        # anchors on Verbatim quotes; then the Verbatim check, whose markers the
+        # snapper ignores.
+        snapped = 0
+        if index:
+            body, changes, _left = snap_note(body, index, label=video_id)
+            snapped = len(changes)
+        body, checked, unfound = check_verbatim(body, transcript)
+        timestamps = check_timestamps(
+            body, duration_s=(meta or {}).get("duration_s"), transcript_end_ms=end_ms
+        )
+        if not unusable(timestamps):
+            break
+        if attempt == 1:
+            log.warning(
+                "note: %s — %d of %d timestamp(s) name no moment in the video; "
+                "drawing the note once more",
+                video_id, timestamps.unplaceable, timestamps.total,
+            )
+            redrawn = True
+            continue
+        log.warning(
+            "note: %s — %d of %d timestamp(s) name no moment in the video after a "
+            "second draw; not written, the video stays due",
+            video_id, timestamps.unplaceable, timestamps.total,
+        )
         return NoteResult(
             video_id,
             FAILED,
-            f"truncated: hit the {config.note.max_tokens:,}-token ceiling",
+            f"timestamps unusable: {timestamps.unplaceable} of {timestamps.total} name no "
+            f"moment in the video, after one redraw",
+            tokens=reply.usage.output_tokens,
+            timestamps=timestamps,
+            redrawn=True,
         )
 
-    body = reply.text.strip()
-    try:
-        validate_note(body)
-    except NoteInvalid as exc:
-        # Not retried here. A whole transcript has just been paid for, and a
-        # second reading of the same prompt is more likely to cost twice than
-        # to succeed. The video stays retryable for the next run.
-        log.info("note: %s produced an invalid note (%s)", video_id, exc)
-        return NoteResult(video_id, FAILED, f"invalid: {exc}")
-
-    # Two corrections before the note is written, both pure and both free: the
-    # transcript is already in hand. Timestamps first, because the snapper
-    # anchors on Verbatim quotes; then the Verbatim check, whose markers the
-    # snapper ignores.
-    index = build_index(transcript)
-    snapped = 0
-    if index:
-        body, changes, _left = snap_note(body, index, label=video_id)
-        snapped = len(changes)
-    body, checked, unfound = check_verbatim(body, transcript)
     if unfound:
         log.info(
             "note: %s — %d of %d verbatim quote(s) not found in the transcript; marked",
             video_id,
             unfound,
             checked,
+        )
+    if timestamps.unplaceable:
+        log.warning(
+            "note: %s — %d of %d timestamp(s) name no moment in the video; written, counted",
+            video_id, timestamps.unplaceable, timestamps.total,
         )
 
     # File first, ledger second. A crash between them costs one model call; the
@@ -782,6 +834,13 @@ def _one(
         detail += f", {snapped} timestamp(s) snapped"
     if unfound:
         detail += f", {unfound} of {checked} verbatim quote(s) not in the transcript"
+    if timestamps.unplaceable:
+        detail += (
+            f", {timestamps.unplaceable} of {timestamps.total} timestamp(s) name no moment "
+            f"in the video"
+        )
+    if redrawn:
+        detail += ", drawn twice: the first draw's timestamps were unusable"
     if marker is not None:
         detail += (
             f", marking pass {mark_problem} — note kept as written"
@@ -804,6 +863,8 @@ def _one(
         mark_rejected=rejected,
         mark_problem=mark_problem,
         mark_capped=capped,
+        timestamps=timestamps,
+        redrawn=redrawn,
     )
 
 

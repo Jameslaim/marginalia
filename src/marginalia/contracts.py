@@ -1722,6 +1722,36 @@ STOP_REFUSED = "provider_refused"
 
 
 @dataclass(frozen=True)
+class TimestampCheck:
+    """Can a note's clock readings be placed inside its video at all?
+
+    A reading the snapper leaves alone is usually a citation it could not
+    *improve*. This asks the earlier question: whether the reading names a moment
+    the video has. One note wrote every moment as seconds:hundredths, which reads
+    as minutes:seconds, so all of them fell past the end of a five-minute video,
+    and the snapper placed none and said nothing (rule 14).
+
+    ``total`` counts every clock-shaped reading. ``unplaceable`` is a reading
+    that is malformed (a field of 60 or more) or later than the video's end plus
+    the tolerance; ``malformed`` is the part of it that could not be read as a
+    clock at all. ``in_tolerance`` is placeable but past the listed duration —
+    caption end times, not errors, counted apart so they stay visible as such.
+    ``checked`` is False when neither a duration nor a cue gives an end to check
+    against; nothing is then called unplaceable.
+    """
+
+    total: int = 0
+    unplaceable: int = 0
+    malformed: int = 0
+    in_tolerance: int = 0
+    checked: bool = True
+
+    @property
+    def placeable(self) -> int:
+        return self.total - self.unplaceable
+
+
+@dataclass(frozen=True)
 class NoteResult:
     video_id: str
     outcome: str
@@ -1745,6 +1775,10 @@ class NoteResult:
     mark_rejected: int = 0
     mark_problem: str = ""
     mark_capped: int = 0
+    # Whether the note's timestamps name moments the video has (rule 14), and
+    # whether a note that mostly did not was drawn a second time (rule 30).
+    timestamps: TimestampCheck = field(default_factory=TimestampCheck)
+    redrawn: bool = False
 
 
 @dataclass
@@ -2070,6 +2104,11 @@ class Answer:
     # the model getting an ID wrong, and a repair nobody counts is a defect
     # nobody sees.
     repaired: list[str] = field(default_factory=list)
+    # Citations whose time is later than the end of the video they cite, plus
+    # the caption tolerance: a link to a moment the video does not have. The
+    # citation as the answer wrote it, never a source's text. Rule 25: the
+    # note worker counts the same thing in notes, whose timestamps answers copy.
+    past_end: list[str] = field(default_factory=list)
     titles: dict[str, str] = field(default_factory=dict)
     # video_id -> a short digest of the note text this answer actually read.
     #
@@ -2193,6 +2232,8 @@ class SnapResult:
     snapped: list[Change] = field(default_factory=list)
     left: list[tuple[str, str, str]] = field(default_factory=list)  # section, raw, reason
     error: str | None = None
+    # Whether each reading names a moment the video has; see TimestampCheck.
+    timestamps: TimestampCheck = field(default_factory=TimestampCheck)
 
     @property
     def total(self) -> int:

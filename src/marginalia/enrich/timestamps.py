@@ -34,7 +34,7 @@ import logging
 import re
 from typing import Iterable, Sequence
 
-from ..contracts import Change, NoteCitation, SnapResult, TranscriptIndex
+from ..contracts import Change, NoteCitation, SnapResult, TimestampCheck, TranscriptIndex
 from ..core.library import Library
 from ..quotes import note_lines
 
@@ -42,6 +42,10 @@ log = logging.getLogger(__name__)
 
 __all__ = [
     "build_index",
+    "check_timestamps",
+    "transcript_end_ms",
+    "unusable",
+    "END_TOLERANCE_MS",
     "parse_note_timestamps",
     "snap_note",
     "snap_text",
@@ -113,6 +117,94 @@ _DESCRIBED_DRIFT_S = 20
 # Passes before a note is declared settled. Two is the most any real note has
 # needed; the rest is headroom.
 _MAX_PASSES = 5
+
+# -- can a reading be placed in the video at all? -------------------------------
+#
+# `_TS_RE` above is the snapper's parser, and deliberately narrow: it only reads
+# what it may rewrite. Counting needs the opposite — every clock-shaped reading
+# a model wrote, including the shapes the snapper refuses — or a malformed
+# reading is not left alone but invisible. One note wrote seconds:hundredths in
+# an hours:minutes:seconds shape (a field of 60 or more, which `_TS_RE` cannot
+# match) and minutes past 99 (which it cannot see either): 16 of its 63 readings
+# were never parsed, and the other 47 fell past the end of the video.
+#
+# Two-digit fields after the first colon, so a ratio such as 100:1 or 16:9 is
+# not a clock reading; the first field may run to three digits, so 116:24 is.
+_CLOCK_RE = re.compile(r"(?<![\d.:])(\d{1,3}):(\d{2})(?::(\d{2}))?(?:\.(\d{1,3}))?(?![\d:])")
+
+# How far past the video's end a reading may fall and still be a moment in it.
+# The end is the later of the listed duration and the last caption's end time.
+# Measured over 37 stored notes (2,738 readings): valid readings fell up to 2.0s
+# past the listed duration, which caption end times exceed by up to 4.5s; past
+# the later of the two, the largest valid overshoot was 0.1s. The one broken
+# note's readings were 23s to over half an hour past the end. 5s holds every
+# valid reading with room to spare and is far below any measured error.
+END_TOLERANCE_MS = 5_000
+
+# More than this share of a note's readings unplaceable and the note's
+# citations are not a few slips but unusable (rule 30): it is drawn again once.
+# Measured: 36 of 37 notes had none unplaceable; the broken one had 62 of 63.
+UNUSABLE_SHARE = 0.5
+
+_CUE_END_RE = re.compile(r"^\[[^\]]*-->\s*(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s*\]")
+
+
+def transcript_end_ms(transcript: str) -> int:
+    """The latest caption end time in a transcript, 0 when it has no cue lines."""
+    latest = 0
+    for line in transcript.splitlines():
+        match = _CUE_END_RE.match(line.strip())
+        if match:
+            hours, minutes, seconds, millis = (int(part) for part in match.groups())
+            latest = max(latest, ((hours * 3600 + minutes * 60 + seconds) * 1000) + millis)
+    return latest
+
+
+def check_timestamps(
+    text: str, *, duration_s: int | float | None, transcript_end_ms: int = 0
+) -> TimestampCheck:
+    """Count the clock readings in ``text`` that name no moment in the video.
+
+    Never rewrites anything: a reading that cannot be placed is counted, and
+    stays as written. Reading `38:39` as 38.39 seconds would land inside a
+    short video, but so would many other readings of a malformed time, and a
+    moved timestamp looks authoritative — the rule this whole module is built on.
+    """
+    duration_ms = int((duration_s or 0) * 1000)
+    end_ms = max(duration_ms, transcript_end_ms)
+    total = unplaceable = malformed = in_tolerance = 0
+    for match in _CLOCK_RE.finditer(text):
+        total += 1
+        first, second, third, _millis = match.groups()
+        fields = [int(second)] + ([int(third)] if third is not None else [])
+        if any(value >= 60 for value in fields):
+            unplaceable += 1
+            malformed += 1
+            continue
+        if third is None:
+            seconds = int(first) * 60 + int(second)
+        else:
+            seconds = int(first) * 3600 + int(second) * 60 + int(third)
+        at_ms = seconds * 1000
+        if not end_ms:
+            continue
+        if at_ms > end_ms + END_TOLERANCE_MS:
+            unplaceable += 1
+        elif duration_ms and at_ms > duration_ms:
+            in_tolerance += 1
+    return TimestampCheck(
+        total=total,
+        unplaceable=unplaceable,
+        malformed=malformed,
+        in_tolerance=in_tolerance,
+        checked=bool(end_ms),
+    )
+
+
+def unusable(check: TimestampCheck) -> bool:
+    """Most of the note's readings name no moment in the video."""
+    return bool(check.total) and check.unplaceable > check.total * UNUSABLE_SHARE
+
 
 REASON_NO_ANCHOR = "no distinctive words to match on"
 REASON_NO_MATCH = "no confident transcript match"
@@ -545,7 +637,8 @@ def snap_video(library: Library, video_id: str, *, dry_run: bool = False) -> Sna
         result.error = "no transcript"
         return result
 
-    index = build_index(library.read_transcript(video_id))
+    transcript = library.read_transcript(video_id)
+    index = build_index(transcript)
     if not index:
         result.error = "transcript has no cue lines"
         return result
@@ -553,6 +646,14 @@ def snap_video(library: Library, video_id: str, *, dry_run: bool = False) -> Sna
     updated, changes, left = snap_note(note, index, label=video_id)
     result.snapped = changes
     result.left = left
+    # The snapper's "left alone" cannot tell a citation it could not improve
+    # from one that names no moment in the video; this can (rule 25: the same
+    # question asked wherever a model's timestamps are read).
+    result.timestamps = check_timestamps(
+        updated,
+        duration_s=(library.read_meta(video_id) or {}).get("duration_s"),
+        transcript_end_ms=transcript_end_ms(transcript),
+    )
 
     if changes and not dry_run:
         # Through the library, which is the CLI's own write path. Nothing here

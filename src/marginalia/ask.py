@@ -53,6 +53,7 @@ from .contracts import (
 from .core.ids import is_video_id
 from .core.ledger import Ledger, LedgerError
 from .core.library import Library
+from .enrich.timestamps import END_TOLERANCE_MS, transcript_end_ms
 from .llm import LlmClient, LlmError, Prompt, load_prompt, safe_reason
 from .quotes import (
     Words,
@@ -976,6 +977,11 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
     ]
     links = render_links(answer.citations, answer.titles)
     lines.extend(links or ["(none)"])
+    if answer.past_end:
+        # The citation as written, which the reader already holds: a link to a
+        # moment its video does not have.
+        lines.extend(["", "Later than the end of the video it cites:"])
+        lines.extend(f"  {raw}" for raw in answer.past_end)
     if answer.unparsed:
         # Kept, for the same reason the counter is printed: a citation the
         # parser could not read is the next shape to teach it, and it is
@@ -1610,9 +1616,46 @@ def answer_question(
     result.citations = scan.citations
     result.unparsed = scan.unparsed
     result.repaired = scan.repaired
+    result.past_end = citations_past_end(library, scan.citations)
+    if result.past_end:
+        log.warning(
+            "ask: %d citation(s) point later than the end of the video they cite",
+            len(result.past_end),
+        )
     _account(result, client, config)
     result.elapsed_s = time.monotonic() - started
     return result
+
+
+def citations_past_end(library: Library, citations: Sequence[AnswerCitation]) -> list[str]:
+    """Citations later than their video's end plus the caption tolerance.
+
+    The end is the later of the listed duration and the last caption's end
+    time, the same test the note worker applies to a note (`check_timestamps`).
+    The transcript is read only to confirm a citation already past the listed
+    duration plus the tolerance, so a normal answer reads nothing; a video with
+    no listed duration is not judged.
+    """
+    past: list[str] = []
+    ends: dict[str, int] = {}
+    for citation in citations:
+        at_ms = citation.seconds * 1000
+        meta = library.read_meta(citation.video_id) or {}
+        duration_ms = int((meta.get("duration_s") or 0) * 1000)
+        if not duration_ms or at_ms <= duration_ms + END_TOLERANCE_MS:
+            continue
+        if citation.video_id not in ends:
+            transcript_end = 0
+            if library.has_transcript(citation.video_id):
+                try:
+                    transcript_end = transcript_end_ms(library.read_transcript(citation.video_id))
+                except OSError:
+                    transcript_end = 0
+            ends[citation.video_id] = max(duration_ms, transcript_end)
+        end_ms = ends[citation.video_id]
+        if end_ms and at_ms > end_ms + END_TOLERANCE_MS:
+            past.append(citation.raw)
+    return past
 
 
 def _record_opened(result: Answer, opened: Sequence[Opened]) -> None:
