@@ -143,6 +143,7 @@ __all__ = [
     # answers
     "AnswerCitation",
     "CitationScan",
+    "IdEdit",
     "LoadedNote",
     "Opened",
     "Answer",
@@ -1859,6 +1860,22 @@ class AnswerCitation:
 
 
 @dataclass(frozen=True)
+class IdEdit:
+    """A video ID the model mistyped, repaired against the library by edit distance.
+
+    ``written`` is the token as the answer wrote it, ``video_id`` the library's
+    own spelling it resolved to (rule 5: never normalised), ``distance`` its edit
+    distance, and ``next_nearest`` the distance to the next-closest library ID —
+    the margin that made the repair safe.
+    """
+
+    written: str
+    video_id: str
+    distance: int
+    next_nearest: int
+
+
+@dataclass(frozen=True)
 class CitationScan:
     """What the parser found, and what it could not read.
 
@@ -1876,6 +1893,10 @@ class CitationScan:
     # reason `unparsed` exists: a repair is a thing that happened to an answer,
     # and a repair nobody counts is how you stop noticing the model needs one.
     repaired: list[str] = field(default_factory=list)
+    # Citations whose ID was one or two edits from exactly one library ID and
+    # far from every other. Counted apart from the case and prefix repairs: it
+    # is a different rule, with its own margin (see `ask._find_id`).
+    edited: list[IdEdit] = field(default_factory=list)
 
     @property
     def shaped(self) -> int:
@@ -2104,6 +2125,9 @@ class Answer:
     # the model getting an ID wrong, and a repair nobody counts is a defect
     # nobody sees.
     repaired: list[str] = field(default_factory=list)
+    # Mistyped ids repaired by edit distance against the library, each with
+    # its distance and the margin to the next-nearest id (`ask._find_id`).
+    edited: list[IdEdit] = field(default_factory=list)
     # Citations whose time is later than the end of the video they cite, plus
     # the caption tolerance: a link to a moment the video does not have. The
     # citation as the answer wrote it, never a source's text. Rule 25: the

@@ -537,24 +537,65 @@ def test_a_prefix_matching_two_library_ids_is_refused() -> None:
     assert len(scan.unparsed) == 1
 
 
-def test_a_dropped_character_is_still_refused() -> None:
-    """`aYfZN8tAQs` for `aYfZN8t6AQs`. Not a prefix and not a case difference,
-    so it would need edit distance — and two YouTube IDs one character apart are
-    two different videos, so that repair can point a claim at the wrong one."""
+def test_a_dropped_character_is_repaired_against_a_distant_library() -> None:
+    """`aYfZN8tAQs` for `aYfZN8t6AQs`: one edit from its id. This used to be
+    refused; it is now repaired, because the model copies ids from the notes it
+    was given and no other library id is within the margin. Counted apart from
+    case and prefix repairs, with its distance."""
     scan = scan_citations("[aYfZN8tAQs 11:23]", ["aYfZN8t6AQs"])
 
-    assert scan.citations == []
-    assert len(scan.unparsed) == 1
+    assert [c.video_id for c in scan.citations] == ["aYfZN8t6AQs"]
+    assert scan.repaired == []
+    assert [(e.written, e.video_id, e.distance) for e in scan.edited] == [
+        ("aYfZN8tAQs", "aYfZN8t6AQs", 1)
+    ]
 
 
-def test_a_transposition_is_still_refused() -> None:
-    """`o6vU4u_yEuE` for `o6v4Uu_yEuE`. Correct length, wrong video. A wrong
-    link is worse than a missing one: the missing one shows up in the unparsed
-    count, the wrong one reads as a working citation."""
+def test_a_transposition_is_repaired_against_a_distant_library() -> None:
+    """`o6vU4u_yEuE` for `o6v4Uu_yEuE`: two adjacent characters swapped, one
+    edit. Repaired on the same terms, and never to any id but the library's."""
     scan = scan_citations("[o6vU4u_yEuE 05:19]", ["o6v4Uu_yEuE"])
 
+    assert [c.video_id for c in scan.citations] == ["o6v4Uu_yEuE"]
+    assert [e.distance for e in scan.edited] == [1]
+
+
+def test_an_edit_repair_is_refused_when_another_library_id_is_near() -> None:
+    """The margin is the whole safety argument: a wrong link needs a second
+    library id close to what the model wrote. Within the margin, refuse."""
+    written = "aYfZN8tAQs"
+    near_one = "aYfZN8t6AQs"
+    near_two = "aYfZN8tXAQz"  # 2 edits from what was written: inside the margin
+
+    scan = scan_citations(f"[{written} 11:23]", [near_one, near_two])
+
+    assert scan.citations == []
+    assert scan.edited == []
+    assert len(scan.unparsed) == 1
+
+
+def test_an_id_more_than_two_edits_away_is_refused() -> None:
+    scan = scan_citations("[aYfZN8tXXQs 11:23]", ["aYfZN8t6AQ9"])
+
     assert scan.citations == []
     assert len(scan.unparsed) == 1
+
+
+def test_an_edit_repair_keeps_the_library_spelling_and_never_folds_case() -> None:
+    """Rule 5: distance is counted case-sensitively, and the result is the
+    library's own id, character for character."""
+    scan = scan_citations("[aYfZN8tAQs 11:23]", ["aYfZN8t6AQs"])
+
+    assert scan.citations[0].video_id == "aYfZN8t6AQs"
+    assert scan.citations[0].raw.startswith("[aYfZN8t6AQs ")
+
+
+def test_a_word_is_never_read_as_a_mistyped_id() -> None:
+    """Prose inside a citation bracket must not become an edit repair."""
+    scan = scan_citations("[consolidate 05:19]", ["consolidat9"])
+
+    assert scan.citations == []
+    assert scan.edited == []
 
 
 def test_a_short_fragment_never_becomes_a_prefix_match() -> None:
@@ -565,17 +606,20 @@ def test_a_short_fragment_never_becomes_a_prefix_match() -> None:
     assert scan.citations == []
 
 
-def test_the_three_real_failures_end_with_one_repaired_and_two_refused() -> None:
-    """The measured case from the last answer, exactly as it occurred."""
+def test_the_three_real_failures_are_each_repaired_by_their_own_rule() -> None:
+    """The measured case from the last answer, exactly as it occurred: the
+    truncation by prefix, the dropped character and the swap by edit distance,
+    each counted under its own rule."""
     known = ["VIg_7sqS2dE", "aYfZN8t6AQs", "o6v4Uu_yEuE"]
     text = ("files still cost context [VIg_7sqS2D 05:45]; the extractor sees recent "
             "messages [aYfZN8tAQs 11:23]; tiers differ [o6vU4u_yEuE 05:19].")
 
     scan = scan_citations(text, known)
 
-    assert [c.video_id for c in scan.citations] == ["VIg_7sqS2dE"]
+    assert [c.video_id for c in scan.citations] == known
     assert len(scan.repaired) == 1
-    assert len(scan.unparsed) == 2
+    assert [e.video_id for e in scan.edited] == ["aYfZN8t6AQs", "o6v4Uu_yEuE"]
+    assert scan.unparsed == []
 
 
 # -- the context headroom guard ---------------------------------------------

@@ -44,6 +44,7 @@ from .contracts import (
     AnswerCitation,
     CitationScan,
     Grounding,
+    IdEdit,
     LoadedNote,
     NoteSummary,
     Opened,
@@ -305,69 +306,129 @@ def _seconds_of(match: re.Match[str]) -> int:
     return int(first) * 60 + int(second)
 
 
-def _find_id(entry: str, known: Sequence[str] | None) -> tuple[str | None, bool]:
-    """The video this entry refers to, and whether its casing had to be repaired.
+# An edit-distance repair, and the margin that makes it safe. Edits are counted
+# case-sensitively (rule 5): substitution, insertion, deletion, and swapping two
+# adjacent characters.
+#
+# Measured: 16 of 247 citations in nine answers carried a mistyped id, every one
+# within 1 edit of the id it meant; the next-nearest library id was 10 edits
+# away. The closest pair of ids in the 41-id library is 9 edits apart (10 pairs
+# at 9, 152 at 10, 658 at 11). YouTube ids are effectively random over 64
+# symbols, so two ids within 6 edits of each other are not expected until a
+# library holds well over a thousand videos.
+_EDIT_MAX = 2
+# Every other library id must be at least this far from what the model wrote.
+# With the closest pair at 9, a typo 2 edits from one id is at least 7 from any
+# other (triangle inequality), so the margin holds today with room; the check is
+# what keeps it holding as the library grows.
+_EDIT_NEXT_MIN = 7
+
+
+def edit_distance(a: str, b: str) -> int:
+    """Optimal-string-alignment distance: substitutions, insertions, deletions
+    and adjacent swaps, one edit each. Case-sensitive: `a` and `A` differ."""
+    rows, cols = len(a) + 1, len(b) + 1
+    d = [[0] * cols for _ in range(rows)]
+    for i in range(rows):
+        d[i][0] = i
+    for j in range(cols):
+        d[0][j] = j
+    for i in range(1, rows):
+        for j in range(1, cols):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + cost)
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[-1][-1]
+
+
+def _nearest(token: str, known: Sequence[str]) -> IdEdit | None:
+    """The library id ``token`` is a typo of, if it is close to exactly one and
+    far from every other; otherwise None."""
+    scored = sorted((edit_distance(token, video_id), video_id) for video_id in known)
+    if not scored or scored[0][0] == 0 or scored[0][0] > _EDIT_MAX:
+        return None
+    # A one-id library has no second id; the margin is then the token's length,
+    # the farthest any id can be.
+    second = scored[1][0] if len(scored) > 1 else max(len(token), 11)
+    if second < _EDIT_NEXT_MIN:
+        return None
+    return IdEdit(written=token, video_id=scored[0][1], distance=scored[0][0], next_nearest=second)
+
+
+def _find_id(
+    entry: str, known: Sequence[str] | None
+) -> tuple[str | None, bool, IdEdit | None]:
+    """The video this entry refers to, whether its case or a truncation had to
+    be repaired, and the edit-distance repair if one was made.
 
     Without ``known`` this falls back to the eleven-character shape, which is
     right often enough for a unit test and wrong exactly where the ambiguity
     lives — `--_0uiiJfsBPI` yields `--_0uiiJfsB`. That is why the real path
     always passes the ledger's IDs.
 
-    **The case-insensitive pass is repair against a known set, not
-    normalisation, and the difference is the whole of hard rule 5.** Two YouTube
-    IDs differing only in case are routine — `dQw4w9WgXcQ` and `dqw4w9wgxcq` are
-    different videos — so lowercasing an ID to compare it against YouTube is
-    always wrong and always will be. But this compares against *the IDs this
-    library holds*, where a case-only collision would need two videos we already
-    store whose IDs differ by nothing else. It has never happened and is
-    vanishingly unlikely; if it ever does, ``len(matches) == 1`` fails and the
-    entry is refused exactly as before.
+    **Every repair here is repair against a known set, never normalisation, and
+    the difference is the whole of hard rule 5.** Two YouTube IDs differing only
+    in case are routine — `dQw4w9WgXcQ` and `dqw4w9wgxcq` are different videos —
+    so lowercasing an ID to compare it against YouTube is always wrong and always
+    will be. Each repair below compares against *the IDs this library holds*,
+    returns the library's own spelling, and refuses the moment the answer is not
+    unique. That is what makes a repair safe, and it is the only thing that does.
 
-    So: **never turn this into a `.lower()` on the ID itself.** The repair is
-    safe only because it ends by returning the library's own spelling, and only
-    because it refuses when the answer is ambiguous. Measured need: seven
-    citations across three real answers were lost to `57AOoAngaJA` written as
-    `57AOoangAJA` and `UVEjThz8DSo` as `UVejThz8DSo`. The parser was right to
-    refuse them; the claims beside them still read as sourced while their links
-    had silently vanished.
+    * **Case.** A case-only collision would need two stored videos whose IDs
+      differ by nothing else. Measured need: `57AOoAngaJA` written as
+      `57AOoangAJA` and `UVEjThz8DSo` as `UVejThz8DSo` lost seven citations.
+    * **Truncation.** An id-shaped token that is a prefix of exactly one library
+      ID: `VIg_7sqS2D` for `VIg_7sqS2dE`.
+    * **Edit distance, with a margin.** A token within `_EDIT_MAX` edits of
+      exactly one library ID, with every other at least `_EDIT_NEXT_MIN` away.
 
-    **A truncated ID is repaired on the same terms**: an id-shaped token that is
-    a prefix of exactly one library ID resolves to that ID. `VIg_7sqS2D` for
-    `VIg_7sqS2dE` — the model dropped the last character, and it wrote that same
-    video's ID three different ways in one answer (correct, mis-cased, cut
-    short). One rule, one justification: match what the library holds, and
-    refuse the moment the answer is not unique.
-
-    **What is deliberately NOT repaired: a dropped character, a transposition,
-    or any other edit-distance match.** The same answer also produced
-    `aYfZN8tAQs` for `aYfZN8t6AQs` and `o6vU4u_yEuE` for `o6v4Uu_yEuE`, and both
-    stay refused. Two YouTube IDs one character apart are two different videos,
-    so an edit-distance "repair" can silently point a claim at the wrong video —
-    and a wrong link is worse than a missing one, because a missing link is
-    visible in the count while a wrong one reads as a working citation. Prefix
-    and case are safe because neither invents a character the model did not
-    write; edit distance does exactly that. Do not add it.
+    **Why edit distance is now allowed, when this docstring used to forbid it.**
+    The objection was right and still holds: two YouTube IDs one character apart
+    are two different videos, and a wrong link is worse than a missing one,
+    because a missing link shows in the count while a wrong one reads as a
+    working citation. But the model copies IDs from the notes it was given, so
+    the video it meant is in the library; a repair can only go wrong if a
+    *second* library ID sits close to what it wrote. The margin rules that out
+    instead of hoping: a wrong link would need two stored IDs closer to each
+    other than any pair has been (the closest is 9 edits, and random
+    11-character IDs are not expected within 6 of each other until well over a
+    thousand are stored). Measured need: 8 citations across 4 answers were
+    dropped for one substituted or inserted character, each 1 edit from its ID
+    and 10 from the next. The two examples this docstring used to refuse —
+    `aYfZN8tAQs` for `aYfZN8t6AQs` (a dropped character) and `o6vU4u_yEuE` for
+    `o6v4Uu_yEuE` (two characters swapped) — are each 1 edit from their ID, and
+    are now repaired, counted apart, with the distance shown in the answer's
+    grounding.
     """
     if known:
         for video_id in known:
             if video_id in entry:
-                return video_id, False
+                return video_id, False, None
         folded = entry.lower()
         matches = [video_id for video_id in known if video_id.lower() in folded]
         if len(matches) == 1:
-            return matches[0], True
+            return matches[0], True, None
         if matches:
             # Ambiguous: never guess which of several the model meant.
-            return None, False
+            return None, False, None
         # Truncation. Only id-shaped tokens are considered, so a stray word in
         # the entry cannot become a prefix that matches half the library.
         for token in _ID_SHAPE_PREFIX_RE.findall(entry):
             starts = [v for v in known if v.lower().startswith(token.lower())]
             if len(starts) == 1:
-                return starts[0], True
-        return None, False
+                return starts[0], True, None
+        # Edit distance, against id-shaped tokens only: a run of letters is
+        # prose, and prose must never be read as a mistyped id.
+        for token in _ID_TOKEN_RE.findall(entry):
+            if not _looks_like_an_id(token):
+                continue
+            edit = _nearest(token, known)
+            if edit is not None:
+                return edit.video_id, False, edit
+        return None, False, None
     match = _ID_SHAPE_RE.search(entry)
-    return (match.group(0) if match else None), False
+    return (match.group(0) if match else None), False, None
 
 
 # -- what the answer layer invents -------------------------------------------
@@ -453,11 +514,26 @@ def _cited_near(window: str, folded: dict[str, str]) -> list[str]:
     nothing. Case-folded because the citation parser repairs case.
     """
     found: list[str] = []
+    known = list(folded.values())
     for group in _GROUP_RE.finditer(window):
         inside = group.group(1).lower()
+        hit = False
         for lowered, video_id in folded.items():
-            if lowered in inside and video_id not in found:
-                found.append(video_id)
+            if lowered in inside:
+                hit = True
+                if video_id not in found:
+                    found.append(video_id)
+        if hit:
+            continue
+        # A mistyped id resolves here as it does for the citation parser, so a
+        # quote is checked against the video its citation links to — not
+        # against whichever other bracket happens to sit in the window.
+        for token in _ID_TOKEN_RE.findall(group.group(1)):
+            if not _looks_like_an_id(token):
+                continue
+            edit = _nearest(token, known)
+            if edit is not None and edit.video_id not in found:
+                found.append(edit.video_id)
     return found
 
 
@@ -543,6 +619,10 @@ def check_grounding(
             # event under two names — rule 14 in the other direction.
             if candidate.lower() in folded:
                 continue
+            # Likewise a mistyped id the parser repairs by edit distance: one
+            # event, counted once, as a repair.
+            if _nearest(candidate, list(known)) is not None:
+                continue
             unresolved.append(candidate)
 
     speech: list[UnverifiedQuote] = []
@@ -624,6 +704,7 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
     citations: list[AnswerCitation] = []
     unparsed: list[str] = []
     repaired: list[str] = []
+    edited: list[IdEdit] = []
 
     for group in _GROUP_RE.finditer(flat):
         inside = group.group(1)
@@ -634,11 +715,13 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
             stamp = _TS_RE.search(entry)
             if stamp is None:
                 continue
-            found, was_repaired = _find_id(entry, known)
+            found, was_repaired, edit = _find_id(entry, known)
             if found is not None:
                 current = found
                 if was_repaired:
                     repaired.append(" ".join(entry.split())[:80])
+                if edit is not None:
+                    edited.append(edit)
             if current is None:
                 # Shaped like a citation, names a video we do not hold. Never
                 # linked — a liberal parser must not become an inventive one.
@@ -656,7 +739,14 @@ def scan_citations(text: str, known: Sequence[str] | None = None) -> CitationSca
         log.debug("ask: citation-shaped but unreadable: %s", fragment)
     for fragment in repaired:
         log.info("ask: repaired a mis-cased video id in %s", fragment)
-    return CitationScan(citations=citations, unparsed=unparsed, repaired=repaired)
+    for edit in edited:
+        log.info(
+            "ask: repaired a mistyped video id to %s (%d edit(s); next-nearest %d)",
+            edit.video_id, edit.distance, edit.next_nearest,
+        )
+    return CitationScan(
+        citations=citations, unparsed=unparsed, repaired=repaired, edited=edited
+    )
 
 
 def parse_citations(text: str, known: Sequence[str] | None = None) -> list[AnswerCitation]:
@@ -702,7 +792,7 @@ def escalation_requests(
     refused: list[tuple[str, str]] = []
     for match in matches:
         raw, why = match.group(1), " ".join(match.group(2).split()) or "no reason given"
-        video_id, _repaired = _find_id(raw, known)
+        video_id, _repaired, _edit = _find_id(raw, known)
         if video_id is None:
             if raw not in seen:
                 seen.add(raw)
@@ -878,6 +968,7 @@ def has_grounding(answer: Answer) -> bool:
     """Was anything checked, or did anything fail? Either earns the section."""
     return bool(
         answer.quotes_checked
+        or answer.edited
         or answer.unresolved_ids
         or answer.unverified_speech
         or answer.unverified_phrases
@@ -1039,6 +1130,18 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         )
         for video_id in answer.unresolved_ids:
             lines.append(f"- no such loaded video: {video_id}")
+        # The id as the answer wrote it — the answer's own characters — and the
+        # library's spelling it was repaired to, with the distance and margin.
+        lines.append(
+            f"- {len(answer.edited)} citation id(s) repaired by edit distance against"
+            f" the library (at most {_EDIT_MAX} edits, every other id at least"
+            f" {_EDIT_NEXT_MIN} away)"
+        )
+        for item in answer.edited:
+            lines.append(
+                f"- repaired: {item.written} -> {item.video_id}"
+                f" ({item.distance} edit(s); next-nearest id {item.next_nearest} away)"
+            )
         for item in answer.unverified_speech:
             mark = "loosely quoted sentence" if item.loose else "sentence not in the source"
             lines.append(f"- {mark}: {item.render()}")
@@ -1616,6 +1719,7 @@ def answer_question(
     result.citations = scan.citations
     result.unparsed = scan.unparsed
     result.repaired = scan.repaired
+    result.edited = scan.edited
     result.past_end = citations_past_end(library, scan.citations)
     if result.past_end:
         log.warning(

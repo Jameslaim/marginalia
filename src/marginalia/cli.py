@@ -1209,6 +1209,9 @@ def _ask_summary(answer: Answer) -> str:
         # The model got a video ID's casing wrong and the parser covered for it.
         # Worth seeing rather than inferring from a debug log.
         line += f"{len(answer.repaired)} id(s) repaired, "
+    if answer.edited:
+        # Its own count: a different rule from case and prefix, with a margin.
+        line += f"{len(answer.edited)} mistyped id(s) repaired by edit distance, "
     line += (
         f"{answer.requests} requests, ${answer.cost_usd:.4f}, "
         f"{_elapsed(answer.elapsed_s)}, v{answer.version}"
