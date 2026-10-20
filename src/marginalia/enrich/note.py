@@ -266,6 +266,33 @@ def check_verbatim(body: str, transcript: str) -> tuple[str, int, int]:
     return "".join(out), checked, unfound
 
 
+def quotes_outside_verbatim(body: str, transcript: str) -> dict[str, tuple[int, int]]:
+    """Per section, ``(found, not found)`` for the quoted strings outside
+    `## Verbatim` and outside any marker. Counts only — nothing is marked.
+
+    Only Verbatim quotes were held to the transcript, and a note quoted a word
+    elsewhere with a spelling the transcript does not have. A quote in Claims or
+    Wrong or shaky reads as the speaker's words as much as one in Verbatim does,
+    so it is counted the same way, with the same tolerance.
+    """
+    said_text = spoken_text(transcript)
+    said = flatten(said_text)
+    words: Words | None = None
+    counts: dict[str, tuple[int, int]] = {}
+    for section, line, is_heading in note_lines(body):
+        if is_heading or section is None or section == "Verbatim":
+            continue
+        for span in quoted_spans(_NOTE_MARKER_RE.sub(" ", line)):
+            found, missing = counts.get(section, (0, 0))
+            hit = flatten(span) in said
+            if not hit:
+                if words is None:
+                    words = Words(said_text)
+                hit = closeness(span, words) >= _VERBATIM_TOLERANCE
+            counts[section] = (found + 1, missing) if hit else (found, missing + 1)
+    return counts
+
+
 def untranslated_foreign_verbatim(body: str, transcript: str) -> int:
     """Verbatim lines quoting in another script than the transcript's, not found
     in it, with no translation marker. Counted, never repaired.
@@ -832,6 +859,9 @@ def _one(
             video_id, timestamps.unplaceable, timestamps.total,
         )
     foreign = untranslated_foreign_verbatim(body, transcript)
+    outside = quotes_outside_verbatim(body, transcript)
+    outside_found = sum(found for found, _missing in outside.values())
+    outside_missing = sum(missing for _found, missing in outside.values())
     if foreign:
         log.info(
             "note: %s — %d Verbatim line(s) quote in another script than the transcript "
@@ -897,6 +927,11 @@ def _one(
             f", {foreign} Verbatim line(s) in another script than the transcript with no"
             f" translation marker"
         )
+    if outside_found + outside_missing:
+        detail += (
+            f", {outside_missing} of {outside_found + outside_missing} quoted string(s)"
+            f" outside Verbatim not found in the transcript"
+        )
     if settled.straddles:
         detail += (
             f", {settled.straddles} marker boundary(ies) cut a quotation"
@@ -929,6 +964,7 @@ def _one(
         redrawn=redrawn,
         markers=settled,
         verbatim_untranslated=foreign,
+        quotes_outside=outside,
     )
 
 

@@ -1820,6 +1820,9 @@ class NoteResult:
     # Verbatim lines quoting in another script than the transcript, not found
     # in it, with no translation marker: a translation offered as speech.
     verbatim_untranslated: int = 0
+    # Quoted strings outside Verbatim and outside markers, per section, as
+    # (found in the transcript, not found). Counted only.
+    quotes_outside: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass

@@ -923,6 +923,17 @@ def _cmd_note(args: argparse.Namespace) -> int:
             f"past the listed end; {sum(1 for r in timed if r.redrawn)} note(s) drawn twice, "
             f"{sum(1 for r in timed if r.redrawn and r.outcome == FAILED)} of them not written"
         )
+    outside = [result for result in run.results if result.quotes_outside]
+    if outside:
+        # Rule 14: quotes outside Verbatim are counted, not marked — the same
+        # question the Verbatim check asks, asked of every other section.
+        total = sum(f + m for r in outside for f, m in r.quotes_outside.values())
+        missing = sum(m for r in outside for _f, m in r.quotes_outside.values())
+        print(
+            f"          quotes outside Verbatim: {missing} of {total} not found in the "
+            f"transcript, in {sum(1 for r in outside if any(m for _f, m in r.quotes_outside.values()))} "
+            f"note(s); counted, not marked"
+        )
     settled = [result for result in run.results if result.outcome == NOTED]
     if any(result.markers.lines_checked for result in settled):
         # Rule 14: marker boundaries that cut a quotation, and which way each
