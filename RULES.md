@@ -919,6 +919,22 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     recorded as current. Elsewhere — ask's citations — the count is reported, not acted
     on.
 
+34. **An identifier a model copies back is repaired only against the set it was copied
+    from, with a margin, and every repair is counted.** A model writing back an ID it was
+    given mistypes it — 16 of 247 citations in one set of answers — and a dropped citation
+    loses its link silently, while the claim beside it still reads as sourced. A repair
+    compares against the system's own IDs and returns their spelling; nothing is ever
+    stored lowercased or normalised (rule 5). It accepts a match only when exactly one
+    known ID is within a small distance and every other known ID is far enough away that
+    a wrong link would need two stored IDs closer to each other than any pair has been.
+    A case-folded pass runs only when the case-sensitive one found nothing, and is
+    tighter, because folding brings IDs closer. As measured here: case-sensitive, within
+    2 edits with the next at least 7 away (closest stored pair 9); case-folded, within
+    1 with the next at least 6 (closest folded pair 7). Each repair is shown with its kind,
+    distance and margin; anything outside the margin is refused and counted. This reverses
+    the earlier "never repair by edit distance": a wrong link is still worse than a
+    missing one, and the margin is what keeps a wrong link out of reach.
+
 ## Structure
 
 ```
