@@ -220,3 +220,70 @@ def test_a_faithful_contraction_in_an_answer_is_loosely_quoted() -> None:
         transcripts={"aaaaaaaaaaa": _cue("it is not cached and the model will not reload it each time")},
     )
     assert [q.loose for q in grounding.unverified_speech] == [True]
+
+
+# -- pairing before length (F2) --------------------------------------------
+#
+# A quote under four characters used to fail at its opening mark, and the scan
+# restarted at its closing mark: from there on the prose between quotations was
+# read as quotations, and ask put its labels inside quotation marks.
+
+
+def test_a_short_quote_does_not_shift_the_later_pairs_on_its_line() -> None:
+    text = (
+        'He calls it "it", then says "the cache is warm" and later '
+        '"the prefix is reused" twice.'
+    )
+    assert [m.group(1) for m in find_quotes(text)] == [
+        "the cache is warm",
+        "the prefix is reused",
+    ]
+
+
+def test_curly_and_straight_marks_mixed_pair_in_order() -> None:
+    text = '“no” he says, then “the cache is warm" and "the prefix is reused”.'
+    assert [m.group(1) for m in find_quotes(text)] == [
+        "the cache is warm",
+        "the prefix is reused",
+    ]
+
+
+def test_an_apostrophe_inside_a_quote_is_part_of_it() -> None:
+    text = 'A word: "it\'s". Then "the model\'s cache isn’t warm" and "that’s all".'
+    assert [m.group(1) for m in find_quotes(text)] == [
+        "it's",
+        "the model's cache isn’t warm",
+        "that’s all",
+    ]
+
+
+def test_a_stray_mark_shifts_nothing_beyond_its_own_line() -> None:
+    text = 'one stray " mark here\n"the cache is warm" on the next line'
+    assert [m.group(1) for m in find_quotes(text)] == ["the cache is warm"]
+
+
+def test_a_short_low_high_quote_does_not_open_a_pair_with_its_closing_mark() -> None:
+    text = 'Er sagt „ja“ und dann "the cache is warm" und "the prefix is reused".'
+    assert [m.group(1) for m in find_quotes(text)] == [
+        "the cache is warm",
+        "the prefix is reused",
+    ]
+
+
+def test_ask_labels_land_after_the_quote_after_a_short_one() -> None:
+    """The measured shape: a short quote, then quotes ask labels."""
+    note = LoadedNote("aaaaaaaaaaa", "t", "## Claims\n- x\n")
+    text = (
+        'He uses "it" for the model, says "the cache was invalidated by a single '
+        'character" and "nothing like this was ever said in the video" [aaaaaaaaaaa 00:01].'
+    )
+    grounding = check_grounding(
+        text,
+        [note],
+        ["aaaaaaaaaaa"],
+        transcripts={"aaaaaaaaaaa": _cue("the cache was invalidated by a single character")},
+    )
+    assert grounding.quotes_checked == 2
+    assert [q.text for q in grounding.unverified_speech] == [
+        "nothing like this was ever said in the video"
+    ]

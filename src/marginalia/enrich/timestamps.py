@@ -36,7 +36,7 @@ from typing import Iterable, Sequence
 
 from ..contracts import Change, NoteCitation, SnapResult, TimestampCheck, TranscriptIndex
 from ..core.library import Library
-from ..quotes import note_lines
+from ..quotes import QUOTE_RE, note_lines
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +68,11 @@ _TS_RE = re.compile(r"(?<![\d.:])(\d{1,2}):([0-5]\d)(?::([0-5]\d))?(?:\.(\d{1,3}
 # matching on it would locate the note's own reasoning inside the video.
 _NOTE_MARKER_RE = re.compile(r"\[note:[^\]]*\]?", re.IGNORECASE | re.DOTALL)
 
-_QUOTED_RE = re.compile(r"[\"“]([^\"”]{6,})[\"”]")
+# Quotes long enough to anchor on. Paired by the one quote pattern first and
+# filtered on length afterwards: with the length in the pattern, a short quote
+# failed at its opening mark and its closing mark opened a pair spanning the
+# prose to the next quotation (see `quotes.QUOTE_RE`).
+_QUOTED_MIN = 6
 
 # Unicode, not [a-z0-9]. The library holds Arabic, Persian and Spanish videos,
 # and an ASCII-only pattern extracts nothing from an Arabic quote — so the
@@ -467,7 +471,7 @@ def anchor_text(line: str) -> tuple[str, bool]:
     look for the note's inference inside the transcript.
     """
     body = _NOTE_MARKER_RE.sub(" ", line)
-    quoted = _QUOTED_RE.findall(body)
+    quoted = [m.group(1) for m in QUOTE_RE.finditer(body) if len(m.group(1)) >= _QUOTED_MIN]
     if quoted:
         return " ".join(quoted), True
     body = _TS_RE.sub(" ", body)

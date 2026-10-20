@@ -357,3 +357,12 @@ def test_a_description_shares_nothing_and_still_snaps_to_its_anchor():
     _updated, changes, _left = snap_text(note, build_index(COMMON))
 
     assert [change.after for change in changes] == ["00:00:23"]
+
+
+def test_anchor_text_pairs_marks_before_judging_length():
+    """A short quote used to fail at its opening mark, and its closing mark then
+    opened a pair spanning the prose up to the next quotation."""
+    line = '- 3:10 calls it "it", then "the prefix is reused every turn" and moves on'
+    text, quoted = anchor_text(line)
+    assert quoted
+    assert text == "the prefix is reused every turn"

@@ -42,9 +42,21 @@ __all__ = [
     "verbatim_of",
 ]
 
-# Quoted spans. Four characters minimum, because "a" and "AI" in quotes are
-# punctuation rather than attribution.
-QUOTE_RE = re.compile(r"[\"“]([^\"“”]{4,300})[\"”]")
+# Quoted spans. **Marks are paired first, and only then is a pair judged long
+# enough to check.** The length used to sit inside the pattern, so a quote under
+# four characters failed at its opening mark and the scan restarted at its
+# closing mark, read as an opening one: from there to the end of the line the
+# prose *between* quotations was read as quotations. In one answer that put
+# ask's labels inside quotation marks and called three real quotes unverified;
+# across the notes it mis-paired 45 spans on 28 lines. A pair never crosses a
+# line, so a stray mark shifts nothing beyond its own line.
+QUOTE_RE = re.compile(r"[\"“]([^\"“”\n]*)[\"”]")
+
+# Four characters minimum, because "a" and "AI" in quotes are punctuation
+# rather than attribution; 300 maximum, because a longer pair is two quotations
+# with a mark missing between them. A pair outside these is skipped, never
+# re-paired.
+_QUOTE_MIN, _QUOTE_MAX = 4, 300
 
 # Quotation marks other languages use, mapped one character to one character
 # onto the pair `QUOTE_RE` reads, so match offsets stay valid in the original
@@ -55,21 +67,26 @@ QUOTE_RE = re.compile(r"[\"“]([^\"“”]{4,300})[\"”]")
 _QUOTE_MARKS = str.maketrans({"«": "“", "»": "”", "「": "“", "」": "”", "『": "“", "』": "”"})
 # German and several Central European languages open low and close with `“` —
 # the character English opens with — so they cannot share the mapping above.
-_LOW_HIGH_RE = re.compile(r"„([^„“”\"]{4,300})[“”]")
+_LOW_HIGH_RE = re.compile(r"„([^„“”\"\n]*)[“”]")
 
 
 def find_quotes(text: str) -> list[re.Match[str]]:
     """Every quoted span in ``text``, in any of the quotation styles above,
     in order. Offsets refer to ``text`` itself; ``group(1)`` is the quoted span.
+
+    Low-high pairs are blanked out before the other styles are paired, because
+    their closing `“` is the mark English opens with: left in place, it opened
+    a pair of its own and shifted every later one on the line.
     """
     low_high = list(_LOW_HIGH_RE.finditer(text))
-    taken = [(match.start(), match.end()) for match in low_high]
-    others = [
-        match
-        for match in QUOTE_RE.finditer(text.translate(_QUOTE_MARKS))
-        if not any(start < match.end() and match.start() < end for start, end in taken)
-    ]
-    return sorted(low_high + others, key=lambda match: match.start())
+    masked = list(text.translate(_QUOTE_MARKS))
+    for match in low_high:
+        masked[match.start() : match.end()] = " " * (match.end() - match.start())
+    pairs = low_high + list(QUOTE_RE.finditer("".join(masked)))
+    return sorted(
+        (match for match in pairs if _QUOTE_MIN <= len(match.group(1)) <= _QUOTE_MAX),
+        key=lambda match: match.start(),
+    )
 
 # Below this many characters once flattened, a quoted span is a term rather than
 # a quotation, and matching it says nothing.
