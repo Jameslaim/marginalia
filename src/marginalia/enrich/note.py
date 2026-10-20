@@ -70,6 +70,7 @@ from ..quotes import (
     section_heading,
     spoken_text,
 )
+from .markers import settle_markers
 from .timestamps import (
     build_index,
     check_timestamps,
@@ -794,6 +795,11 @@ def _one(
             "note: %s — %d of %d timestamp(s) name no moment in the video; written, counted",
             video_id, timestamps.unplaceable, timestamps.total,
         )
+    # No marker may cut a quotation (see `markers.py`): the writer's own
+    # markers first, before the note is written, then again after the marking
+    # pass, whose spans can do the same. Applied to the text as it will stand,
+    # whoever placed the marker (rule 25).
+    body, settled = settle_markers(body, transcript)
 
     # File first, ledger second. A crash between them costs one model call; the
     # other order would leave a row claiming a note that does not exist, and
@@ -814,6 +820,8 @@ def _one(
             facts=source_facts(video_id, meta),
         )
         if marked:
+            marked_body, after_pass = settle_markers(marked_body, transcript)
+            settled = settled + after_pass
             library.write_note(video_id, header + "\n" + marked_body)
         if mark_problem:
             log.info("note: %s — marking pass %s; note kept as written", video_id, mark_problem)
@@ -841,6 +849,12 @@ def _one(
         )
     if redrawn:
         detail += ", drawn twice: the first draw's timestamps were unusable"
+    if settled.straddles:
+        detail += (
+            f", {settled.straddles} marker boundary(ies) cut a quotation"
+            f" ({settled.kept_inside} kept inside, {settled.put_outside} put outside,"
+            f" {settled.refused} refused)"
+        )
     if marker is not None:
         detail += (
             f", marking pass {mark_problem} — note kept as written"
@@ -865,6 +879,7 @@ def _one(
         mark_capped=capped,
         timestamps=timestamps,
         redrawn=redrawn,
+        markers=settled,
     )
 
 

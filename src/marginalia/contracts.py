@@ -144,6 +144,7 @@ __all__ = [
     "AnswerCitation",
     "CitationScan",
     "IdEdit",
+    "MarkerSettle",
     "LoadedNote",
     "Opened",
     "Answer",
@@ -1723,6 +1724,40 @@ STOP_REFUSED = "provider_refused"
 
 
 @dataclass(frozen=True)
+class MarkerSettle:
+    """What became of the `[note: ...]` markers that cut a quotation.
+
+    ``straddles`` counts each marker boundary found inside a quoted unit;
+    each one is resolved as ``kept_inside`` (the marker grew to hold the whole
+    unit), ``put_outside`` (the marker shrank to leave it out, because the
+    transcript holds it at the line's own moment) or ``refused`` (the marker
+    held nothing but that unit, and was dropped). ``single_quoted_unhandled``
+    counts units in straight single quotes, which are never paired: an
+    apostrophe is the same character. See `enrich/markers.py`.
+    """
+
+    straddles: int = 0
+    kept_inside: int = 0
+    put_outside: int = 0
+    refused: int = 0
+    single_quoted_unhandled: int = 0
+    # Lines holding both a marker and a quoted unit: the denominator.
+    lines_checked: int = 0
+
+    def __add__(self, other: "MarkerSettle") -> "MarkerSettle":
+        return MarkerSettle(
+            straddles=self.straddles + other.straddles,
+            kept_inside=self.kept_inside + other.kept_inside,
+            put_outside=self.put_outside + other.put_outside,
+            refused=self.refused + other.refused,
+            single_quoted_unhandled=max(
+                self.single_quoted_unhandled, other.single_quoted_unhandled
+            ),
+            lines_checked=max(self.lines_checked, other.lines_checked),
+        )
+
+
+@dataclass(frozen=True)
 class TimestampCheck:
     """Can a note's clock readings be placed inside its video at all?
 
@@ -1780,6 +1815,8 @@ class NoteResult:
     # whether a note that mostly did not was drawn a second time (rule 30).
     timestamps: TimestampCheck = field(default_factory=TimestampCheck)
     redrawn: bool = False
+    # Marker boundaries that cut a quotation, and which way each was resolved.
+    markers: MarkerSettle = field(default_factory=MarkerSettle)
 
 
 @dataclass

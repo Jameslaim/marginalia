@@ -456,6 +456,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "AnswerCitation",
         "CitationScan",
         "IdEdit",
+        "MarkerSettle",
         "RefetchResult",
         "RefetchRun",
         "LoadedNote",

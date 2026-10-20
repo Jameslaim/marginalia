@@ -921,6 +921,19 @@ def _cmd_note(args: argparse.Namespace) -> int:
             f"past the listed end; {sum(1 for r in timed if r.redrawn)} note(s) drawn twice, "
             f"{sum(1 for r in timed if r.redrawn and r.outcome == FAILED)} of them not written"
         )
+    settled = [result for result in run.results if result.outcome == NOTED]
+    if any(result.markers.lines_checked for result in settled):
+        # Rule 14: marker boundaries that cut a quotation, and which way each
+        # was resolved — printed whenever a line held both, zero included.
+        print(
+            f"          quotations: {sum(r.markers.straddles for r in settled)} marker "
+            f"boundary(ies) cut one: {sum(r.markers.kept_inside for r in settled)} kept inside, "
+            f"{sum(r.markers.put_outside for r in settled)} put outside, "
+            f"{sum(r.markers.refused for r in settled)} refused; "
+            f"{sum(r.markers.single_quoted_unhandled for r in settled)} single-quoted unit(s) "
+            f"not handled; {sum(r.markers.lines_checked for r in settled)} line(s) held a "
+            f"marker and a quotation"
+        )
     ran = [result for result in run.results if result.mark_ran]
     if ran:
         # Rule 14: what the marking pass did, on its own line, zero included.
