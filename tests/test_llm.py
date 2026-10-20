@@ -1360,3 +1360,20 @@ def test_the_marking_prompt_sees_the_metadata_and_names_what_is_record() -> None
     assert "how the video presents or covers something" in text
     assert "a maker or vendor the video never names" in text
     assert "time spans" in text
+
+
+def test_the_answer_prompt_says_how_a_translation_may_be_quoted() -> None:
+    """v8. A translation sat inside a marker, the prompt allowed quoting only text
+    in quotation marks, and the model quoted it anyway: 3 quotes labelled not
+    spoken. It may now be quoted from the marker only, said to be a translation
+    — which the answer check labels [translated]. And the example of 'sharing a
+    word is not sharing a subject' no longer names a subject in the library: it
+    came back as an unasked-for paragraph in 2 of 9 answers."""
+    prompt = load_prompt("answer")
+    text = " ".join(prompt.text.split())
+    assert prompt.version == "8"
+    assert "[note: translation: ...]" in text
+    assert "only if the same sentence says it is a translation" in text
+    assert "Sharing a word is not sharing a subject." in text
+    for leaked in ("prompt caching", "agent memory", "memory system"):
+        assert leaked not in prompt.text, leaked

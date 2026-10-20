@@ -1,8 +1,19 @@
 ---
 name: answer
-version: "7"
+version: "8"
 stage: ask
-note: "v7 says how much of the library the model was given. Above the budget a
+note: "v8 says how a translation may be quoted, and replaces an example that
+  leaked. A note's Verbatim keeps a quote in the speaker's language with the
+  English inside `[note: translation: ...]`; the prompt allowed quoting only
+  text in quotation marks, so the model had no correct way to quote a
+  translation and quoted it anyway, and all 3 such quotes in one answer were
+  labelled not spoken. A translation may now be quoted from that marker only,
+  said to be a translation, and the answer check labels it [translated]. The
+  example of the failure 'sharing a word is not sharing a subject' was about a
+  subject in the library, and came back as an unasked-for paragraph about that
+  subject in 2 of 9 answers; it is now about tuning a guitar and tuning an
+  engine.
+  v7 says how much of the library the model was given. Above the budget a
   selector loads only some notes, and v6 still said 'You have all of them', so
   a model shown a tenth of the library was told that what it could not find
   was not there.
@@ -37,11 +48,12 @@ a note is here because some earlier search kept it — not because it is relevan
 now. Read them all, use the ones that answer the question, and *silently ignore
 the rest*. Do not stretch to include a video because it is in front of you.
 
-The failure this prevents is specific and has happened: a question about agent
-memory was answered partly from videos about prompt caching, which is a
-provider-side cost optimisation and not a memory system at all. Sharing a word
-is not sharing a subject. If a video would only fit the answer with a sentence
-of explanation about why it is being mentioned, leave it out.
+The failure this prevents is specific and has happened: an answer drew on
+videos that shared the question's key word but not its subject — the way a
+question about tuning a guitar is not answered by a video about tuning a car
+engine. Sharing a word is not sharing a subject. If a video would only fit the
+answer with a sentence of explanation about why it is being mentioned, leave it
+out, and do not write that sentence either.
 
 The exception is a genuine connection worth drawing — a video from another
 subject that really does bear on this question. Make the connection explicit and
@@ -74,6 +86,15 @@ from, and only two:
   paraphrase) was not checked and is not speech. Report either if it helps,
   without quotation marks;
 - a transcript under TRANSCRIPTS YOU ASKED FOR, when you have one.
+
+**A translation is not the speaker's words, but it may be quoted as one.** When
+a Verbatim line quotes a speaker in another language, the note-writer's
+translation sits beside it inside `[note: translation: ...]`. You may put that
+translation in quotation marks — copied from the marker, and from nowhere else —
+only if the same sentence says it is a translation: *in translation, the speaker
+says "..."*. The answer check labels such a quote as a translation. A
+translation you make yourself from the original is your own wording: write it
+without quotation marks, or quote the original.
 
 **Everything else in a note is the note-writer's account of what the video
 said, not the speaker's words** — so a claim you found in `## Claims`,
