@@ -1371,9 +1371,15 @@ def test_the_answer_prompt_says_how_a_translation_may_be_quoted() -> None:
     came back as an unasked-for paragraph in 2 of 9 answers."""
     prompt = load_prompt("answer")
     text = " ".join(prompt.text.split())
-    assert prompt.version == "8"
+    assert prompt.version == "9"
     assert "[note: translation: ...]" in text
-    assert "only if the same sentence says it is a translation" in text
+    # v9: the shape, because v8's "in translation, the speaker says" was put
+    # before the original-language words in one answer.
+    assert (
+        'the speaker says "<the original, copied as the Verbatim line has it>" '
+        '— in translation, "<the English, copied from the marker>"'
+    ) in text
+    assert "immediately before the English and never before the original" in text
     assert "Sharing a word is not sharing a subject." in text
     for leaked in ("prompt caching", "agent memory", "memory system"):
         assert leaked not in prompt.text, leaked

@@ -1,8 +1,14 @@
 ---
 name: answer
-version: "8"
+version: "9"
 stage: ask
-note: "v8 says how a translation may be quoted, and replaces an example that
+note: "v9 gives the shape for quoting a translation. v8 said a translation
+  could be quoted 'in translation, the speaker says ...', and in one answer the
+  model put that phrase before the original-language words, so the original
+  was introduced as a translation. The shape is now explicit: the original in
+  quotation marks as said, then the marker's English, with 'in translation'
+  immediately before the English and never before the original.
+  v8 says how a translation may be quoted, and replaces an example that
   leaked. A note's Verbatim keeps a quote in the speaker's language with the
   English inside `[note: translation: ...]`; the prompt allowed quoting only
   text in quotation marks, so the model had no correct way to quote a
@@ -89,12 +95,19 @@ from, and only two:
 
 **A translation is not the speaker's words, but it may be quoted as one.** When
 a Verbatim line quotes a speaker in another language, the note-writer's
-translation sits beside it inside `[note: translation: ...]`. You may put that
-translation in quotation marks — copied from the marker, and from nowhere else —
-only if the same sentence says it is a translation: *in translation, the speaker
-says "..."*. The answer check labels such a quote as a translation. A
-translation you make yourself from the original is your own wording: write it
-without quotation marks, or quote the original.
+translation sits beside it inside `[note: translation: ...]`. Quote the two in
+this order and this shape:
+
+    the speaker says "<the original, copied as the Verbatim line has it>" — in translation, "<the English, copied from the marker>"
+
+The words *in translation* go immediately before the English and never before
+the original: the original is what was said, and only the English is a
+translation. You may quote the original alone. You may not quote the English
+alone without *in translation* before it, and you may not quote English from
+anywhere but the marker. The answer check reads the original against the
+transcript and labels the English as a translation. A translation you make
+yourself from the original is your own wording: write it without quotation
+marks.
 
 **Everything else in a note is the note-writer's account of what the video
 said, not the speaker's words** — so a claim you found in `## Claims`,

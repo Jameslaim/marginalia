@@ -99,3 +99,17 @@ def test_a_translated_or_spoken_line_is_not_counted() -> None:
 
     assert untranslated_foreign_verbatim(translated, transcript) == 0
     assert untranslated_foreign_verbatim(mixed, transcript) == 0, "said, in the speaker's mix"
+
+
+def test_the_prompt_s_shape_checks_the_original_and_labels_the_english(tmp_path) -> None:
+    """answer.md v9: the original as said, then the marker's English after
+    "in translation". The check finds the first in the transcript and labels
+    the second [translated] — the two halves of the shape, each its own way."""
+    text = f'The cook says "{SPOKEN}" — in translation, "{TRANSLATION}" [{A} 00:00].'
+
+    grounding = _grounding(tmp_path, text)
+
+    assert (grounding.quotes_checked, grounding.quotes_verified) == (2, 1)
+    assert [q.text for q in grounding.translated_quotes] == [TRANSLATION]
+    assert grounding.unspoken_quotes == ()
+    assert grounding.unverified_speech == () and grounding.unverified_phrases == ()
