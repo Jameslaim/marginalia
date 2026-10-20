@@ -905,7 +905,9 @@ def _cmd_note(args: argparse.Namespace) -> int:
         print(
             f"          {sum(r.snapped for r in run.results)} timestamp(s) snapped; "
             f"{sum(r.verbatim_unfound for r in run.results)} of {checked} verbatim "
-            f"quote(s) not found in the transcript, marked in the note"
+            f"quote(s) not found in the transcript, marked in the note; "
+            f"{sum(r.verbatim_untranslated for r in run.results)} Verbatim line(s) in "
+            f"another script than the transcript with no translation marker"
         )
     timed = [result for result in run.results if result.timestamps.total or result.redrawn]
     if timed:
@@ -1135,6 +1137,7 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                         "unverified_speech": [q.text for q in answer.unverified_speech],
                         "unverified_phrases": [q.text for q in answer.unverified_phrases],
                         "unspoken": [q.text for q in answer.unspoken_quotes],
+                        "translated": [q.text for q in answer.translated_quotes],
                         "uncited": list(answer.uncited_quotes),
                         "unresolved_ids": list(answer.unresolved_ids),
                     },
@@ -1247,6 +1250,7 @@ def _ask_summary(answer: Answer) -> str:
             f"{len(answer.unverified_speech)} sentence(s) and "
             f"{len(answer.unverified_phrases)} phrase(s) not found, "
             f"{len(answer.unspoken_quotes)} the note's words not the speaker's, "
+            f"{len(answer.translated_quotes)} a note's translation, "
             f"{len(answer.unresolved_ids)} id(s) name no loaded video"
         )
     # Printed every time, not only when it is close. The point of the number is

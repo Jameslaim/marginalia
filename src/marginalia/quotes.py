@@ -37,6 +37,8 @@ __all__ = [
     "spoken_text",
     "standing_verbatim",
     "VERBATIM_UNFOUND",
+    "verbatim_translations",
+    "dominant_script",
     "verbatim_of",
 ]
 
@@ -288,6 +290,45 @@ def standing_verbatim(note_text: str) -> str:
     return "\n".join(
         line for line in verbatim_of(note_text).splitlines() if VERBATIM_UNFOUND not in line
     )
+
+
+# A translation the note-writer gave beside a Verbatim quote, in the shape
+# `write_note.md` asks for: `[note: translation: ...]`. One level of nested
+# brackets inside, on one line.
+_TRANSLATION_RE = re.compile(
+    r"\[note:[ \t]*translation:[ \t]*((?:[^\[\]\n]|\[[^\[\]\n]*\])*)\]", re.IGNORECASE
+)
+
+
+def verbatim_translations(note_text: str) -> str:
+    """The contents of every translation marker on a Verbatim line, joined.
+
+    What an answer may report as a translation (`prompts/answer.md`), and what
+    the answer check matches a quote against before calling it "not spoken".
+    """
+    return "\n".join(
+        match.group(1).strip()
+        for line in verbatim_of(note_text).splitlines()
+        for match in _TRANSLATION_RE.finditer(line)
+    )
+
+
+def dominant_script(text: str) -> str:
+    """The writing system most of ``text``'s letters belong to — LATIN, ARABIC,
+    DEVANAGARI, CJK, CYRILLIC and so on — from each letter's Unicode name; ""
+    when it has no letters. A script, not a language: Spanish and English are
+    both LATIN, and nothing here can tell them apart."""
+    counts: dict[str, int] = {}
+    for ch in text:
+        if not ch.isalpha():
+            continue
+        try:
+            name = unicodedata.name(ch)
+        except ValueError:
+            continue
+        script = name.split(" ")[0]
+        counts[script] = counts.get(script, 0) + 1
+    return max(counts, key=counts.get) if counts else ""
 
 
 def quoted_spans(text: str) -> list[str]:

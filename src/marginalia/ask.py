@@ -64,6 +64,7 @@ from .quotes import (
     note_sections,
     spoken_text,
     standing_verbatim,
+    verbatim_translations,
 )
 
 log = logging.getLogger(__name__)
@@ -586,6 +587,11 @@ def check_grounding(
     folded = {video_id.lower(): video_id for video_id in known}
     flat = {note.video_id: flatten(note.text) for note in notes}
     verbatim = {note.video_id: standing_verbatim(note.text) for note in notes}
+    # A note's own translations of its Verbatim quotes. Checked after the
+    # transcript and the Verbatim, before the loose match: a quote of one is
+    # the speaker's words in another language, and would otherwise reach
+    # "not spoken" (it is in the note, not the transcript) or "unverified".
+    translations = {note.video_id: flatten(verbatim_translations(note.text)) for note in notes}
     spoken_note = {video_id: flatten(part) for video_id, part in verbatim.items()}
     heard_text = {
         video_id: spoken_text(body)
@@ -628,6 +634,7 @@ def check_grounding(
     speech: list[UnverifiedQuote] = []
     phrases: list[UnverifiedQuote] = []
     unspoken: list[UnverifiedQuote] = []
+    translated: list[UnverifiedQuote] = []
     uncited: list[str] = []
     checked = verified = unchecked = 0
     for quote in find_quotes(text):
@@ -654,6 +661,9 @@ def check_grounding(
             # Speech by the only record there is for that video.
             verified += 1
             unchecked += 1
+            continue
+        if any(needle in translations.get(video_id, "") for video_id in ids):
+            translated.append(UnverifiedQuote(text=body, video_ids=cited, in_verbatim=True))
             continue
         if not heard:
             unchecked += 1
@@ -686,6 +696,7 @@ def check_grounding(
         unverified_speech=tuple(speech),
         unverified_phrases=tuple(phrases),
         unspoken_quotes=tuple(unspoken),
+        translated_quotes=tuple(translated),
         uncited_quotes=tuple(uncited),
         quotes_checked=checked,
         quotes_verified=verified,
@@ -856,6 +867,9 @@ MARK_UNVERIFIED = "[unverified]"
 MARK_LOOSE = "[loosely quoted]"
 # The words are in the note. The transcript does not have them.
 MARK_UNSPOKEN = "[not spoken]"
+# The speaker said it in another language; this is the cited note's
+# translation of their words (`[note: translation: ...]` on a Verbatim line).
+MARK_TRANSLATED = "[translated]"
 
 
 def mark_unverified(answer: Answer) -> str:
@@ -884,6 +898,7 @@ def mark_unverified(answer: Answer) -> str:
     # Last, so an entry here wins: a span the note holds and the transcript
     # does not is a different claim from one neither holds.
     failing.update({quote.text: MARK_UNSPOKEN for quote in answer.unspoken_quotes})
+    failing.update({quote.text: MARK_TRANSLATED for quote in answer.translated_quotes})
     if not failing:
         return answer.text
     out: list[str] = []
@@ -973,6 +988,7 @@ def has_grounding(answer: Answer) -> bool:
         or answer.unverified_speech
         or answer.unverified_phrases
         or answer.unspoken_quotes
+        or answer.translated_quotes
         or answer.uncited_quotes
     )
 
@@ -1112,6 +1128,11 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
             f" speaker's ({from_verbatim} of them from the note's own Verbatim section)"
         )
         lines.append(
+            f"- {len(answer.translated_quotes)} quoted string(s) are a cited note's"
+            f" translation of a Verbatim quote, marked {MARK_TRANSLATED}: the speaker's"
+            f" words in another language"
+        )
+        lines.append(
             f"- {len(answer.unresolved_ids)} cited id(s) name no loaded video"
             f", {len(answer.uncited_quotes)} quoted string(s) are attributed to nothing"
         )
@@ -1151,6 +1172,8 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
         for item in answer.unspoken_quotes:
             where = "its Verbatim section" if item.in_verbatim else "its prose"
             lines.append(f"- in the note ({where}), not the transcript: {item.render()}")
+        for item in answer.translated_quotes:
+            lines.append(f"- the note's translation of a Verbatim quote: {item.render()}")
         for item in answer.uncited_quotes:
             lines.append(f"- quoted, uncited: {item}")
 
@@ -1695,6 +1718,7 @@ def answer_question(
     result.unverified_speech = list(grounding.unverified_speech)
     result.unverified_phrases = list(grounding.unverified_phrases)
     result.unspoken_quotes = list(grounding.unspoken_quotes)
+    result.translated_quotes = list(grounding.translated_quotes)
     result.uncited_quotes = list(grounding.uncited_quotes)
     result.quotes_checked = grounding.quotes_checked
     result.quotes_verified = grounding.quotes_verified

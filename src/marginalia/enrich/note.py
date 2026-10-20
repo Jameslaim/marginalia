@@ -63,6 +63,7 @@ from ..quotes import (
     VERBATIM_UNFOUND as _VERBATIM_UNFOUND,
     Words,
     closeness,
+    dominant_script,
     flatten,
     note_lines,
     note_sections,
@@ -263,6 +264,41 @@ def check_verbatim(body: str, transcript: str) -> tuple[str, int, int]:
             line = f"{line.rstrip()} {VERBATIM_UNFOUND}{ending}"
         out.append(line)
     return "".join(out), checked, unfound
+
+
+def untranslated_foreign_verbatim(body: str, transcript: str) -> int:
+    """Verbatim lines quoting in another script than the transcript's, not found
+    in it, with no translation marker. Counted, never repaired.
+
+    A writer that renders a quote in the reader's language instead of the
+    speaker's is supposed to keep the original and add `[note: translation:
+    ...]`. A line that does neither offers a translation as the speaker's words.
+    Only a different *script* can be told apart mechanically, so a translation
+    between two languages written alike is not counted; and a quote the
+    transcript holds is never counted, because speech mixes languages and
+    captions keep the speaker's script for what was said.
+    """
+    said_text = spoken_text(transcript)
+    said = flatten(said_text)
+    spoken_script = dominant_script(said_text)
+    if not spoken_script:
+        return 0
+    words: Words | None = None
+    count = 0
+    for section, line, is_heading in note_lines(body):
+        if is_heading or section != "Verbatim" or "translation:" in line.lower():
+            continue
+        for span in quoted_spans(_NOTE_MARKER_RE.sub(" ", line)):
+            script = dominant_script(span)
+            if not script or script == spoken_script or flatten(span) in said:
+                continue
+            if words is None:
+                words = Words(said_text)
+            if closeness(span, words) >= _VERBATIM_TOLERANCE:
+                continue
+            count += 1
+            break
+    return count
 
 
 # -- selection ---------------------------------------------------------------
@@ -795,6 +831,13 @@ def _one(
             "note: %s — %d of %d timestamp(s) name no moment in the video; written, counted",
             video_id, timestamps.unplaceable, timestamps.total,
         )
+    foreign = untranslated_foreign_verbatim(body, transcript)
+    if foreign:
+        log.info(
+            "note: %s — %d Verbatim line(s) quote in another script than the transcript "
+            "with no translation marker",
+            video_id, foreign,
+        )
     # No marker may cut a quotation (see `markers.py`): the writer's own
     # markers first, before the note is written, then again after the marking
     # pass, whose spans can do the same. Applied to the text as it will stand,
@@ -849,6 +892,11 @@ def _one(
         )
     if redrawn:
         detail += ", drawn twice: the first draw's timestamps were unusable"
+    if foreign:
+        detail += (
+            f", {foreign} Verbatim line(s) in another script than the transcript with no"
+            f" translation marker"
+        )
     if settled.straddles:
         detail += (
             f", {settled.straddles} marker boundary(ies) cut a quotation"
@@ -880,6 +928,7 @@ def _one(
         timestamps=timestamps,
         redrawn=redrawn,
         markers=settled,
+        verbatim_untranslated=foreign,
     )
 
 

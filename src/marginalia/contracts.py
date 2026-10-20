@@ -1817,6 +1817,9 @@ class NoteResult:
     redrawn: bool = False
     # Marker boundaries that cut a quotation, and which way each was resolved.
     markers: MarkerSettle = field(default_factory=MarkerSettle)
+    # Verbatim lines quoting in another script than the transcript, not found
+    # in it, with no translation marker: a translation offered as speech.
+    verbatim_untranslated: int = 0
 
 
 @dataclass
@@ -2099,6 +2102,11 @@ class Grounding:
     unverified_speech: tuple[UnverifiedQuote, ...] = ()
     unverified_phrases: tuple[UnverifiedQuote, ...] = ()
     unspoken_quotes: tuple[UnverifiedQuote, ...] = ()
+    # A quote that is a cited note's own translation of a Verbatim quote — the
+    # content of a `[note: translation: ...]` marker on a Verbatim line. The
+    # speaker said it, in another language: never "not spoken", never
+    # "unverified".
+    translated_quotes: tuple[UnverifiedQuote, ...] = ()
     uncited_quotes: tuple[str, ...] = ()
     # Cited quotes long enough to check, how many of those a cited transcript
     # holds exactly, and how many could only be held against a note because no
@@ -2225,6 +2233,7 @@ class Answer:
     # this way were in the transcript word for word. `in_verbatim` on each
     # says whether the note held it in its own Verbatim section.
     unspoken_quotes: list[UnverifiedQuote] = field(default_factory=list)
+    translated_quotes: list[UnverifiedQuote] = field(default_factory=list)
     uncited_quotes: list[str] = field(default_factory=list)
     # The denominators for everything above. See `Grounding`.
     quotes_checked: int = 0
