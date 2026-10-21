@@ -1,8 +1,14 @@
 ---
 name: judge_metadata
-version: "9"
+version: "10"
 stage: metadata
-note: "v9 says a video on a listed PART is judged on that part, and an absent
+note: "v10 says a candidate on any one thing a PART lists is on that part, as
+  judge/full v14 says for stage 2. Briefs write a PART as a list, and stage 1
+  refused 10 videos on a constraint one PART names, as being about that
+  constraint rather than the mechanism. A listed limit, risk or failure mode
+  is a listed thing like any other. NO still needs metadata showing the video
+  is off the brief.
+  v9 says a video on a listed PART is judged on that part, and an absent
   PART is never a ground, here as judge/full v13 already says for stage 2.
   Re-judged under v8 with search-length metadata, stage 1 still read PARTS
   narrowly or weighed the ones a video lacks: a tokenizer explainer was NO as
@@ -129,6 +135,13 @@ candidate is about one of the brief's PARTS, that part is what you judge it on:
 - **An absent PART is never a ground** — not for a NO, and not for holding a YES
   back to MAYBE. "Covers X but not Y" describes what the library's other videos
   are for.
+- **A candidate on any one thing a PART lists is on that part.** A PART is often
+  a list — "a subject: how one thing works, including a second or a third, and
+  why a fourth matters" — and each listed thing is a way into it, not a box a
+  video must tick. A PART that names a single thing is the same rule with a list
+  of one. A listed limit, risk, cost or failure mode counts like any other
+  listed thing: a candidate about that risk is on the part, never "off it for
+  being about the risk rather than the mechanism".
 - **A PART's description says what the library wants within that part; it is not
   a fence around one angle of it.** A video on the part's subject that takes a
   different angle — how it is built rather than how it is used, a comparison

@@ -1,8 +1,19 @@
 ---
 name: judge_full
-version: "13"
+version: "14"
 stage: full
-note: "v13 names the three grounds a NO may rest on, and rules out the one it
+note: "v14 says a PART is covered by covering any one thing it lists. Briefs
+  write a PART as a list — 'X: how A works, including B or C, and why D' — and
+  this judge read the list as all-required: a video on one listed thing was NO
+  as 'confined to' it or for 'never connecting' it to the rest. One run refused
+  2 in-depth videos on one listed thing, and stage 1 refused 10 videos on a
+  listed constraint as being about that constraint. A video on any listed
+  thing now covers the PART, a single-item PART is the same rule, and naming
+  everything while explaining nothing is still NO. It also says a NO claiming
+  the transcript never does something is checked against the whole transcript
+  first: one NO said a video never explained a step its transcript states.
+  The five-line reply is unchanged; a YES now names the listed thing too.
+  v13 names the three grounds a NO may rest on, and rules out the one it
   kept reaching for: the PARTS a video does not cover. Checkpoint 4 measured 11
   of 15 stage-2 NO reasons listing absent parts, two of them wrong NOs — one
   'explains next-token prediction … but covers no PART beyond a bare next-token
@@ -159,6 +170,22 @@ The brief separates two kinds of item, and they are checked differently:
   It is not expected to cover them all: the library as a whole does that, and
   a video that covers one part well is exactly what the brief asks for.
 
+**A PART is covered by covering any one thing it lists.** A PART is often
+written as a list — "a subject: how one thing works, including a second or a
+third, and why a fourth matters". Each listed thing is a way into that part,
+not a box every video must tick. A video that substantively covers **any one**
+of them has covered the PART; the other listed things are what the library's
+other videos are for. A PART that names a single thing is the same rule with a
+list of one. A listed thing that is a limit, a risk, a cost or a failure mode
+is a listed thing like any other: a video about that risk is on the part, not
+off it for being "about the risk rather than the mechanism".
+
+So "only covers one of the things the part lists", "confined to one of them"
+and "never connects it to the rest of the part" are not grounds for a NO. A
+gardening brief listing "soil: what it is made of, how drainage works, or how
+to test its pH" as a part is served by a video that explains drainage
+thoroughly and never mentions pH.
+
 So a relevant video meets every REQUIRED item, substantively covers at least
 one PART, and hits no EXCLUDED item (step 4). A plumbing brief that requires
 "explains why the fault happens, not only the fix" and lists leaking taps,
@@ -200,7 +227,15 @@ are for, not a fault in this one. If a video covers a part, that part is the
 verdict's subject: say which part, and judge how well it is covered.
 
 This is not leniency. A clip that names three parts in a minute and explains
-none of them covers no part substantively, and is a NO on that ground.
+none of them covers no part substantively, and is a NO on that ground. The same
+holds inside one part: a video that names every thing a part lists and explains
+none of them has not covered it. And the REQUIRED items still apply in full to
+a video on one listed thing.
+
+**"Never" is a claim about the whole transcript.** Before a NO says the
+transcript never explains, shows or connects something, find where it would be
+said and check. One NO said a video never explained a step that its transcript
+states in plain words; that is a misreading, and it is final for the topic.
 
 Covering means substantively addressing — not merely saying a word the brief
 also uses. A video that names a part once and moves on has not covered it. The
@@ -312,7 +347,8 @@ UNEXPLAINED: kv cache eviction, prefix matching
 - `EVIDENCE` — `CLEAR` or `DEGRADED`.
 - `REASON` — one sentence, specific to this video. Name what the transcript
   actually established, or what about its quality prevented verification. Not a
-  restatement of the verdict. **For a YES, name the PART or PARTS it covers.**
+  restatement of the verdict. **For a YES, name the PART or PARTS it covers,
+  and the listed thing within each that it covers.**
   **For a NO, open with its ground** — `fails REQUIRED: <item>`, `hits EXCLUDED:
   <item>`, or `covers no PART substantively` — then say what the transcript
   showed. Never list the parts a video does not cover. Where any part of it rests on knowledge about the

@@ -1290,6 +1290,45 @@ def test_the_stage_one_prompt_judges_a_part_video_on_its_part() -> None:
 
 
 
+# -- a PART is covered by covering any one thing it lists ---------------------
+#
+# Briefs write a PART as a list, and both judges read the list as all-required:
+# stage 2 refused 2 in-depth videos on one listed thing, stage 1 refused 10 on a
+# listed constraint. Accepting is disjunctive; naming everything is still NO.
+
+
+def test_both_judges_read_a_compound_part_as_covered_by_any_one_thing() -> None:
+    full = " ".join(load_prompt("judge/full").text.split())
+    metadata = " ".join(load_prompt("judge_metadata").text.split())
+    assert "A PART is covered by covering any one thing it lists" in full
+    assert "has covered the PART; the other listed things are what the library's" in full
+    assert "A candidate on any one thing a PART lists is on that part" in metadata
+    for text in (full, metadata):
+        assert "A PART that names a single thing is the same rule with a list of one" in text
+        assert "is a listed thing like any other" in text or "counts like any other listed thing" in text
+
+
+def test_the_stage_two_judge_still_refuses_a_video_that_names_everything() -> None:
+    full = " ".join(load_prompt("judge/full").text.split())
+    assert "names every thing a part lists and explains none of them has not covered it" in full
+    assert "the REQUIRED items still apply in full to a video on one listed thing" in full
+    assert '"confined to one of them"' in full and "are not grounds for a NO" in full
+
+
+def test_the_stage_two_judge_checks_a_never_before_writing_it() -> None:
+    full = " ".join(load_prompt("judge/full").text.split())
+    assert '"Never" is a claim about the whole transcript' in full
+    assert "and the listed thing within each that it covers" in full
+
+
+def test_the_judges_versions_say_why() -> None:
+    assert load_prompt("judge/full").version == "14"
+    assert load_prompt("judge_metadata").version == "10"
+    assert "v14 says a PART is covered by covering any one thing it lists" in " ".join(
+        load_prompt("judge/full").meta["note"].split()
+    )
+
+
 def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:
     """The phase-5a audit: a faithful record and 14 unmarked outside statements,
     8 of 10 Leaves-out items among them. And every worked example was about one
