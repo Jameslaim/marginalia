@@ -1216,6 +1216,17 @@ def test_the_prompt_version_is_recorded(config, ledger, library, client, searche
     assert stage_two[0].prompt_version == "1"
 
 
+def test_stage_one_records_its_prompt_version(config, ledger, library, client, searches) -> None:
+    """0 of 494 stage-1 rows over two runs carried a version; stage 2's did."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_NO, "a different subject")})
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    stage_one = [d for d in ledger.decisions_for("aaaaaaaaaaa") if d.stage == STAGE_METADATA]
+    assert [d.prompt_version for d in stage_one] == ["1"]
+
+
 # -- B3: degraded evidence --------------------------------------------------
 
 

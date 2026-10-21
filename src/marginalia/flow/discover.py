@@ -54,7 +54,7 @@ import time
 import uuid
 from typing import Any, Callable, Hashable, Mapping, Sequence, TypeVar
 
-from ..brain.judge import FULL_PROMPT, RESOLVED_UNSHOWN, Judge
+from ..brain.judge import FULL_PROMPT, METADATA_PROMPT, RESOLVED_UNSHOWN, Judge
 from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
 from ..brain.territory import Mapper, validate, waiver_applies
 from ..config import Config
@@ -1091,10 +1091,11 @@ def _judge_round(
     concepts: list[str] = []
     fetched_any = False
 
+    metadata_version = judge.prompt(METADATA_PROMPT).version if verdicts else None
     for verdict in verdicts:
         _log(
             ledger, run, verdict.video_id, STAGE_METADATA, verdict.verdict, verdict.reason,
-            outcome=verdict.outcome, said=verdict.said,
+            prompt_version=metadata_version, outcome=verdict.outcome, said=verdict.said,
         )
         if verdict.said == VERDICT_NO:
             # A NO kept as MAYBE, counted by its ground: a guess, or what the

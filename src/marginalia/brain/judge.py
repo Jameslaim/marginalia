@@ -62,6 +62,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "BriefUnusable",
     "FULL_PROMPT",
+    "METADATA_PROMPT",
     "Judge",
     "guesses",
     "parse_batch",
@@ -259,6 +260,11 @@ _MAX_RELEVANT = 5
 # `prompts/` where `judge_full.md` and `write_note.md` sit side by side stops
 # saying which belong to the same decision.
 FULL_PROMPT = "judge/full"
+
+# Stage 1. Named so the decision row can record which version judged it, as
+# stage 2's does: 0 of 494 stage-1 rows over two runs carried a version, so no
+# stage-1 verdict could be tied to the prompt that made it.
+METADATA_PROMPT = "judge_metadata"
 
 
 def _blames_damaged_evidence(reason: str) -> bool:
@@ -987,7 +993,7 @@ class Judge:
         chunk: Sequence[SearchResult],
         territory: TerritoryMap | None = None,
     ) -> list[MetadataVerdict]:
-        prompt = self.prompt("judge_metadata")
+        prompt = self.prompt(METADATA_PROMPT)
         listing = "\n".join(
             _describe(position, candidate) for position, candidate in enumerate(chunk, start=1)
         )
