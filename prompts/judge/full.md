@@ -1,27 +1,19 @@
 ---
 name: judge_full
-version: "15"
+version: "16"
 stage: full
-note: "v15 adds two readings, measured on a labelled set of 25 videos. A
-  REQUIRED item that is conditional — 'when it discusses X, …' — binds only
-  when X is something the video sets out to explain: with reasoning on, this
-  judge read one as binding on any mention of the word and refused 2 good
-  videos. And substance does not depend on length, but a video that only
-  asserts outcomes or names mechanisms has covered nothing: the same setting
-  accepted three clips of under 90 seconds that named or asserted and
-  explained nothing. v14's rule that one listed thing covers a PART stays;
-  replayed, v14 alone moved no labelled verdict the right way.
-  v14 says a PART is covered by covering any one thing it lists. Briefs
-  write a PART as a list — 'X: how A works, including B or C, and why D' — and
-  this judge read the list as all-required: a video on one listed thing was NO
-  as 'confined to' it or for 'never connecting' it to the rest. One run refused
-  2 in-depth videos on one listed thing, and stage 1 refused 10 videos on a
-  listed constraint as being about that constraint. A video on any listed
-  thing now covers the PART, a single-item PART is the same rule, and naming
-  everything while explaining nothing is still NO. It also says a NO claiming
-  the transcript never does something is checked against the whole transcript
-  first: one NO said a video never explained a step its transcript states.
-  The five-line reply is unchanged; a YES now names the listed thing too.
+note: "v16 restores the v13 body: a revert of v14 and v15, which were measured
+  and gave no gain. Against a 25-video labelled set (15 clear YES, 4 clear NO,
+  6 border) and 15 controls, on one brief: at no reasoning v13 got 5 of 15
+  clear YES, 4 of 4 clear NO and 15 of 15 controls, v15 got 7, 2 and 15; at low
+  reasoning v13 got 13.0, 1.0 and 14.5 over two samples, v15 14.0, 0.0 and
+  13.3 over three. v14's one-listed-thing rule moved no labelled verdict the
+  right way and its refusals moved to the REQUIRED items; v15's two
+  clarifications (a conditional REQUIRED item binds only when its subject is
+  explained; asserting is not explaining, at any length) both missed — the
+  naming-only clips were still accepted, and the conditional item still
+  refused good videos. What moved the verdicts was reasoning effort, which is
+  configuration, not this prompt. The five-line reply is unchanged.
   v13 names the three grounds a NO may rest on, and rules out the one it
   kept reaching for: the PARTS a video does not cover. Checkpoint 4 measured 11
   of 15 stage-2 NO reasons listing absent parts, two of them wrong NOs — one
@@ -179,22 +171,6 @@ The brief separates two kinds of item, and they are checked differently:
   It is not expected to cover them all: the library as a whole does that, and
   a video that covers one part well is exactly what the brief asks for.
 
-**A PART is covered by covering any one thing it lists.** A PART is often
-written as a list — "a subject: how one thing works, including a second or a
-third, and why a fourth matters". Each listed thing is a way into that part,
-not a box every video must tick. A video that substantively covers **any one**
-of them has covered the PART; the other listed things are what the library's
-other videos are for. A PART that names a single thing is the same rule with a
-list of one. A listed thing that is a limit, a risk, a cost or a failure mode
-is a listed thing like any other: a video about that risk is on the part, not
-off it for being "about the risk rather than the mechanism".
-
-So "only covers one of the things the part lists", "confined to one of them"
-and "never connects it to the rest of the part" are not grounds for a NO. A
-gardening brief listing "soil: what it is made of, how drainage works, or how
-to test its pH" as a part is served by a video that explains drainage
-thoroughly and never mentions pH.
-
 So a relevant video meets every REQUIRED item, substantively covers at least
 one PART, and hits no EXCLUDED item (step 4). A plumbing brief that requires
 "explains why the fault happens, not only the fix" and lists leaking taps,
@@ -220,14 +196,6 @@ lists saddle heights and explains nothing still fails "explains". Missing an
 item is still a NO; what is not a NO is failing a reading that no video on a
 listed part could pass.
 
-**A conditional REQUIRED item binds only when its condition holds.** An item
-worded "when it discusses X, it …" applies to a video that sets out to explain
-X — that spends time on X as a subject. It does not apply to a video that uses
-the word X in passing while explaining something else, and a video it does not
-apply to cannot fail it. A gardening brief requiring "when it discusses
-watering, says how often and why" binds a video on watering schedules; it does
-not bind a video on pruning that says "water it afterwards".
-
 **A NO rests on one of three grounds, and never on a fourth.** The grounds:
 
 - a REQUIRED item the video fails — name the item;
@@ -244,30 +212,10 @@ are for, not a fault in this one. If a video covers a part, that part is the
 verdict's subject: say which part, and judge how well it is covered.
 
 This is not leniency. A clip that names three parts in a minute and explains
-none of them covers no part substantively, and is a NO on that ground. The same
-holds inside one part: a video that names every thing a part lists and explains
-none of them has not covered it. And the REQUIRED items still apply in full to
-a video on one listed thing.
-
-**"Never" is a claim about the whole transcript.** Before a NO says the
-transcript never explains, shows or connects something, find where it would be
-said and check. One NO said a video never explained a step that its transcript
-states in plain words; that is a misreading, and it is final for the topic.
+none of them covers no part substantively, and is a NO on that ground.
 
 Covering means substantively addressing — not merely saying a word the brief
-also uses. A video that names a part once and moves on has not covered it.
-
-**Substance is saying how something works, at any length.** Length is never a
-ground, in either direction: a short video can explain a mechanism completely,
-and a long one can explain nothing. What decides is whether the video says *how*
-or only *that*. A video that asserts an outcome or names a mechanism without
-saying how it works has not covered it, whatever its length.
-
-- Covered: "the pan is preheated so the surface is already hotter than the
-  water in the food; the food's surface dries before it can steam, so it browns
-  instead of boiling" — it says how.
-- Not covered: "preheat the pan for better browning — it makes all the
-  difference" — an outcome asserted, no how. The
+also uses. A video that names a part once and moves on has not covered it. The
 brief is the authority: not your sense of what is interesting, not what the
 video is good at, and not what a reasonable video on this title would usually
 contain.
@@ -376,8 +324,7 @@ UNEXPLAINED: kv cache eviction, prefix matching
 - `EVIDENCE` — `CLEAR` or `DEGRADED`.
 - `REASON` — one sentence, specific to this video. Name what the transcript
   actually established, or what about its quality prevented verification. Not a
-  restatement of the verdict. **For a YES, name the PART or PARTS it covers,
-  and the listed thing within each that it covers.**
+  restatement of the verdict. **For a YES, name the PART or PARTS it covers.**
   **For a NO, open with its ground** — `fails REQUIRED: <item>`, `hits EXCLUDED:
   <item>`, or `covers no PART substantively` — then say what the transcript
   showed. Never list the parts a video does not cover. Where any part of it rests on knowledge about the

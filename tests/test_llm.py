@@ -1297,36 +1297,30 @@ def test_the_stage_one_prompt_judges_a_part_video_on_its_part() -> None:
 # listed constraint. Accepting is disjunctive; naming everything is still NO.
 
 
-def test_both_judges_read_a_compound_part_as_covered_by_any_one_thing() -> None:
-    full = " ".join(load_prompt("judge/full").text.split())
+def test_the_stage_one_judge_reads_a_compound_part_as_covered_by_any_one_thing() -> None:
+    """judge_metadata v10 stays (unmeasured: its replay was confounded)."""
     metadata = " ".join(load_prompt("judge_metadata").text.split())
-    assert "A PART is covered by covering any one thing it lists" in full
-    assert "has covered the PART; the other listed things are what the library's" in full
-    assert "A candidate on any one thing a PART lists is on that part" in metadata
-    for text in (full, metadata):
-        assert "A PART that names a single thing is the same rule with a list of one" in text
-        assert "is a listed thing like any other" in text or "counts like any other listed thing" in text
-
-
-def test_the_stage_two_judge_still_refuses_a_video_that_names_everything() -> None:
-    full = " ".join(load_prompt("judge/full").text.split())
-    assert "names every thing a part lists and explains none of them has not covered it" in full
-    assert "the REQUIRED items still apply in full to a video on one listed thing" in full
-    assert '"confined to one of them"' in full and "are not grounds for a NO" in full
-
-
-def test_the_stage_two_judge_checks_a_never_before_writing_it() -> None:
-    full = " ".join(load_prompt("judge/full").text.split())
-    assert '"Never" is a claim about the whole transcript' in full
-    assert "and the listed thing within each that it covers" in full
-
-
-def test_the_judges_versions_say_why() -> None:
-    assert load_prompt("judge/full").version == "15"
     assert load_prompt("judge_metadata").version == "10"
-    assert "v15 adds two readings" in " ".join(
-        load_prompt("judge/full").meta["note"].split()
-    )
+    assert "A candidate on any one thing a PART lists is on that part" in metadata
+    assert "A PART that names a single thing is the same rule with a list of one" in metadata
+    assert "counts like any other listed thing" in metadata
+
+
+def test_the_stage_two_prompt_is_v13_restored_as_v16() -> None:
+    """v14 and v15 were measured on a labelled set and gave no gain at either
+    reasoning effort; v16 is the v13 body under a new version whose note says
+    so. None of the reverted wording may linger."""
+    prompt = load_prompt("judge/full")
+    text = " ".join(prompt.text.split())
+    assert prompt.version == "16"
+    for reverted in (
+        "A PART is covered by covering any one thing it lists",
+        '"Never" is a claim about the whole transcript',
+        "A conditional REQUIRED item binds only when its condition holds",
+        "Substance is saying how something works, at any length",
+    ):
+        assert reverted not in text, reverted
+    assert "A PART the video does not cover is never a ground" in text
 
 
 def test_both_coverage_prompts_assess_a_part_per_listed_thing() -> None:
@@ -1371,20 +1365,6 @@ def test_the_expansion_prompt_aims_at_what_is_missing() -> None:
     assert "Do not aim a query at a HELD part." in text
     assert "Use a thread only where it serves a missing thing" in text
     assert "then ` | ` and its aim" in text
-
-
-def test_the_stage_two_judge_reads_conditional_items_and_substance_v15() -> None:
-    """v15. With reasoning on, the judge read a conditional REQUIRED item as
-    binding on any mention of its word (2 good videos refused), and accepted
-    three short clips that only named or asserted. A conditional binds only a
-    video that sets out to explain its subject; substance is saying how,
-    at any length, and length is never a ground."""
-    text = " ".join(load_prompt("judge/full").text.split())
-    assert "A conditional REQUIRED item binds only when its condition holds" in text
-    assert "a video it does not apply to cannot fail it" in text
-    assert "Substance is saying how something works, at any length" in text
-    assert "Length is never a ground, in either direction" in text
-    assert "- Covered:" in text and "- Not covered:" in text
 
 
 def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:
