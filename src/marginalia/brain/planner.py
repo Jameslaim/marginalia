@@ -672,8 +672,8 @@ def render_round(
         "fetched. They join the next round's queue, where a query with nothing read yet "
         "goes before one that has had a read, so they are not pushed behind new finds. They "
         "satisfy nothing yet. Searching for them again only finds what is already "
-        "queued: a part of the brief with candidates waiting here needs no new query, "
-        "and the parts with nothing kept and nothing waiting are the gaps."
+        "queued: a listed thing with candidates waiting here needs no new query, "
+        "and the listed things with nothing kept and nothing waiting are the gaps."
     )
     lines.extend(_unread_lines(report.unread) or ["- none"])
 
