@@ -4150,3 +4150,24 @@ def test_the_round_counts_unaimed_and_capped_expansion_queries(
     report = outcome.rounds[0]
     assert (report.expansion_capped, report.expansion_unaimed) == (1, 1)
     assert "q3" not in report.queries
+
+
+def test_a_query_the_planner_and_the_expansion_both_write_runs_once(
+    config, ledger, library, client, searches
+) -> None:
+    """The planner and the coverage-aware expansion can write the same query, in
+    one round or a later one. It runs once; each repeat is a counted skip, after
+    normalising case and spaces."""
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[["q1"], ["Prompt  Injection Through Docs", "q2"],
+                               ["prompt injection through docs", "q3"]])
+    planner = FakePlanner(plans=[planned("prompt injection through docs"),
+                                 planned("q4")])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=3,
+                  mapper=FakeMapper(), planner=planner)
+
+    texts = [row.query.lower() for row in ledger.queries_for_run(outcome.run_id)]
+    assert texts.count("prompt injection through docs") == 1
+    assert outcome.rounds[1].duplicates_skipped == 1, "the expansion repeating the planner"
+    assert outcome.rounds[2].duplicates_skipped == 1, "a later round repeating it"
