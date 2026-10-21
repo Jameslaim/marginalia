@@ -876,13 +876,28 @@ class LibraryCoverage:
     input_tokens: int = 0
     output_tokens: int = 0
     latency_s: float = 0.0
+    # What the assessment was shown, and whether it was cut to fit (rule 14).
+    # `evidence_mode` is `full`, `claims cut` or `index lines`; the last two are
+    # degraded, and `notes_cut` counts the notes whose claims did not all fit.
+    evidence_mode: str = ""
+    evidence_tokens: int = 0
+    claims_chars: int = 0
+    notes_cut: int = 0
 
     @property
     def satisfied(self) -> list[CoverageItem]:
         return [item for item in self.items if item.satisfied]
 
+    @property
+    def degraded(self) -> bool:
+        return self.evidence_mode not in ("", "full")
+
     def as_dict(self) -> dict:
         return {
+            "evidence_mode": self.evidence_mode,
+            "evidence_tokens": self.evidence_tokens,
+            "claims_chars": self.claims_chars,
+            "notes_cut": self.notes_cut,
             "notes_read": self.notes_read,
             "items": [item.as_dict() for item in self.items],
             "parsed": self.parsed,

@@ -414,6 +414,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
     lines = [f"brief:    {run.brief.intent}"]
     lines.extend(_brief_outcome_lines(run.brief))
     lines.extend(_territory_lines(run))
+    lines.extend(_baseline_lines(run))
     for report in run.rounds:
         source = "queries from threads" if report.from_threads else "queries"
         line = (
@@ -604,6 +605,27 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
         lines.append(
             f"map-only: {len(exclusive)} candidate(s) no brief query surfaced"
         )
+    return lines
+
+
+def _baseline_lines(run: DiscoverRun) -> list[str]:
+    """What the library already held, on its own line, degraded or not (rule
+    14): the planner treats what this says is held as held, and a cut evidence
+    mode holds less. Nothing for a run whose library held no notes."""
+    lines: list[str] = []
+    baseline = run.baseline
+    if baseline.notes_read:
+        partly = sum(1 for item in baseline.items if item.partly)
+        line = (
+            f"baseline: {len(baseline.satisfied)} of {len(baseline.items)} brief items held, "
+            f"{partly} partly, from {baseline.notes_read} note(s); evidence "
+            f"{baseline.evidence_mode or 'unknown'}, ~{baseline.evidence_tokens:,} tokens"
+        )
+        if baseline.degraded:
+            line += f" — DEGRADED: {baseline.notes_cut} notes' claims cut to {baseline.claims_chars} chars"
+        if not baseline.parsed and baseline.problem:
+            line += f"; reply had problems ({baseline.problem})"
+        lines.append(line)
     return lines
 
 

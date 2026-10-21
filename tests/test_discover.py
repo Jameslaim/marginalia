@@ -2601,18 +2601,22 @@ def test_the_baseline_reaches_the_planner(
     assert [i.part for i in planner.baseline_seen[0]] == ["retrieval scoring"]
 
 
-def test_the_baseline_is_sent_summary_lines_not_whole_notes(
+def test_the_baseline_is_sent_evidence_not_whole_notes(
     config, ledger, library, client, searches
 ) -> None:
     """v1 sent the library entire with no budget check. At 646 notes that asked
     for 1,833,240 tokens against a 1,048,576 ceiling and failed *open*, so the
     planner assumed nothing was covered and re-searched ground already held.
 
-    Not the M7 selector, which was the obvious repair: selection would hit the
-    same ceiling again eventually, and this is the second caller to hit it.
-    Summary lines scale — 720 notes is ~48k tokens, 22x under the ceiling."""
+    Then one index line per note, which scaled and could not show coverage: a
+    run's baseline marked 0 of 14 items held while the library's keepers named
+    five parts. Now each note sends its judge reason and its Claims — never the
+    rest of the note — and the evidence says how complete it is."""
     searches["*"] = [result("aaaaaaaaaaa")]
-    body = "# A note\n\nIt covers the mechanism in code.\n" + ("filler line\n" * 400)
+    body = (
+        "# A note\n\n## Claims\n\n- It covers the mechanism in code.\n\n"
+        "## Key moments\n\n" + ("filler line\n" * 400)
+    )
     library.write_note("bbbbbbbbbbb", body)
     planner = FakePlanner(baseline=[CoverageItem("shows code", True, "the old note")])
 
@@ -2620,9 +2624,11 @@ def test_the_baseline_is_sent_summary_lines_not_whole_notes(
         max_rounds=2, mapper=FakeMapper(), planner=planner)
 
     sent = planner.notes_sent
-    assert "filler line" not in sent, "the note body never reaches the assessment"
+    assert "filler line" not in sent, "the rest of the note never reaches the assessment"
     assert "bbbbbbbbbbb" in sent, "but the id does"
-    assert len(sent.splitlines()) == 1, "one line per note"
+    assert "claims: It covers the mechanism in code." in sent, "and its Claims do"
+    assert "judge: no stage-2 judgement on record" in sent
+    assert sent.startswith("EVIDENCE: full"), "the evidence says how complete it is"
     assert len(sent) < len(body), "and it is smaller than the note it stands for"
 
 

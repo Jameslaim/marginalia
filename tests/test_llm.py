@@ -1333,7 +1333,7 @@ def test_both_coverage_prompts_assess_a_part_per_listed_thing() -> None:
     """A part is a list; a yes-or-no per part could only call a half-held part
     covered (the wrong YES) or a gap. Both coverage prompts write PARTLY with
     what is held and what is missing, and a single-item part is YES or NO."""
-    for name, version in (("plan/round", "11"), ("plan/baseline", "5")):
+    for name, version in (("plan/round", "11"), ("plan/baseline", "6")):
         prompt = load_prompt(name)
         text = " ".join(prompt.text.split())
         assert prompt.version == version, name
@@ -1343,6 +1343,20 @@ def test_both_coverage_prompts_assess_a_part_per_listed_thing() -> None:
         assert "A part that names a single thing is `YES` or `NO`" in text, name
     round_text = " ".join(load_prompt("plan/round").text.split())
     assert "A `PARTLY` part is a named gap" in round_text
+
+
+def test_the_baseline_prompt_reads_evidence_and_knows_when_it_was_cut() -> None:
+    """v6. An index line per note could not show coverage, and the prompt said
+    to answer NO when a line was too thin: 0 of 14 items held on a library whose
+    keepers named five parts. A stated thing is now held, a wrong YES is still
+    the expensive error, and a DEGRADED first line says the claims were cut."""
+    text = " ".join(load_prompt("plan/baseline").text.split())
+    assert "judge: <the latest stage-2 verdict and reason on this video>" in text
+    assert "claims: <the note's claims" in text
+    assert '"the line is thin" is not a reason to call a stated thing missing' in text
+    assert "This is the expensive mistake" in text
+    assert "When it says DEGRADED" in text
+    assert "index line" not in text.split("---", 2)[2]
 
 
 def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:

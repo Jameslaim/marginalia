@@ -1,8 +1,16 @@
 ---
 name: plan/baseline
-version: "5"
+version: "6"
 stage: plan
-note: "v5 assesses each part per listed thing, as plan/round v11 does. A
+note: "v6 is shown evidence that can show coverage. v2 to v5 were shown one
+  index line per note, a title and the first claim, and told to answer NO
+  when a line was too thin; against a brief whose parts each list several
+  things no line could pass, and one run marked 0 of 14 items held while the
+  library's keepers' own stage-2 reasons named five of the parts. Each note now
+  comes with the latest stage-2 reason on its video and its Claims, within a
+  budget; a first line says whether they were cut to fit. A wrong YES is still
+  the expensive error, but a listed thing a claim or reason states is held.
+  v5 assesses each part per listed thing, as plan/round v11 does. A
   brief writes a part as a list, and a yes-or-no per part could only call a
   half-held part covered or a gap. A part is YES when every thing it lists is
   held, PARTLY when some are, NO when none is, and each line names what is
@@ -23,10 +31,11 @@ note: "v5 assesses each part per listed thing, as plan/round v11 does. A
 You are checking what a library of video notes **already** covers, before any
 searching happens.
 
-A research brief is below, and after it one index line for every understanding
-note the library holds. Each note was written by one model reading one video
-end to end. Your job
-is to say, for each part of the brief, whether the library already satisfies it.
+A research brief is below, and after it the evidence for every understanding
+note the library holds: the judge's reason for keeping or declining its video,
+and the note's claims. Each note was written by one model reading one video end
+to end. Your job is to say, for each part of the brief, which of the things it
+lists the library already holds.
 
 ---
 
@@ -58,19 +67,33 @@ The two mistakes are not equal, and they are not symmetric:
 - **Marking something unsatisfied when a note does cover it** costs one query
   whose results are visible, and the judge will decline the duplicate.
 
-So when the evidence is thin, say NO. Bias toward NO exactly as the judging
-stages bias toward keeping — for the same reason, that one error is invisible
-and the other is cheap and obvious.
+So a listed thing is held only when the evidence states it, and not when it
+merely makes it plausible. But when a claim or a judge's reason **does** state
+that a video explains a listed thing, that thing is held: you are not being
+asked for more than the evidence can give, and "the line is thin" is not a
+reason to call a stated thing missing. A wrong NO is cheaper than a wrong YES,
+and it is not free: it sends a round to find again what the library holds.
 
 ## What counts as evidence
 
-Name the video. `detail` must say *which* note covers the item and what it
-supplies — "the Mem0 walkthrough shows add/search calls and the update path" is
-evidence. "Several videos discuss this" is not; it is the shape of an answer
-with nothing behind it, and it is what you write when you have not checked.
+Name the video for every held thing, and what its evidence states — "the
+pruning walkthrough's claims show where to cut and why" is evidence. "Several
+videos discuss this" is not; it is the shape of an answer with nothing behind
+it, and it is what you write when you have not checked.
+
+Two kinds of evidence, read differently:
+
+- **The judge's reason** was written by a model that read the whole
+  transcript, to decide whether the video served a brief. One labelled *for
+  this topic* was judged against this brief; one labelled *for another brief*
+  still says what the judge saw the video explain. A NO reason can still
+  describe what the video covers.
+- **The claims** are the note-writer's statements of what the video says, in
+  order. A claim that states the video explains a listed thing shows it held.
 
 Do not count a note that is about the subject only in passing. A video that
-mentions a tool once, in a list, does not cover that tool.
+mentions a tool once, in a list, does not cover that tool, and a title alone
+holds nothing.
 
 ## Assess a part one listed thing at a time
 
@@ -117,13 +140,15 @@ BRIEF:
 
 ---
 
-NOTES IN THE LIBRARY ({{ count }}), one line each:
+NOTES IN THE LIBRARY ({{ count }}), three lines each:
 
-    <video id> | <published> | <title> | <the note's opening claim>
+    <video id> | <published> | <title>
+      judge: <the latest stage-2 verdict and reason on this video>
+      claims: <the note's claims, separated by " / ">
 
-These are index lines, not the notes. They are enough to say whether the library
-*has something* on a brief item and never enough to judge how well it is
-covered. So when a line is too thin to decide, answer **NO** — a wrong NO costs
-one more search, and a wrong YES means a brief item is never searched for again.
+The first line below says whether the evidence is complete. When it says
+DEGRADED, each note's claims were cut to fit; a thing not shown may have been
+cut rather than missing, so the evidence holds less, and you still mark held
+only what it states.
 
 {{ notes }}

@@ -623,6 +623,28 @@ def test_the_starting_coverage_is_rendered_above_the_rounds(config, ledger, libr
     assert report.index("## Starting coverage") < report.index("## Rounds")
 
 
+def test_a_degraded_or_partly_baseline_says_so_in_the_report(config, ledger, library) -> None:
+    """Rule 14: a baseline shown cut evidence holds less, and the report says
+    so; a part held partly is marked as such, never as YES."""
+    a_run(ledger)
+    ledger.save_baseline(RUN, json.dumps({
+        "evidence_mode": "claims cut", "evidence_tokens": 99000, "claims_chars": 420,
+        "notes_cut": 610, "notes_read": 646,
+        "items": [
+            {"part": "soil", "satisfied": False, "partly": True, "held": ["drainage"],
+             "missing": ["pH"], "detail": "held: drainage; missing: pH"},
+        ],
+        "parsed": True, "problem": "",
+    }))
+
+    export_run(config, ledger, library, RUN)
+    report = read(library, "report.md")
+
+    assert "Degraded evidence (claims cut)" in report
+    assert "610 note(s)' claims were cut to 420 characters" in report
+    assert "| **PARTLY** | soil |" in report
+
+
 def test_a_run_with_no_baseline_says_so(config, ledger, library) -> None:
     a_run(ledger)
 

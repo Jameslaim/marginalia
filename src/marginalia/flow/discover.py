@@ -62,10 +62,12 @@ from ..contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
     KNOWN,
+    LoadedNote,
     NEW,
     ORIGIN_BRIEF,
     ORIGIN_THREAD,
     ACQUIRE_NO_CAPTIONS,
+    OUTCOME_JUDGED,
     OUTCOME_TOO_LARGE,
     RECOMMEND_STOP,
     STOP_REFUSED,
@@ -98,6 +100,7 @@ from ..core.ledger import (
 )
 from ..core.ledger import now as ledger_now
 from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
+from ..quotes import note_sections
 from ..core.library import Library, format_timestamp, render_transcript
 from ..llm import LlmClient, LlmConfigError
 from ..providers import PermanentError, TransientError
@@ -520,26 +523,24 @@ def _assess_library(
         log.info("discover: the library holds no notes; nothing to assess")
         return LibraryCoverage()
 
-    # **Summary lines, not whole notes.** This used to send the library entire,
-    # with no budget check of any kind, and at 646 notes it asked for 1,833,240
-    # tokens against a 1,048,576 ceiling — 1.75x over. It failed *open*
-    # ("assuming nothing is covered"), so nothing crashed and the planner simply
-    # worked as though the library held nothing, re-searching ground already on
-    # disk. That is why nobody noticed.
+    # **Evidence, not whole notes and not one line.** This used to send the
+    # library entire, with no budget check, and at 646 notes it asked for
+    # 1,833,240 tokens against a 1,048,576 ceiling; it failed *open*, so the
+    # planner worked as though the library held nothing. Then it sent one index
+    # line per note — a title and the first claim, 200 characters — which
+    # scaled, and could not show coverage: against a brief whose parts each
+    # list several things, no index line could pass a prompt that demands named
+    # evidence, and one run's baseline marked 0 of 14 items held while about 25
+    # stored keepers' own stage-2 reasons named five of the parts.
     #
-    # The question here is coarse — *which brief items does the library already
-    # cover?* — and a coarse question does not need whole notes. One line per
-    # note is what the selector's stage 1 already builds, and 646 of them is
-    # about 20k tokens against 1.87M.
-    #
-    # **Not the M7 selector**, which was the obvious repair and the wrong one:
-    # selection would eventually hit this same ceiling again, and this is the
-    # second caller to hit it already. Summary lines scale indefinitely — 5,000
-    # notes is still ~150k tokens — cost nothing against a selection pass, and
-    # when they are too thin to decide they err toward "not covered", which
-    # means more searching rather than less. Rule 8's direction.
-    summaries = [summarise(note) for note in notes]
-    rendered = "\n".join(summary.line for summary in summaries)
+    # Now each note brings what can show coverage and scales: the latest
+    # stage-2 reason for its video (one line, written by a judge that read the
+    # whole transcript) and the note's Claims, cut to a per-note share of a
+    # fixed budget. When the budget forces a cut it says so, counted (rule 14).
+    entries = [
+        _note_evidence(note, summarise(note).published, ledger, run.topic) for note in notes
+    ]
+    rendered, evidence = library_evidence(entries, budget_tokens=_BASELINE_BUDGET_TOKENS)
 
     # The guard the original never had, using the estimator that would have
     # caught this: `estimate_tokens` puts 646 notes at 1,873,146, within 2% of
@@ -572,14 +573,29 @@ def _assess_library(
             ),
         )
     log.info(
-        "discover: assessing %d notes as summary lines, ~%d tokens", len(notes), estimate
+        "discover: assessing %d notes as %s evidence, ~%d tokens",
+        len(notes), evidence.mode, estimate,
     )
+    if evidence.mode != EVIDENCE_FULL:
+        log.warning(
+            "discover: the library baseline is degraded — %s: %d of %d notes' claims "
+            "cut to %d characters to fit ~%d tokens",
+            evidence.mode, evidence.notes_cut, len(notes), evidence.claims_chars,
+            _BASELINE_BUDGET_TOKENS,
+        )
 
     baseline = planner.assess_library(
         run.brief,
         rendered,
         notes_read=len(notes),
         max_tokens=config.discover.baseline_max_tokens,
+    )
+    baseline = replace(
+        baseline,
+        evidence_mode=evidence.mode,
+        evidence_tokens=estimate,
+        claims_chars=evidence.claims_chars,
+        notes_cut=evidence.notes_cut,
     )
     ledger.save_baseline(run.run_id, baseline.as_json())
     log.info(
@@ -589,6 +605,159 @@ def _assess_library(
         baseline.notes_read,
     )
     return baseline
+
+
+# -- the baseline's evidence ---------------------------------------------------
+
+# The baseline's input budget, in tokens. 37 notes take about 14k at full size;
+# 646 notes cannot all be full, and at this budget get a share of about 600
+# characters each — the judge's reason and the first claims. Sized against the
+# cost of one call (about $0.015 here), not the model's ceiling: the call runs
+# on every discovery.
+_BASELINE_BUDGET_TOKENS = 100_000
+# Per-note ceilings at full size. A stage-2 reason is one sentence; Claims are
+# the note's own statements of what the video says, and the first ones carry
+# its main points.
+_REASON_CHARS = 300
+_CLAIMS_CHARS = 1_500
+# Below this a note's claims are not worth their header, and the evidence falls
+# back to index lines: a title, the reason cut short and the first claim.
+_CLAIMS_FLOOR = 200
+_INDEX_CHARS = 160
+
+EVIDENCE_FULL = "full"
+EVIDENCE_CLAIMS_CUT = "claims cut"
+EVIDENCE_INDEX = "index lines"
+
+_INLINE_MARKER_RE = re.compile(r"\[note:[^\]]*\]", re.IGNORECASE)
+_CLAIM_BULLET_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
+
+
+class NoteEvidence:
+    """What one note brings to the baseline: built here, rendered by
+    :func:`library_evidence`, sent to the model and nowhere else (rule 1)."""
+
+    __slots__ = ("video_id", "published", "title", "judged", "claims")
+
+    def __init__(
+        self, video_id: str, published: str, title: str, judged: str, claims: Sequence[str]
+    ) -> None:
+        self.video_id = video_id
+        self.published = published
+        self.title = title
+        self.judged = judged
+        self.claims = list(claims)
+
+
+class EvidenceSize:
+    __slots__ = ("mode", "claims_chars", "notes_cut", "chars")
+
+    def __init__(self, mode: str, claims_chars: int, notes_cut: int, chars: int) -> None:
+        self.mode = mode
+        self.claims_chars = claims_chars
+        self.notes_cut = notes_cut
+        self.chars = chars
+
+
+def _note_evidence(
+    note: LoadedNote, published: str, ledger: Ledger, topic: str
+) -> NoteEvidence:
+    """One note's evidence: its latest stage-2 reason, and its Claims.
+
+    The reason is the latest stage-2 decision on the video that a judge actually
+    made, preferring one for this topic. A reason written for another brief
+    still says what the judge saw the transcript explain, so it is shown,
+    labelled as such. Markers are dropped from the claims: `[note: …]` is the
+    note-writer's inference, and coverage is about what the video says.
+    """
+    judged = "no stage-2 judgement on record"
+    rows = [
+        row for row in ledger.decisions_for(note.video_id)
+        if row.stage == STAGE_FULL and row.reason and row.outcome in (None, OUTCOME_JUDGED)
+    ]
+    mine = [row for row in rows if row.topic == topic]
+    chosen = (mine or rows)[-1] if rows else None
+    if chosen is not None:
+        whose = "this topic" if chosen.topic == topic else "another brief"
+        judged = f"stage 2 said {chosen.verdict.upper()} for {whose}: " + " ".join(
+            chosen.reason.split()
+        )
+    claims_text = note_sections(note.text).get("Claims", "")
+    claims = []
+    for line in claims_text.splitlines():
+        text = " ".join(_INLINE_MARKER_RE.sub(" ", _CLAIM_BULLET_RE.sub("", line)).split())
+        if text:
+            claims.append(text)
+    return NoteEvidence(note.video_id, published, " ".join(note.title.split()), judged, claims)
+
+
+def library_evidence(
+    entries: Sequence[NoteEvidence], *, budget_tokens: int
+) -> tuple[str, EvidenceSize]:
+    """The baseline's evidence, within ``budget_tokens``, and how it was cut.
+
+    Three modes, in order, and the first that fits is used:
+
+    - **full** — every note's reason and its claims up to `_CLAIMS_CHARS`;
+    - **claims cut** — every note's claims cut to one equal share of what the
+      budget leaves after the headers and reasons (degraded);
+    - **index lines** — a share below `_CLAIMS_FLOOR`: each note's title, its
+      reason cut to `_INDEX_CHARS` and its first claim likewise (degraded).
+
+    Equal shares, so no note is dropped and none is favoured by its position.
+    """
+    budget_chars = int(budget_tokens * _CHARS_PER_TOKEN)
+
+    def header(entry: NoteEvidence, reason_chars: int) -> str:
+        return (
+            f"{entry.video_id} | {entry.published or 'date unknown'} | {entry.title[:120]}\n"
+            f"  judge: {entry.judged[:reason_chars]}\n"
+        )
+
+    def claims(entry: NoteEvidence, cap: int) -> tuple[str, bool]:
+        joined = " / ".join(entry.claims)
+        if not joined:
+            return "  claims: (the note states none)\n", False
+        return f"  claims: {joined[:cap]}\n", len(joined) > cap
+
+    def render(reason_chars: int, cap: int) -> tuple[str, int]:
+        parts, cut = [], 0
+        for entry in entries:
+            text, was_cut = claims(entry, cap)
+            parts.append(header(entry, reason_chars) + text)
+            cut += was_cut
+        return "".join(parts), cut
+
+    text, cut = render(_REASON_CHARS, _CLAIMS_CHARS)
+    if len(text) <= budget_chars:
+        return _with_mode(text, EVIDENCE_FULL), EvidenceSize(
+            EVIDENCE_FULL, _CLAIMS_CHARS, cut, len(text)
+        )
+    fixed = sum(len(header(entry, _REASON_CHARS)) + len("  claims: \n") for entry in entries)
+    share = (budget_chars - fixed) // max(1, len(entries))
+    if share >= _CLAIMS_FLOOR:
+        text, cut = render(_REASON_CHARS, share)
+        return _with_mode(text, EVIDENCE_CLAIMS_CUT, share), EvidenceSize(
+            EVIDENCE_CLAIMS_CUT, share, cut, len(text)
+        )
+    text, cut = render(_INDEX_CHARS, _INDEX_CHARS)
+    return _with_mode(text, EVIDENCE_INDEX, _INDEX_CHARS), EvidenceSize(
+        EVIDENCE_INDEX, _INDEX_CHARS, cut, len(text)
+    )
+
+
+def _with_mode(text: str, mode: str, cap: int = 0) -> str:
+    """The evidence with a first line saying how complete it is, so the model
+    reading it knows when a missing claim may only have been cut."""
+    if mode == EVIDENCE_FULL:
+        note = "EVIDENCE: full — every note's judge reason and its claims (the longest cut at "
+        note += f"{_CLAIMS_CHARS} characters)"
+    else:
+        note = (
+            f"EVIDENCE: DEGRADED ({mode}) — each note's claims cut to {cap} characters to fit "
+            "the budget; a thing not shown may have been cut rather than missing"
+        )
+    return note + "\n\n" + text
 
 
 def _run_planner(

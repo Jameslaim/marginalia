@@ -239,6 +239,13 @@ def _baseline_section(run: RunRow) -> list[str]:
         + (f" {partly} more were held partly." if partly else ""),
         "",
     ]
+    if body.get("evidence_mode") and body.get("evidence_mode") != "full":
+        lines.extend([
+            f"> **Degraded evidence ({_flat(body['evidence_mode'])}):** "
+            f"{body.get('notes_cut', 0)} note(s)' claims were cut to "
+            f"{body.get('claims_chars', 0)} characters to fit the budget.",
+            "",
+        ])
     if body.get("problem"):
         lines.extend([f"> {_flat(body['problem'])}", ""])
     if items:

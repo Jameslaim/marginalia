@@ -686,3 +686,29 @@ def test_the_report_says_what_was_left_unread_and_the_round_s_share(stubbed, cap
     assert "2 stage-1 YES not yet read, carried forward" in out
     assert "5 stage-1 MAYBE not yet read, carried forward" in out
     assert "3 stage-1 NO on missing evidence, kept as MAYBE" in out
+
+
+def test_the_run_summary_says_what_the_baseline_held_and_whether_it_was_degraded() -> None:
+    """Rule 14: the planner treats what the baseline holds as held, and evidence
+    cut to fit holds less, so the summary says which it was, on its own line."""
+    from marginalia.cli import _baseline_lines
+    from marginalia.contracts import CoverageItem, DiscoverRun, LibraryCoverage, TerritoryMap
+
+    baseline = LibraryCoverage(
+        items=[
+            CoverageItem("soil", False, partly=True, held=("drainage",), missing=("pH",)),
+            CoverageItem("watering", True),
+        ],
+        notes_read=646, evidence_mode="claims cut", evidence_tokens=99_000,
+        claims_chars=420, notes_cut=610,
+    )
+    run = DiscoverRun(
+        run_id="r", topic="t", brief=BRIEF, model="m",
+        territory=TerritoryMap(topic="t", version="1"), baseline=baseline,
+    )
+
+    lines = "\n".join(_baseline_lines(run))
+
+    assert "baseline: 1 of 2 brief items held, 1 partly, from 646 note(s)" in lines
+    assert "evidence claims cut, ~99,000 tokens" in lines
+    assert "DEGRADED: 610 notes' claims cut to 420 chars" in lines
