@@ -538,6 +538,10 @@ def test_the_json_carries_the_whole_plan(stubbed, capsys) -> None:
     assert plan["coverage"][1] == {
         "part": "cache expiry and TTL",
         "satisfied": False,
+        # Itemised coverage (a part held partly); a three-field line has none.
+        "partly": False,
+        "held": [],
+        "missing": [],
         "detail": "nothing kept mentions expiry",
     }
 

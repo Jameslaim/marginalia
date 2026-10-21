@@ -819,11 +819,37 @@ class CoverageItem:
     is what makes it checkable — for a satisfied item, which videos cover it;
     for a gap, what is missing. "More depth needed" is not a gap; "nothing
     found on cache expiry and TTL" is.
+
+    **Itemised, because a part is a list.** A brief writes a part as several
+    things, and a yes-or-no per part could only call a half-held part covered
+    (the wrong YES) or a gap (re-searching what is held). ``partly`` is a part
+    with some of its listed things held and others not; ``held`` and
+    ``missing`` name them, and ``missing`` is the part's gap. ``satisfied`` is
+    true only for a part held whole, so nothing partly held ever reads as
+    covered or lets a run stop.
     """
 
     part: str
     satisfied: bool
     detail: str = ""
+    partly: bool = False
+    held: tuple[str, ...] = ()
+    missing: tuple[str, ...] = ()
+
+    @property
+    def mark(self) -> str:
+        """``yes``, ``partly`` or ``no``: the line's verdict as written."""
+        return "yes" if self.satisfied else "partly" if self.partly else "no"
+
+    def as_dict(self) -> dict:
+        return {
+            "part": self.part,
+            "satisfied": self.satisfied,
+            "partly": self.partly,
+            "held": list(self.held),
+            "missing": list(self.missing),
+            "detail": self.detail,
+        }
 
 
 @dataclass(frozen=True)
@@ -858,10 +884,7 @@ class LibraryCoverage:
     def as_dict(self) -> dict:
         return {
             "notes_read": self.notes_read,
-            "items": [
-                {"part": item.part, "satisfied": item.satisfied, "detail": item.detail}
-                for item in self.items
-            ],
+            "items": [item.as_dict() for item in self.items],
             "parsed": self.parsed,
             "problem": self.problem,
             "input_tokens": self.input_tokens,
@@ -935,10 +958,7 @@ class RoundPlan:
             "round": self.round_number,
             "recommendation": self.recommendation,
             "reason": self.reason,
-            "coverage": [
-                {"part": item.part, "satisfied": item.satisfied, "detail": item.detail}
-                for item in self.coverage
-            ],
+            "coverage": [item.as_dict() for item in self.coverage],
             "queries": [
                 {
                     "text": query.text,

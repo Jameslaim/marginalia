@@ -1329,6 +1329,22 @@ def test_the_judges_versions_say_why() -> None:
     )
 
 
+def test_both_coverage_prompts_assess_a_part_per_listed_thing() -> None:
+    """A part is a list; a yes-or-no per part could only call a half-held part
+    covered (the wrong YES) or a gap. Both coverage prompts write PARTLY with
+    what is held and what is missing, and a single-item part is YES or NO."""
+    for name, version in (("plan/round", "11"), ("plan/baseline", "5")):
+        prompt = load_prompt(name)
+        text = " ".join(prompt.text.split())
+        assert prompt.version == version, name
+        assert "Assess a part one listed thing at a time" in text, name
+        assert "| PARTLY | held:" in text, name
+        assert "they, and only they, are this part's gap" in text, name
+        assert "A part that names a single thing is `YES` or `NO`" in text, name
+    round_text = " ".join(load_prompt("plan/round").text.split())
+    assert "A `PARTLY` part is a named gap" in round_text
+
+
 def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:
     """The phase-5a audit: a faithful record and 14 unmarked outside statements,
     8 of 10 Leaves-out items among them. And every worked example was about one

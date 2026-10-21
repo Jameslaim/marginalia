@@ -25,6 +25,7 @@ import logging
 import pytest
 
 from marginalia.brain.planner import (
+    coverage_problem,
     parse_baseline,
     PLAN_PROMPT,
     Planner,
@@ -901,7 +902,7 @@ def test_the_baseline_is_shown_as_covered_evidence() -> None:
         baseline=[CoverageItem("retrieval scoring", True, "the ranking video gives the formula")],
     )
 
-    assert "ALREADY IN THE LIBRARY BEFORE THIS RUN (1)" in rendered
+    assert "ALREADY IN THE LIBRARY BEFORE THIS RUN (1 whole, 0 partly)" in rendered
     assert "retrieval scoring" in rendered
     assert "the ranking video gives the formula" in rendered
 
@@ -924,7 +925,7 @@ def test_no_baseline_says_so_rather_than_nothing() -> None:
     reads as reassurance, and empty means the library was never assessed."""
     rendered = render_round(_round())
 
-    assert "ALREADY IN THE LIBRARY BEFORE THIS RUN (0)" in rendered
+    assert "ALREADY IN THE LIBRARY BEFORE THIS RUN (0 whole, 0 partly)" in rendered
 
 
 def test_a_baseline_reply_parses_into_coverage() -> None:
@@ -1150,3 +1151,89 @@ def test_a_round_with_nothing_waiting_says_so() -> None:
     text = render_round(_round(number=1))
 
     assert "FOUND BUT NOT YET READ (0)" in text
+
+
+# -- itemised coverage: a part is a list --------------------------------------
+#
+# A brief writes a part as several things, and a yes-or-no per part could only
+# call a half-held part covered (the wrong YES) or a gap (re-searching what is
+# held). PARTLY names what is held and what is missing; only a whole part is
+# satisfied.
+
+
+def test_a_partly_line_names_what_is_held_and_what_is_missing() -> None:
+    baseline = parse_baseline(
+        "COVERAGE: soil | PARTLY | held: drainage — the clay video; texture — the loam video"
+        " | missing: testing pH; organic matter\n"
+        "COVERAGE: watering | YES | held: drip irrigation — the drip video\n"
+        "COVERAGE: pests | NO | missing: aphids; slugs",
+        notes_read=3,
+    )
+
+    soil, watering, pests = baseline.items
+    assert (soil.satisfied, soil.partly, soil.mark) == (False, True, "partly")
+    assert soil.held == ("drainage — the clay video", "texture — the loam video")
+    assert soil.missing == ("testing pH", "organic matter")
+    assert (watering.satisfied, watering.mark) == (True, "yes")
+    assert (pests.satisfied, pests.partly, pests.missing) == (False, False, ("aphids", "slugs"))
+    assert baseline.parsed and [item.part for item in baseline.satisfied] == ["watering"]
+
+
+def test_a_single_item_part_is_yes_or_no() -> None:
+    baseline = parse_baseline(
+        "COVERAGE: knife skills | YES | held: knife skills — the dicing video\n"
+        "COVERAGE: stocks | NO | missing: stocks"
+    )
+
+    assert [item.mark for item in baseline.items] == ["yes", "no"]
+    assert baseline.parsed
+
+
+def test_a_partly_line_naming_no_gap_is_a_counted_problem_and_still_not_covered() -> None:
+    """Rule 30: a PARTLY that names nothing missing is not usable as a gap. It is
+    counted on the reply, and the part stays uncovered — never read as YES."""
+    baseline = parse_baseline("COVERAGE: soil | PARTLY | held: drainage — the clay video")
+
+    assert not baseline.parsed
+    assert "PARTLY with no missing things" in baseline.problem
+    assert baseline.items[0].satisfied is False
+    assert coverage_problem(CoverageItem("x", False, partly=True, held=("a",))) != ""
+    assert coverage_problem(CoverageItem("x", False, partly=True, missing=("b",))) != ""
+    assert coverage_problem(
+        CoverageItem("x", False, partly=True, held=("a",), missing=("b",))
+    ) == ""
+
+
+def test_a_partly_part_is_a_gap_and_never_counted_as_covered() -> None:
+    plan = parse_plan(
+        "COVERAGE: soil | PARTLY | held: drainage — a | missing: pH\n"
+        "COVERAGE: watering | YES | held: drip — b\n"
+        "COVERAGE: pests | YES | held: aphids — c\n"
+        "RECOMMENDATION: CONTINUE — soil testing is missing",
+        round_number=1,
+    )
+
+    assert [item.part for item in plan.gaps] == ["soil"]
+    assert [item.part for item in plan.satisfied] == ["watering", "pests"]
+    assert "PARTLY" not in plan.problem
+
+
+def test_a_three_field_line_still_reads() -> None:
+    baseline = parse_baseline("COVERAGE: soil | NO | nothing on soil at all")
+
+    assert baseline.items[0].detail == "nothing on soil at all"
+    assert baseline.items[0].missing == ()
+    assert baseline.parsed
+
+
+def test_a_partly_baseline_item_is_shown_with_its_gap() -> None:
+    rendered = render_round(
+        _round(),
+        baseline=[
+            CoverageItem("soil", False, partly=True, held=("drainage — a",), missing=("pH",))
+        ],
+    )
+
+    block = rendered.split("ALREADY IN THE LIBRARY")[1].split("MENTIONED BUT")[0]
+    assert "(0 whole, 1 partly)" in block
+    assert "soil — PARTLY: held: drainage — a; missing: pH" in block

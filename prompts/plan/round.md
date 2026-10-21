@@ -1,8 +1,18 @@
 ---
 name: plan_round
-version: "10"
+version: "11"
 stage: plan
-note: "v10 names the FOUND BUT NOT YET READ section. Each round now stores
+note: "v11 assesses each part per listed thing. Briefs write a part as a list,
+  and a yes-or-no per part could only call a half-held part covered or a gap;
+  one run marked parts the library held as gaps and spent 2 of 10 queries
+  re-seeking them. A part is now YES when every thing it lists is held, PARTLY
+  when some are (naming what is held and what is missing), NO when none is;
+  the gap of a PARTLY part is its missing things alone, and STOP needs every
+  part YES. The judges now read a part as covered by any one listed thing
+  (judge/full v14, judge_metadata v10), so one kept video covers that thing,
+  not the whole part. The output example, rewritten for the new format, is
+  now about baking rather than a subject the library holds.
+  v10 names the FOUND BUT NOT YET READ section. Each round now stores
   at most its share of the run's video budget, and fetches are spread across
   the queries that found them; what a round's share did not reach is carried
   to the next round and listed here. Checkpoint 4 measured the old order: the
@@ -93,10 +103,20 @@ still has to find. A part that is a language or a market ("videos in a second
 language as well as English") is covered only by a kept video in that language
 or market.
 
-- A part satisfied by a kept video is `YES`, and name the video.
-- A part listed under ALREADY IN THE LIBRARY BEFORE THIS RUN is `YES` too, and
-  say which note covers it.
-- A part with nothing against either is `NO`, and say what is missing.
+**Assess a part one listed thing at a time.** A part is usually a list — "a
+subject: how one thing works, including a second or a third, and why a fourth
+matters" — and a kept video covers the listed thing it explains, not every
+thing beside it. So for each part:
+
+- `YES` when every thing it lists is held — by a kept video or by the library
+  before this run — and name what holds each.
+- `PARTLY` when some listed things are held and others are not. Name what is
+  held, and list the missing things: they, and only they, are this part's gap.
+- `NO` when none is held, and list what is missing.
+
+A part that names a single thing is `YES` or `NO`. Something held under ALREADY
+IN THE LIBRARY BEFORE THIS RUN counts exactly as a kept video does; say which
+note holds it.
 
 **The library is older than this run, and most of it is invisible above.** Every
 list you are shown covers only what this run newly fetched. Videos the library
@@ -132,10 +152,11 @@ the next round's queue, where a query with nothing read yet goes before one that
 has had a read. It satisfies nothing yet, so a part of the brief it looks
 like it covers is not covered — but it is not a gap either, because candidates for
 it are already queued and another search would find them again. Spend your
-queries on the parts with nothing kept and nothing waiting.
+queries on the listed things with nothing kept and nothing waiting.
 
-A gap must be **specific**. "More depth needed" is not a gap. "Nothing found
-that shows cache expiry or TTL configuration" is a gap — it names a thing that
+A gap must be **specific**, and the missing things of a PARTLY part are
+gaps exactly as a NO part is. "More depth needed" is not a gap. "Nothing found
+that shows how temperature changes the rise" is a gap — it names a thing that
 was asked for and was not found, which is something a query can be written from.
 
 ## Writing the next queries
@@ -145,7 +166,8 @@ FROM says which gap or which unexplained concept it came from.
 
 Sources worth drawing on, in rough order of value:
 
-1. **A named gap** — the part of the brief nothing has satisfied.
+1. **A named gap** — a missing thing of a NO or PARTLY part. A query aimed at
+   a thing already held finds a second copy of it.
 2. **Concepts mentioned but unexplained** in kept videos. A kept video that says
    "we use a scratchpad for this" and moves on has written a query for you.
 3. **Vocabulary in the titles of videos that were kept.** What the good ones
@@ -203,9 +225,10 @@ subject" is.
 
 ## Recommending a stop
 
-Say `STOP` when every one of the brief's PARTS TO COVER is covered by what has
-been kept or is already in the library, and further searching would be looking
-for something already found.
+Say `STOP` when every one of the brief's PARTS TO COVER is `YES` — every
+thing it lists held by what has been kept or is already in the library — and
+further searching would be looking for something already found. A `PARTLY` part
+is a named gap.
 
 Say `CONTINUE` when named gaps remain.
 
@@ -220,32 +243,34 @@ enough.
 Exactly this format. No preamble, no commentary, no markdown headings.
 
 ```
-COVERAGE: shows API configuration or code | YES | two kept videos walk through cache_control breakpoints
-COVERAGE: cache expiry and TTL behaviour | NO | nothing kept mentions expiry at all
-COVERAGE: comparison across providers | NO | every kept video covers one provider only
+COVERAGE: shows the method step by step | YES | held: shaping — two kept videos shape a loaf on camera
+COVERAGE: why dough rises | PARTLY | held: yeast activity — the fermentation video | missing: how temperature changes the rise; overproofing
+COVERAGE: comparison across flours | NO | missing: any comparison — every kept video uses one flour only
 
-REVISE: add vocabulary: TTL
+REVISE: add vocabulary: bulk fermentation
 WHY: three kept videos use this term and the map does not have it
 
-REVISE: remove vocabulary: semantic cache
+REVISE: remove vocabulary: starter
 WHY: it is pulling in a different subject entirely
-EVIDENCE: prompt caching vs semantic caching returned 10 results, all rejected at stage 1
+EVIDENCE: starter vs commercial yeast returned 10 results, all rejected at stage 1
 
-QUERY: prompt cache ttl expiry
-FROM: gap — cache expiry and TTL behaviour
+QUERY: dough temperature proofing time
+FROM: gap — how temperature changes the rise
 FILTERS: none
 
-QUERY: prompt caching providers compared
-FROM: gap — comparison across providers
-FILTERS: order=date (provider behaviour changed this year)
+QUERY: bread flours compared
+FROM: gap — comparison across flours
+FILTERS: order=date (milling practice changed this year)
 
-RECOMMENDATION: CONTINUE — two PARTS TO COVER still have nothing against them
+RECOMMENDATION: CONTINUE — two PARTS TO COVER still have gaps
 ```
 
 - `COVERAGE` — one line per PART TO COVER, then one per ALSO WANTED item, in
-  the form `part | YES or NO | detail`, using the brief's own wording,
-  shortened if it is long. At least three lines. The detail is read by a
-  person later; make it specific.
+  the form `part | YES, PARTLY or NO | held: thing — what holds it; … |
+  missing: thing; …`, using the brief's own wording, shortened if it is long.
+  `held:` is required for YES and PARTLY, `missing:` for PARTLY and NO; the
+  things within each are separated by semicolons. At least three lines. It is
+  read by a person later; make it specific.
 - `REVISE` — `add` or `remove`, then `concept` or `vocabulary`, then the term.
   `WHY` on the next line. `EVIDENCE` as well, for every removal.
 - `QUERY` — the search string alone. `FROM` names the gap or concept behind it.

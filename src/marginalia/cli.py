@@ -622,6 +622,9 @@ def _plan_lines(report: RoundReport) -> list[str]:
     lines = []
     gaps = plan.gaps
     summary = f"{len(plan.satisfied)} of {len(plan.coverage)} brief items covered"
+    partly = sum(1 for item in plan.coverage if item.partly)
+    if partly:
+        summary += f", {partly} partly"
     if gaps:
         summary += f"; gap: {gaps[0].part}"
         if len(gaps) > 1:
@@ -658,7 +661,7 @@ def _coverage_lines(run: DiscoverRun) -> list[str]:
 
     lines = [f"coverage: assessed at the end of round {final.round_number}"]
     for item in final.coverage:
-        mark = "yes" if item.satisfied else "NO "
+        mark = {"yes": "yes", "partly": "part", "no": "NO "}[item.mark]
         detail = f" — {item.detail}" if item.detail else ""
         lines.append(f"  {mark}  {item.part}{detail}")
     return lines

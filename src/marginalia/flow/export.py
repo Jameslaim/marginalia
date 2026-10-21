@@ -194,6 +194,14 @@ def render_report(
     return "\n".join(lines)
 
 
+def _coverage_mark(item: dict) -> str:
+    """A stored coverage item's verdict. Rows stored before the itemised format
+    carry no ``partly`` and read as they did: YES or NO."""
+    if item.get("satisfied"):
+        return "YES"
+    return "**PARTLY**" if item.get("partly") else "**NO**"
+
+
 def _baseline_section(run: RunRow) -> list[str]:
     """What the library already covered when the run started.
 
@@ -220,13 +228,15 @@ def _baseline_section(run: RunRow) -> list[str]:
 
     items = body.get("items") or []
     covered = [item for item in items if item.get("satisfied")]
+    partly = sum(1 for item in items if item.get("partly"))
     lines = [
         "## Starting coverage",
         "",
         f"Assessed from {body.get('notes_read', 0)} note(s) already in the library, "
         f"before any search ran. **{len(covered)} of {len(items)}** parts of the brief "
         "were already satisfied — the planner is told to treat these as covered, so it "
-        "does not send a round looking for what the library can already answer.",
+        "does not send a round looking for what the library can already answer."
+        + (f" {partly} more were held partly." if partly else ""),
         "",
     ]
     if body.get("problem"):
@@ -234,7 +244,7 @@ def _baseline_section(run: RunRow) -> list[str]:
     if items:
         lines.extend(["| | part of the brief | what already covers it |", "|---|---|---|"])
         for item in items:
-            mark = "YES" if item.get("satisfied") else "**NO**"
+            mark = _coverage_mark(item)
             lines.append(
                 f"| {mark} | {_flat(item.get('part')) or MISSING} "
                 f"| {_flat(item.get('detail')) or MISSING} |"
@@ -354,7 +364,7 @@ def _plan_section(
     if coverage:
         lines.extend(["| | part of the brief | what it found |", "|---|---|---|"])
         for item in coverage:
-            mark = "YES" if item.get("satisfied") else "**NO**"
+            mark = _coverage_mark(item)
             lines.append(
                 f"| {mark} | {_flat(item.get('part')) or MISSING} "
                 f"| {_flat(item.get('detail')) or MISSING} |"

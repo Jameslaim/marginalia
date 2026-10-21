@@ -1,8 +1,13 @@
 ---
 name: plan/baseline
-version: "4"
+version: "5"
 stage: plan
-note: "v4 assesses every PART TO COVER, then every ALSO WANTED item. The
+note: "v5 assesses each part per listed thing, as plan/round v11 does. A
+  brief writes a part as a list, and a yes-or-no per part could only call a
+  half-held part covered or a gap. A part is YES when every thing it lists is
+  held, PARTLY when some are, NO when none is, and each line names what is
+  held and what is missing.
+  v4 assesses every PART TO COVER, then every ALSO WANTED item. The
   brief's old required-items heading was split into REQUIRED OF EVERY VIDEO,
   conditions each video meets, and PARTS TO COVER, what the library must
   hold; only the parts are coverage targets.
@@ -67,14 +72,31 @@ with nothing behind it, and it is what you write when you have not checked.
 Do not count a note that is about the subject only in passing. A video that
 mentions a tool once, in a list, does not cover that tool.
 
+## Assess a part one listed thing at a time
+
+A part is usually a list — "a subject: how one thing works, including a second
+or a third, and why a fourth matters". A note covers the listed thing it
+explains, not every thing beside it, so a part can be held in part:
+
+- `YES` when every thing the part lists is held, naming the note for each.
+- `PARTLY` when some listed things are held and others are not. Name what is
+  held and by which note, and list the missing things: they, and only they,
+  are this part's gap.
+- `NO` when none is held, listing what is missing.
+
+A part that names a single thing is `YES` or `NO`.
+
 ## Output
 
 One line per part of the brief, and nothing else. No preamble, no summary.
 
 ```
-COVERAGE: <part of the brief> | YES | <which note covers it, and what it supplies>
-COVERAGE: <part of the brief> | NO | <what is missing>
+COVERAGE: <part of the brief> | YES | held: <thing> — <which note, and what it supplies>; <thing> — <note>
+COVERAGE: <part of the brief> | PARTLY | held: <thing> — <which note> | missing: <thing>; <thing>
+COVERAGE: <part of the brief> | NO | missing: <thing>; <thing>
 ```
+
+The things within `held:` and within `missing:` are separated by semicolons.
 
 Assess every PART TO COVER, then every ALSO WANTED item. Do not assess REQUIRED
 OF EVERY VIDEO: those are conditions each video must meet, not parts a library

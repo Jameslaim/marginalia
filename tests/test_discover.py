@@ -2448,6 +2448,7 @@ def test_the_plan_is_stored_on_the_ledger_whole(
     stored = json.loads(rows[0].plan_json)
     assert stored["coverage"] == [
         {"part": "SET/LISTEN pitfalls", "satisfied": False,
+         "partly": False, "held": [], "missing": [],
          "detail": "no kept video names them"}
     ]
     assert stored["recommendation"] == RECOMMEND_CONTINUE
@@ -2688,7 +2689,8 @@ def test_the_baseline_is_stored_on_the_run(
 
     stored = json.loads(ledger.get_run(outcome.run_id).library_baseline)
     assert stored["items"] == [
-        {"part": "write path", "satisfied": True, "detail": "the old note"}
+        {"part": "write path", "satisfied": True, "partly": False, "held": [],
+         "missing": [], "detail": "the old note"}
     ]
     assert stored["notes_read"] == 1
 

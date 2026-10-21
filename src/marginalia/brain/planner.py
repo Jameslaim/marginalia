@@ -74,6 +74,7 @@ __all__ = [
     "Planner",
     "parse_plan",
     "parse_baseline",
+    "coverage_problem",
     "validate_revisions",
     "render_round",
 ]
@@ -133,6 +134,12 @@ _MAX_QUERIES = 12
 _MAX_COVERAGE = 14
 _MAX_QUERY_WORDS = 12
 _MAX_DETAIL = 240
+# A part's listed things: briefs write 4 to 8, so 12 leaves room without letting
+# one line become a page.
+_MAX_THINGS = 12
+_MAX_THING = 120
+# `held: …` / `missing: …`, the itemised segments of a coverage line.
+_SEGMENT_RE = re.compile(r"^\s*\**\s*(held|missing)\s*\**\s*:\s*(.*)$", re.IGNORECASE)
 _MAX_REASON = 300
 
 # **A cap on narrowing, and only on narrowing.** Additions are unlimited: they
@@ -251,6 +258,8 @@ def parse_plan(text: str, *, round_number: int) -> RoundPlan:
                 problems.append(f"unreadable coverage line {body[:60]!r}")
             elif len(coverage) < _MAX_COVERAGE:
                 coverage.append(item)
+                if coverage_problem(item):
+                    problems.append(coverage_problem(item))
         elif label == "RECOMMENDATION":
             found = _RECOMMEND_RE.match(body)
             if found is None:
@@ -322,6 +331,8 @@ def parse_baseline(text: str, *, notes_read: int = 0) -> LibraryCoverage:
             problems.append(f"unreadable coverage line {body[:60]!r}")
         elif len(items) < _MAX_COVERAGE:
             items.append(item)
+            if coverage_problem(item):
+                problems.append(coverage_problem(item))
     return LibraryCoverage(
         items=items,
         notes_read=notes_read,
@@ -342,28 +353,77 @@ def _means_no_revision(body: str) -> bool:
 
 
 def _parse_coverage(body: str) -> CoverageItem | None:
-    """``<part of the brief> | YES | <which videos>`` -> a :class:`CoverageItem`.
+    """``<part> | YES, PARTLY or NO | held: …; … | missing: …; …`` -> a
+    :class:`CoverageItem`.
 
     A coverage line with no verdict is not a coverage assessment, so it is a
     problem rather than a default. Guessing `satisfied` either way would be
     inventing the one claim the line exists to make.
+
+    ``held:`` and ``missing:`` segments are optional, and anything else after
+    the verdict is the detail, so a line in the older three-field shape still
+    reads. Each segment is a ``;``-separated list of the part's listed things.
     """
     pieces = [piece.strip() for piece in body.split("|")]
     if len(pieces) < 2 or not pieces[0]:
         return None
     verdict = pieces[1].strip("*. ").upper()
+    partly = False
     if verdict.startswith("YES"):
         satisfied = True
+    elif verdict.startswith("PART"):
+        # PARTLY, PARTIAL, PARTIALLY: some listed things held, some missing.
+        satisfied, partly = False, True
     elif verdict.startswith("NO"):
         satisfied = False
     else:
         return None
-    detail = tidy(pieces[2], limit=_MAX_DETAIL) if len(pieces) > 2 else ""
+    held: list[str] = []
+    missing: list[str] = []
+    rest: list[str] = []
+    for piece in pieces[2:]:
+        found = _SEGMENT_RE.match(piece)
+        if found is None:
+            if piece:
+                rest.append(piece)
+            continue
+        target = held if found.group(1).lower() == "held" else missing
+        target.extend(
+            tidy(thing, limit=_MAX_THING).strip("*. ")
+            for thing in found.group(2).split(";")
+            if thing.strip(" .*-")
+        )
+    detail = " | ".join(rest) or "; ".join(
+        bit
+        for bit in (
+            f"held: {'; '.join(held)}" if held else "",
+            f"missing: {'; '.join(missing)}" if missing else "",
+        )
+        if bit
+    )
     return CoverageItem(
         part=tidy(pieces[0], limit=_MAX_DETAIL).strip("*"),
         satisfied=satisfied,
-        detail=detail,
+        detail=tidy(detail, limit=_MAX_DETAIL),
+        partly=partly,
+        held=tuple(held[:_MAX_THINGS]),
+        missing=tuple(missing[:_MAX_THINGS]),
     )
+
+
+def coverage_problem(item: CoverageItem) -> str:
+    """What makes a parsed coverage line unusable as an itemised one, or "".
+
+    Rule 30: a PARTLY with nothing missing names no gap, and one with nothing
+    held claims a part is half-held while showing none of it. Either is counted
+    as a problem on the reply; the item is kept, so a planner reading it still
+    sees the part as not covered — the direction a wrong reading must fall.
+    """
+    if item.partly and not item.missing:
+        return f"PARTLY with no missing things: {item.part[:60]!r}"
+    if item.partly and not item.held:
+        return f"PARTLY with no held things: {item.part[:60]!r}"
+    return ""
 
 
 # -- validating the revisions -------------------------------------------------
@@ -630,15 +690,22 @@ def render_round(
 
     lines.append("")
     already = [item for item in baseline if item.satisfied]
+    partly = [item for item in baseline if item.partly]
     lines.append(
-        f"ALREADY IN THE LIBRARY BEFORE THIS RUN ({len(already)}) — assessed from the "
-        "notes the library already held, which this run never re-fetched and which "
-        "therefore appear nowhere above. **Treat these parts of the brief as "
-        "covered.** Naming one as a gap sends the next round searching for "
-        "something that can already be answered."
+        f"ALREADY IN THE LIBRARY BEFORE THIS RUN ({len(already)} whole, {len(partly)} "
+        "partly) — assessed from the notes the library already held, which this run "
+        "never re-fetched and which therefore appear nowhere above. **Treat what is "
+        "held as covered.** Naming it as a gap sends the next round searching for "
+        "something that can already be answered. A part held only partly is covered "
+        "for its held things, and its gap is the missing things alone."
     )
     lines.extend(
         [f"- {item.part} — {item.detail}" for item in already]
+        + [
+            f"- {item.part} — PARTLY: held: {'; '.join(item.held) or '(not named)'}; "
+            f"missing: {'; '.join(item.missing) or '(not named)'}"
+            for item in partly
+        ]
         or ["- none (or the library was not assessed)"]
     )
 
