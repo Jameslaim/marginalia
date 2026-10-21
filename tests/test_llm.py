@@ -1322,9 +1322,9 @@ def test_the_stage_two_judge_checks_a_never_before_writing_it() -> None:
 
 
 def test_the_judges_versions_say_why() -> None:
-    assert load_prompt("judge/full").version == "14"
+    assert load_prompt("judge/full").version == "15"
     assert load_prompt("judge_metadata").version == "10"
-    assert "v14 says a PART is covered by covering any one thing it lists" in " ".join(
+    assert "v15 adds two readings" in " ".join(
         load_prompt("judge/full").meta["note"].split()
     )
 
@@ -1371,6 +1371,20 @@ def test_the_expansion_prompt_aims_at_what_is_missing() -> None:
     assert "Do not aim a query at a HELD part." in text
     assert "Use a thread only where it serves a missing thing" in text
     assert "then ` | ` and its aim" in text
+
+
+def test_the_stage_two_judge_reads_conditional_items_and_substance_v15() -> None:
+    """v15. With reasoning on, the judge read a conditional REQUIRED item as
+    binding on any mention of its word (2 good videos refused), and accepted
+    three short clips that only named or asserted. A conditional binds only a
+    video that sets out to explain its subject; substance is saying how,
+    at any length, and length is never a ground."""
+    text = " ".join(load_prompt("judge/full").text.split())
+    assert "A conditional REQUIRED item binds only when its condition holds" in text
+    assert "a video it does not apply to cannot fail it" in text
+    assert "Substance is saying how something works, at any length" in text
+    assert "Length is never a ground, in either direction" in text
+    assert "- Covered:" in text and "- Not covered:" in text
 
 
 def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:

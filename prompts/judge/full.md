@@ -1,8 +1,17 @@
 ---
 name: judge_full
-version: "14"
+version: "15"
 stage: full
-note: "v14 says a PART is covered by covering any one thing it lists. Briefs
+note: "v15 adds two readings, measured on a labelled set of 25 videos. A
+  REQUIRED item that is conditional — 'when it discusses X, …' — binds only
+  when X is something the video sets out to explain: with reasoning on, this
+  judge read one as binding on any mention of the word and refused 2 good
+  videos. And substance does not depend on length, but a video that only
+  asserts outcomes or names mechanisms has covered nothing: the same setting
+  accepted three clips of under 90 seconds that named or asserted and
+  explained nothing. v14's rule that one listed thing covers a PART stays;
+  replayed, v14 alone moved no labelled verdict the right way.
+  v14 says a PART is covered by covering any one thing it lists. Briefs
   write a PART as a list — 'X: how A works, including B or C, and why D' — and
   this judge read the list as all-required: a video on one listed thing was NO
   as 'confined to' it or for 'never connecting' it to the rest. One run refused
@@ -211,6 +220,14 @@ lists saddle heights and explains nothing still fails "explains". Missing an
 item is still a NO; what is not a NO is failing a reading that no video on a
 listed part could pass.
 
+**A conditional REQUIRED item binds only when its condition holds.** An item
+worded "when it discusses X, it …" applies to a video that sets out to explain
+X — that spends time on X as a subject. It does not apply to a video that uses
+the word X in passing while explaining something else, and a video it does not
+apply to cannot fail it. A gardening brief requiring "when it discusses
+watering, says how often and why" binds a video on watering schedules; it does
+not bind a video on pruning that says "water it afterwards".
+
 **A NO rests on one of three grounds, and never on a fourth.** The grounds:
 
 - a REQUIRED item the video fails — name the item;
@@ -238,7 +255,19 @@ said and check. One NO said a video never explained a step that its transcript
 states in plain words; that is a misreading, and it is final for the topic.
 
 Covering means substantively addressing — not merely saying a word the brief
-also uses. A video that names a part once and moves on has not covered it. The
+also uses. A video that names a part once and moves on has not covered it.
+
+**Substance is saying how something works, at any length.** Length is never a
+ground, in either direction: a short video can explain a mechanism completely,
+and a long one can explain nothing. What decides is whether the video says *how*
+or only *that*. A video that asserts an outcome or names a mechanism without
+saying how it works has not covered it, whatever its length.
+
+- Covered: "the pan is preheated so the surface is already hotter than the
+  water in the food; the food's surface dries before it can steam, so it browns
+  instead of boiling" — it says how.
+- Not covered: "preheat the pan for better browning — it makes all the
+  difference" — an outcome asserted, no how. The
 brief is the authority: not your sense of what is interesting, not what the
 video is good at, and not what a reasonable video on this title would usually
 contain.
