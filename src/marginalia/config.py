@@ -129,8 +129,12 @@ DEFAULT_PLANNER_QUERIES = 6
 DEFAULT_BRIEF_MAX_TOKENS = 32768
 # The library-coverage call. One line per brief item, so the output is small —
 # but it is the fifth long-structured-output task on this provider and the
-# reasoning is what overruns, not the answer. Sized like the others.
-DEFAULT_BASELINE_MAX_TOKENS = 16384
+# reasoning is what overruns, not the answer. **Then the evidence grew.** Shown
+# each note's judge reason and claims (about 17k tokens for 37 notes, against
+# 2k of index lines) and asked to itemise each part, one replay reasoned to the
+# 16,384 ceiling and returned 613 characters; at a higher ceiling the same call
+# finished at 18,939. Doubled, as the brief's was, to about 1.7 times that.
+DEFAULT_BASELINE_MAX_TOKENS = 32768
 DEFAULT_TERRITORY_MAX_TOKENS = 16384
 DEFAULT_PLANNER_MAX_TOKENS = 16384
 # Whether to believe `contentDetails.caption` when it says a video has no
