@@ -155,6 +155,7 @@ class FakeJudge:
         self.opening_calls: list[str] = []
         self.transcripts_seen: list[str] = []
         self.query_calls: list[tuple[int, tuple[str, ...]]] = []
+        self.coverage_seen: list[list] = []
         self.batch_sizes: list[int] = []
         self.unparsed: set[str] = set()
         # What the judge was shown of the territory map, at each stage. Both
@@ -171,8 +172,9 @@ class FakeJudge:
         self.brief_max_tokens_seen = max_tokens
         return BRIEF
 
-    def expand_queries(self, brief, *, count=9, concepts=()):
+    def expand_queries(self, brief, *, count=9, concepts=(), coverage=()):
         self.query_calls.append((len(self.query_calls) + 1, tuple(concepts)))
+        self.coverage_seen.append(list(coverage))
         return self._queries.pop(0) if self._queries else []
 
     def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
@@ -4082,3 +4084,69 @@ def test_fetch_order_puts_queries_with_nothing_read_yet_first() -> None:
 
     assert order[-1] == "aaaaaaaaaa2", "the query already read waits for the others"
     assert set(order[:2]) == {"bbbbbbbbbb1", "cccccccccc1"}
+
+
+# -- the expansion sees coverage ---------------------------------------------
+#
+# It wrote from the brief alone, seeded with threads from the round's keepers,
+# and when a round kept mostly well-covered parts about 12 of 18 expansion
+# queries aimed at parts the library held. It is now given what is held — the
+# baseline, then each round's plan — and names each query's aim.
+
+
+def test_the_expansion_is_given_the_baseline_then_each_round_s_plan(
+    config, ledger, library, client, searches
+) -> None:
+    from marginalia.contracts import AimedQuery
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# A note\n\n## Claims\n\n- something\n")
+    held = CoverageItem("soil", True, "the clay note")
+    partly = CoverageItem("watering", False, partly=True, held=("drip",), missing=("timing",))
+    judge = FakeJudge(queries=[[AimedQuery("q1", "pests")], [AimedQuery("q2", "timing")]])
+    planner = FakePlanner(
+        plans=[planned("p1", coverage=[held, partly])],
+        baseline=[CoverageItem("soil", False, "nothing yet")],
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=2,
+                  mapper=FakeMapper(), planner=planner)
+
+    assert [item.part for item in judge.coverage_seen[0]] == ["soil"], "round 1: the baseline"
+    assert judge.coverage_seen[0][0].satisfied is False
+    assert judge.coverage_seen[1] == [held, partly], "round 2: the last plan's coverage"
+    details = {row.query: row.origin_detail for row in ledger.queries_for_run(outcome.run_id)}
+    assert details["q1"] == "aim: pests" and details["q2"] == "aim: timing"
+
+
+def test_no_more_than_two_expansion_queries_aim_at_one_thing_and_the_rest_are_counted() -> None:
+    from marginalia.contracts import AimedQuery
+    from marginalia.flow.discover import cap_per_aim
+
+    queries = [
+        AimedQuery("a", "Soil pH"), AimedQuery("b", "soil  ph"), AimedQuery("c", "soil ph"),
+        AimedQuery("d", "watering"), AimedQuery("e", ""), "f",
+    ]
+
+    kept, unaimed, capped = cap_per_aim(queries)
+
+    assert [str(query) for query in kept] == ["a", "b", "d", "e", "f"]
+    assert (unaimed, capped) == (2, 1), "an unaimed query is kept and counted, never capped"
+
+
+def test_the_round_counts_unaimed_and_capped_expansion_queries(
+    config, ledger, library, client, searches
+) -> None:
+    from marginalia.contracts import AimedQuery
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(queries=[[
+        AimedQuery("q1", "pests"), AimedQuery("q2", "pests"), AimedQuery("q3", "pests"),
+        "q4",
+    ]])
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    report = outcome.rounds[0]
+    assert (report.expansion_capped, report.expansion_unaimed) == (1, 1)
+    assert "q3" not in report.queries

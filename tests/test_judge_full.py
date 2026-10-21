@@ -1466,3 +1466,42 @@ def test_a_cut_query_expansion_drops_its_last_line(tmp_path, caplog) -> None:
 
     assert queries == ["fix a dripping tap", "unblock a kitchen sink"]
     assert "cut off at the token ceiling" in caplog.text
+
+
+def test_the_expansion_is_shown_what_is_held_and_names_each_query_s_aim() -> None:
+    from marginalia.contracts import Brief, CoverageItem
+
+    judge, sent = _recording_judge(
+        "soil ph test kit | soil: testing pH\n"
+        "- watering timer results | timing\n"
+        "bulk drainage explained | thread: bulk drainage\n"
+        "no aim here"
+    )
+    coverage = [
+        CoverageItem("soil", False, partly=True, held=("drainage",), missing=("testing pH",)),
+        CoverageItem("watering", True),
+        CoverageItem("pests", False, missing=("aphids",)),
+    ]
+
+    queries = judge.expand_queries(
+        Brief(topic="t", text="a brief", version="1/1"), count=9,
+        concepts=["bulk drainage"], coverage=coverage,
+    )
+
+    assert queries == [
+        "soil ph test kit", "watering timer results", "bulk drainage explained", "no aim here",
+    ]
+    assert [query.aim for query in queries] == [
+        "soil: testing pH", "timing", "thread: bulk drainage", "",
+    ]
+    prompt = sent[0]
+    assert "PARTLY HELD: soil — missing: testing pH" in prompt
+    assert "HELD: watering" in prompt
+    assert "MISSING: pests — aphids" in prompt
+    assert "THREADS" in prompt and "bulk drainage" in prompt
+
+
+def test_the_expansion_with_nothing_assessed_says_so() -> None:
+    from marginalia.brain.judge import coverage_block
+
+    assert "nothing has been assessed yet" in coverage_block([])

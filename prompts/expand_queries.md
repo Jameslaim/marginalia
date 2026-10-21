@@ -1,8 +1,18 @@
 ---
 name: expand_queries
-version: "4"
+version: "5"
 stage: search
-note: "v4 words a query like the title of a video that meets REQUIRED, as
+note: "v5 is told what is already held and aims at what is missing. It wrote
+  from the brief alone, seeded from round two with threads — concepts from
+  the round's keepers — so when a round kept mostly two well-covered parts,
+  the threads were those parts' vocabulary: about 12 of 18 expansion queries
+  in two rounds aimed at parts the library held well, three at one sub-topic,
+  and 17 of 25 keepers went to parts already covered. It now gets a COVERAGE
+  SO FAR block (the baseline, then each round's plan), aims most queries at
+  missing things, uses a thread only where it serves one, puts at most two
+  queries on one aim, and names each query's aim after ` | ` so the code can
+  count and cap it.
+  v4 words a query like the title of a video that meets REQUIRED, as
   well as spreading the queries across the PARTS.
   Checkpoint 3 measured topic 2's first round: 4 queries worded like
   the videos REQUIRED asks for (case-study or real-case wording)
@@ -45,9 +55,23 @@ rather than rephrasing one idea {{ count }} times:
 - an adjacent subtopic that good coverage would have to touch
 - the comparison or decision framing ("X vs Y", "when to use X")
 
-Spread the queries across the brief's PARTS TO COVER, so that every part has at
-least one query aimed at it before any part gets a second. The library is meant
-to cover every part, and a part no query reaches is a part nothing will find.
+**Aim at what is missing.** The COVERAGE SO FAR block below the brief says what
+the library and this run already hold: each part HELD, PARTLY HELD with its
+missing things, or MISSING. A query aimed at something held finds a second copy
+of it; the search is for the rest.
+
+- Aim most queries at missing things — the missing things of a PARTLY HELD
+  part, and the MISSING parts — so that every missing thing has a query before
+  any gets a second. When nothing has been assessed, spread the queries across
+  every PART TO COVER the same way.
+- At most two queries on any one aim.
+- Do not aim a query at a HELD part.
+
+THREADS, when there are any, are concepts that videos already kept mentioned
+without explaining: words the brief never typed, which is what they are for.
+They come from what was kept, so most belong to parts already held. Use a
+thread only where it serves a missing thing, and never let threads take over
+the list.
 
 Word each query like the title of a video that meets every REQUIRED item, not
 only like the part it aims at. A part says what a video is about; REQUIRED OF
@@ -77,7 +101,9 @@ Never a language because an example mentioned it. An example shows the format;
 it says nothing about which languages this subject is made in.
 
 Rules:
-- Each query on its own line. Nothing else on the line.
+- Each query on its own line, then ` | ` and its aim: the missing thing or part
+  it is for, in the brief's or the coverage block's own words, or
+  `thread: <the concept>`. Nothing else on the line.
 - No numbering, no bullets, no quotes, no commentary before or after.
 - Two to seven words each. These go to a video search engine, not a model —
   long sentences match nothing.

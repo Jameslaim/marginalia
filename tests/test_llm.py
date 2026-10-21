@@ -1359,6 +1359,20 @@ def test_the_baseline_prompt_reads_evidence_and_knows_when_it_was_cut() -> None:
     assert "index line" not in text.split("---", 2)[2]
 
 
+def test_the_expansion_prompt_aims_at_what_is_missing() -> None:
+    """v5. Seeded with threads from what was kept, the expansion spent about 12
+    of 18 queries on parts the library held. It is told what is held, aims at
+    missing things, caps two per aim, and names each query's aim."""
+    prompt = load_prompt("expand_queries")
+    text = " ".join(prompt.text.split())
+    assert prompt.version == "5"
+    assert "**Aim at what is missing.**" in text
+    assert "At most two queries on any one aim." in text
+    assert "Do not aim a query at a HELD part." in text
+    assert "Use a thread only where it serves a missing thing" in text
+    assert "then ` | ` and its aim" in text
+
+
 def test_the_note_prompt_teaches_marking_with_neutral_examples() -> None:
     """The phase-5a audit: a faithful record and 14 unmarked outside statements,
     8 of 10 Leaves-out items among them. And every worked example was about one

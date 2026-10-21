@@ -77,6 +77,7 @@ from ..contracts import (
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
+    CoverageItem,
     DiscoverRun,
     JudgedVideo,
     LibraryCoverage,
@@ -322,7 +323,10 @@ def _loop(
             run.stopped_because = STOP_MAX_COST
             return
 
-        planned = _plan_round(config, judge, run, number, threads, from_planner)
+        expansion_counts: dict[str, int] = {}
+        planned = _plan_round(
+            config, judge, run, number, threads, from_planner, expansion_counts
+        )
         # Validated again: the map's queries were validated inside `Mapper.map`
         # and the planner's when the plan was made. That is deliberate rather
         # than sloppy — this is the only gate between a proposed filter and a
@@ -380,6 +384,8 @@ def _loop(
                 )
             ),
             from_threads=bool(threads),
+            expansion_unaimed=expansion_counts.get("unaimed", 0),
+            expansion_capped=expansion_counts.get("capped", 0),
         )
         run.rounds.append(report)
         # On the run rather than only on the map: a filter rejected in round two
@@ -862,6 +868,43 @@ def _quota_short(config: Config, ledger: Ledger, queries: int) -> str | None:
     )
 
 
+# At most this many expansion queries aimed at one thing in a round. Three
+# queries on one sub-topic in one round was measured; two still lets a gap be
+# searched two ways.
+_PER_AIM = 2
+
+
+def coverage_so_far(run: DiscoverRun) -> list[CoverageItem]:
+    """What the expansion is told is held: the latest plan's coverage, which
+    already counts the library before this run, or the baseline before any plan."""
+    for report in reversed(run.rounds):
+        if report.plan is not None and report.plan.coverage:
+            return list(report.plan.coverage)
+    return list(run.baseline.items)
+
+
+def cap_per_aim(queries: Sequence[str]) -> tuple[list[str], int, int]:
+    """``(kept, unaimed, capped)``: at most `_PER_AIM` queries per named aim, in
+    the reply's order. An unaimed query is kept and counted, never capped —
+    dropping a query because its line lacked a label would narrow the search on
+    a formatting slip."""
+    kept: list[str] = []
+    per: dict[str, int] = {}
+    unaimed = capped = 0
+    for query in queries:
+        aim = " ".join(getattr(query, "aim", "").lower().split())
+        if not aim:
+            unaimed += 1
+            kept.append(query)
+            continue
+        per[aim] = per.get(aim, 0) + 1
+        if per[aim] > _PER_AIM:
+            capped += 1
+            continue
+        kept.append(query)
+    return kept, unaimed, capped
+
+
 def _plan_round(
     config: Config,
     judge: Judge,
@@ -869,6 +912,7 @@ def _plan_round(
     number: int,
     threads: Sequence[str],
     from_planner: Sequence[PlannedQuery] = (),
+    counts: dict[str, int] | None = None,
 ) -> list[PlannedQuery]:
     """The queries this round will run, each carrying where it came from.
 
@@ -886,14 +930,33 @@ def _plan_round(
     unmeasurable, and `queries.origin` is what makes it measurable instead.
     """
     planned = list(from_planner)
+    counts = {} if counts is None else counts
 
     expanded = judge.expand_queries(
-        run.brief, count=config.discover.queries_per_round, concepts=list(threads)[:8]
+        run.brief,
+        count=config.discover.queries_per_round,
+        concepts=list(threads)[:8],
+        coverage=coverage_so_far(run),
     )
+    expanded, unaimed, capped = cap_per_aim(expanded)
+    counts["unaimed"], counts["capped"] = unaimed, capped
+    if capped:
+        log.info(
+            "discover: %d expansion quer(ies) dropped — more than %d aimed at one thing",
+            capped, _PER_AIM,
+        )
     origin = ORIGIN_THREAD if threads else ORIGIN_BRIEF
-    detail = ", ".join(list(threads)[:8]) if threads else run.brief.topic
+    fallback = ", ".join(list(threads)[:8]) if threads else run.brief.topic
     planned.extend(
-        PlannedQuery(text=text, origin=origin, origin_detail=detail) for text in expanded
+        PlannedQuery(
+            text=str(text),
+            origin=origin,
+            # The aim the reply named, which is what `queries.origin_detail`
+            # needs to say whether a round went to its gaps; the threads or the
+            # topic when it named none.
+            origin_detail=f"aim: {aim}" if (aim := getattr(text, "aim", "")) else fallback,
+        )
+        for text in expanded
     )
 
     if number == 1:

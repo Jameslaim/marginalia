@@ -40,7 +40,9 @@ from ..contracts import (
     VERDICT_MAYBE,
     VERDICT_NO,
     VERDICT_YES,
+    AimedQuery,
     Brief,
+    CoverageItem,
     FullVerdict,
     MetadataVerdict,
     SearchResult,
@@ -68,6 +70,8 @@ __all__ = [
     "parse_batch",
     "parse_full",
     "parse_queries",
+    "parse_aimed_queries",
+    "coverage_block",
     "resolve_guess",
     "resolve_stage1_no",
     "rests_on_absence",
@@ -772,6 +776,49 @@ def parse_queries(text: str, limit: int) -> list[str]:
     return queries
 
 
+def parse_aimed_queries(text: str, limit: int) -> list[AimedQuery]:
+    """Read ``query | aim`` lines. A line with no ``|`` is a query with no aim,
+    kept — a query is still a query — and its empty aim is what gets counted."""
+    out: list[AimedQuery] = []
+    aims: dict[str, str] = {}
+    lines = []
+    for line in text.splitlines():
+        query, bar, aim = line.partition("|")
+        lines.append(query)
+        if bar:
+            key = " ".join(_LIST_MARKER_RE.sub("", query).strip().strip("\"'").lower().split())
+            aims.setdefault(key, " ".join(aim.strip().strip("\"'").split())[:_MAX_AIM])
+    for query in parse_queries("\n".join(lines), limit):
+        out.append(AimedQuery(query, aims.get(" ".join(query.lower().split()), "")))
+    return out
+
+
+# An aim names a part or a missing thing; this is room for a long one.
+_MAX_AIM = 160
+
+
+def coverage_block(coverage: Sequence[CoverageItem]) -> str:
+    """What is already held, for the expansion: each part as held, partly held
+    with its missing things, or missing. Says so when nothing was assessed."""
+    if not coverage:
+        return (
+            "COVERAGE SO FAR: nothing has been assessed yet. Spread the queries "
+            "across every PART TO COVER."
+        )
+    lines = ["COVERAGE SO FAR — what the library and this run already hold:"]
+    for item in coverage:
+        if item.satisfied:
+            lines.append(f"- HELD: {item.part}")
+        elif item.partly:
+            lines.append(
+                f"- PARTLY HELD: {item.part} — missing: {'; '.join(item.missing) or 'not named'}"
+            )
+        else:
+            missing = "; ".join(item.missing)
+            lines.append(f"- MISSING: {item.part}" + (f" — {missing}" if missing else ""))
+    return "\n".join(lines)
+
+
 def _parse_concepts(body: str) -> list[str]:
     if not body or body.strip().upper() in {"NONE", "N/A", "-"}:
         return []
@@ -938,16 +985,31 @@ class Judge:
         )
 
     def expand_queries(
-        self, brief: Brief, *, count: int = 9, concepts: Sequence[str] = ()
+        self,
+        brief: Brief,
+        *,
+        count: int = 9,
+        concepts: Sequence[str] = (),
+        coverage: Sequence[CoverageItem] = (),
     ) -> list[str]:
+        """Queries from the brief, aimed at what is missing.
+
+        ``coverage`` is what is already held — the library baseline, then each
+        round's plan — so the queries go to the gaps rather than to parts the
+        library has. Each returned query is an :class:`AimedQuery` carrying the
+        aim its line named.
+        """
         prompt = self.prompt("expand_queries")
-        extra = ""
+        extra = coverage_block(coverage)
         if concepts:
-            # Round two onward. These came from stage 2 reading real openings,
-            # so they are the loop's own findings, not a rephrasing of the topic.
-            extra = (
-                "These concepts were mentioned but left unexplained by videos already "
-                "judged relevant. Aim several queries at them:\n"
+            # Round two onward: concepts kept videos named and left unexplained.
+            # Vocabulary the brief never typed — and, since they come from what
+            # was kept, the vocabulary of what is already held. The prompt says
+            # to use one only where it serves a gap.
+            extra += (
+                "\n\nTHREADS — concepts mentioned but left unexplained by videos "
+                "already judged relevant. Words the brief never typed; use one where "
+                "it serves a missing thing:\n"
                 + "\n".join(f"- {concept}" for concept in concepts)
             )
         reply = self.client.complete(
@@ -966,11 +1028,11 @@ class Judge:
                 "judge: query expansion was cut off at the token ceiling; "
                 "its last line was dropped as a possible fragment"
             )
-        queries = parse_queries(text, count)
+        queries = parse_aimed_queries(text, count)
         if not queries:
             log.warning("judge: query expansion returned nothing parseable; falling back to topic")
-            return [brief.topic]
-        return queries
+            return [AimedQuery(brief.topic, "")]
+        return list(queries)
 
     # -- stage 1: metadata, batched ---------------------------------------
 

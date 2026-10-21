@@ -55,6 +55,7 @@ __all__ = [
     # territory
     "Recency",
     "PlannedQuery",
+    "AimedQuery",
     "FILTER_FIELD_QUERY",
     "FILTER_FIELD_RECENCY_WAIVER",
     "NoteSummary",
@@ -450,6 +451,24 @@ class FilterRejection:
     @property
     def is_recency_waiver(self) -> bool:
         return self.field == FILTER_FIELD_RECENCY_WAIVER
+
+
+class AimedQuery(str):
+    """An expansion query, and what its writer said it aims at.
+
+    A ``str``, so every caller that reads expansion queries as strings still
+    does. ``aim`` is the part, the missing thing or the thread the reply named
+    beside the query, or "" when it named none — which is counted, since a
+    query nobody can trace to a gap is the one a coverage-aware expansion is
+    meant to stop writing.
+    """
+
+    aim: str
+
+    def __new__(cls, text: str, aim: str = "") -> "AimedQuery":
+        made = super().__new__(cls, text)
+        made.aim = aim
+        return made
 
 
 @dataclass(frozen=True)
@@ -1565,6 +1584,12 @@ class RoundReport:
     recency_waived: int = 0
     concepts: list[str] = field(default_factory=list)
     from_threads: bool = False
+    # The expansion's own counters (rule 14). `expansion_unaimed`: queries whose
+    # reply named nothing they aim at. `expansion_capped`: queries dropped
+    # because more than `_PER_AIM` aimed at one thing — a round spending three
+    # queries on one sub-topic is what a coverage-aware expansion stops.
+    expansion_unaimed: int = 0
+    expansion_capped: int = 0
     # B4. The queries as planned, with their origins and filters. `queries`
     # above stays a list of strings: it is what the report prints and what
     # `--json` has always carried, and a reader of either should not have to
