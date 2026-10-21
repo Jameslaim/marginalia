@@ -1590,6 +1590,10 @@ class RoundReport:
     # queries on one sub-topic is what a coverage-aware expansion stops.
     expansion_unaimed: int = 0
     expansion_capped: int = 0
+    # Aims that name nothing in the coverage the expansion was given: counted,
+    # never dropped. A string check — it cannot see a query that names a real
+    # gap as its aim and searches for something else.
+    expansion_unmatched: int = 0
     # B4. The queries as planned, with their origins and filters. `queries`
     # above stays a list of strings: it is what the report prints and what
     # `--json` has always carried, and a reader of either should not have to

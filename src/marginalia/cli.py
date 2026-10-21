@@ -472,6 +472,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             # dropped as the third or later on one aim.
             (report.expansion_unaimed, "expansion queries with no aim named"),
             (report.expansion_capped, "expansion queries over two on one aim, dropped"),
+            (report.expansion_unmatched, "expansion aims matching no coverage line"),
             # Never silent: judged worth reading, not fetched because this
             # round's share of the video budget ran out, carried forward.
             (report.unread_yes, "stage-1 YES not yet read, carried forward"),
@@ -739,6 +740,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "from_threads": report.from_threads,
                 "expansion_unaimed": report.expansion_unaimed,
                 "expansion_capped": report.expansion_capped,
+                "expansion_unmatched": report.expansion_unmatched,
                 "queries": report.queries,
                 # The same queries with their provenance. `queries` above stays
                 # a bare list of strings: it is what every earlier baseline

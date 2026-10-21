@@ -386,6 +386,7 @@ def _loop(
             from_threads=bool(threads),
             expansion_unaimed=expansion_counts.get("unaimed", 0),
             expansion_capped=expansion_counts.get("capped", 0),
+            expansion_unmatched=expansion_counts.get("unmatched", 0),
         )
         run.rounds.append(report)
         # On the run rather than only on the map: a filter rejected in round two
@@ -905,6 +906,41 @@ def cap_per_aim(queries: Sequence[str]) -> tuple[list[str], int, int]:
     return kept, unaimed, capped
 
 
+_AIM_WORD_RE = re.compile(r"[^\W_]{3,}", re.UNICODE)
+_AIM_STOP = frozenset({"and", "the", "for", "with", "from", "into", "its", "how", "what", "why"})
+
+
+def _aim_words(text: str) -> set[str]:
+    return {word for word in _AIM_WORD_RE.findall(text.lower()) if word not in _AIM_STOP}
+
+
+def unmatched_aims(queries: Sequence[str], coverage: Sequence[CoverageItem]) -> int:
+    """How many named aims match no coverage line the expansion was given.
+
+    An aim matches a line when every content word of the aim appears in that
+    line's part, held, missing or detail text. A thread aim (`thread: …`) names
+    a concept, not a line, and is not checked; an unaimed query is counted
+    elsewhere. With no coverage given there is nothing to match, and nothing is
+    counted. Counted only — a mismatched aim is still a query, and dropping it
+    would narrow the search on a wording difference.
+    """
+    if not coverage:
+        return 0
+    lines = [
+        _aim_words(" ".join([item.part, item.detail, *item.held, *item.missing]))
+        for item in coverage
+    ]
+    count = 0
+    for query in queries:
+        aim = getattr(query, "aim", "")
+        if not aim or aim.lower().startswith("thread:"):
+            continue
+        words = _aim_words(aim)
+        if words and not any(words <= line for line in lines):
+            count += 1
+    return count
+
+
 def _plan_round(
     config: Config,
     judge: Judge,
@@ -932,14 +968,16 @@ def _plan_round(
     planned = list(from_planner)
     counts = {} if counts is None else counts
 
+    coverage = coverage_so_far(run)
     expanded = judge.expand_queries(
         run.brief,
         count=config.discover.queries_per_round,
         concepts=list(threads)[:8],
-        coverage=coverage_so_far(run),
+        coverage=coverage,
     )
     expanded, unaimed, capped = cap_per_aim(expanded)
     counts["unaimed"], counts["capped"] = unaimed, capped
+    counts["unmatched"] = unmatched_aims(expanded, coverage)
     if capped:
         log.info(
             "discover: %d expansion quer(ies) dropped — more than %d aimed at one thing",

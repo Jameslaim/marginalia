@@ -4171,3 +4171,23 @@ def test_a_query_the_planner_and_the_expansion_both_write_runs_once(
     assert texts.count("prompt injection through docs") == 1
     assert outcome.rounds[1].duplicates_skipped == 1, "the expansion repeating the planner"
     assert outcome.rounds[2].duplicates_skipped == 1, "a later round repeating it"
+
+
+def test_an_aim_matching_no_coverage_line_is_counted_and_kept() -> None:
+    from marginalia.contracts import AimedQuery
+    from marginalia.flow.discover import unmatched_aims
+
+    coverage = [
+        CoverageItem("soil", False, partly=True, held=("drainage",), missing=("testing pH",)),
+        CoverageItem("pests", False, missing=("aphids", "slugs")),
+    ]
+    queries = [
+        AimedQuery("a", "soil: testing pH"),      # matches the soil line
+        AimedQuery("b", "aphids"),                # matches the pests line
+        AimedQuery("c", "greenhouse heating"),    # matches nothing given
+        AimedQuery("d", "thread: bulk drainage"), # a thread names a concept, not a line
+        AimedQuery("e", ""),                      # unaimed: counted elsewhere
+    ]
+
+    assert unmatched_aims(queries, coverage) == 1
+    assert unmatched_aims(queries, []) == 0, "nothing given, nothing to match"
