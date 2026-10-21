@@ -1575,6 +1575,7 @@ def _judge_round(
             chapters=material.chapters,
             duration_s=material.duration_s or candidate.duration_s,
             territory=run.territory,
+            max_tokens=config.discover.judge_full_max_tokens,
         )
         if is_held:
             run.read_from_disk.append(candidate.video_id)

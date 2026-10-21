@@ -318,6 +318,13 @@ class DiscoverConfig:
     baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
+    # Stage 2's own output ceiling. `None` — the default — keeps the global
+    # `[llm] max_tokens`, which is what stage 2 has always had. It exists for
+    # reasoning effort: at no reasoning a stage-2 reply is about 150 tokens, and
+    # at `low` 241 replayed calls had a median of 1,643 and a maximum of 8,192 —
+    # one reasoned to the global ceiling and returned nothing. A setting rather
+    # than a default, because the effort that needs it is a setting too.
+    judge_full_max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -624,6 +631,11 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         planner_max_tokens=_positive(
             section, "planner_max_tokens", DEFAULT_PLANNER_MAX_TOKENS,
             config_path, "discover",
+        ),
+        judge_full_max_tokens=(
+            _positive(section, "judge_full_max_tokens", 1, config_path, "discover")
+            if section.get("judge_full_max_tokens") is not None
+            else None
         ),
     )
 

@@ -1505,3 +1505,26 @@ def test_the_expansion_with_nothing_assessed_says_so() -> None:
     from marginalia.brain.judge import coverage_block
 
     assert "nothing has been assessed yet" in coverage_block([])
+
+
+def test_stage_two_sends_its_own_ceiling_or_the_global_one() -> None:
+    """`max_tokens=None` is the global `[llm] max_tokens`, as stage 2 always had;
+    a number is sent as this call's ceiling."""
+    from conftest import make_llm_config
+    from marginalia.contracts import Brief
+
+    seen: list[int] = []
+
+    def transport(**kwargs):
+        seen.append(kwargs["max_tokens"])
+        return _BriefResponse(
+            "VERDICT: YES\nEVIDENCE: CLEAR\nREASON: covers it\nRELEVANT: NONE\nUNEXPLAINED: NONE"
+        )
+
+    judge = Judge(LlmClient(make_llm_config(), transport=transport, sleep=lambda _: None))
+    brief = Brief(topic="t", text="a brief", version="1/1")
+
+    judge.judge_full(brief, _candidate(), transcript="[00:00:00.000] words")
+    judge.judge_full(brief, _candidate(), transcript="[00:00:00.000] words", max_tokens=16384)
+
+    assert seen == [make_llm_config().max_tokens, 16384]

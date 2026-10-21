@@ -156,6 +156,7 @@ class FakeJudge:
         self.transcripts_seen: list[str] = []
         self.query_calls: list[tuple[int, tuple[str, ...]]] = []
         self.coverage_seen: list[list] = []
+        self.full_max_tokens_seen: list[object] = []
         self.batch_sizes: list[int] = []
         self.unparsed: set[str] = set()
         # What the judge was shown of the territory map, at each stage. Both
@@ -188,8 +189,10 @@ class FakeJudge:
         ]
 
     def judge_full(
-        self, brief, candidate, *, transcript, chapters=(), duration_s=None, territory=None
+        self, brief, candidate, *, transcript, chapters=(), duration_s=None, territory=None,
+        max_tokens=None,
     ):
+        self.full_max_tokens_seen.append(max_tokens)
         self.opening_calls.append(candidate.video_id)
         self.transcripts_seen.append(transcript)
         self.full_territory_seen.append(territory)
@@ -4191,3 +4194,15 @@ def test_an_aim_matching_no_coverage_line_is_counted_and_kept() -> None:
 
     assert unmatched_aims(queries, coverage) == 1
     assert unmatched_aims(queries, []) == 0, "nothing given, nothing to match"
+
+
+def test_stage_two_is_given_its_configured_ceiling(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = FakeJudge(metadata={"aaaaaaaaaaa": (VERDICT_MAYBE, "unclear")})
+    config = replace(config, discover=replace(config.discover, judge_full_max_tokens=16384))
+
+    run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.full_max_tokens_seen == [16384]

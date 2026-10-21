@@ -308,6 +308,12 @@ quiet_rounds = 2
 # what a batch of fifty candidates cost versus a batch of five. 0 disables it.
 max_cost_usd = 1.50
 
+# Stage 2's own output ceiling. Unset, it is `[llm] max_tokens`. Worth setting
+# only with a reasoning effort on `[llm.tasks.judge_full]`: at `low`, replayed
+# stage-2 replies had a median of 1,643 output tokens and a maximum of 8,192 —
+# one reasoned to the global ceiling and returned nothing.
+# judge_full_max_tokens = 16384
+
 # Seconds between transcript fetches. YouTube throttles a burst — a run that
 # pulled six videos quickly had its next thirteen fetches all fail within nine
 # seconds. Real backoff belongs to M3; this keeps a run polite.

@@ -212,6 +212,20 @@ results_per_query = 12
     assert (discover.queries_per_round, discover.results_per_query) == (6, 12)
 
 
+def test_stage_two_has_no_ceiling_of_its_own_until_one_is_set(tmp_path, monkeypatch) -> None:
+    """Unset, stage 2 keeps the global `[llm] max_tokens`, as it always had.
+    Set, it is its own — for a reasoning effort whose replies run longer."""
+    write(tmp_path, BASE.format(path=tmp_path.as_posix()) + LLM, monkeypatch)
+    assert load_config().discover.judge_full_max_tokens is None
+
+    write(
+        tmp_path,
+        BASE.format(path=tmp_path.as_posix()) + LLM + "\n[discover]\njudge_full_max_tokens = 16384\n",
+        monkeypatch,
+    )
+    assert load_config().discover.judge_full_max_tokens == 16384
+
+
 # -- errors surface ---------------------------------------------------------
 
 
@@ -225,6 +239,7 @@ results_per_query = 12
         '[llm.limits]\njudge_batch_size = -1\n',
         '[discover]\nmax_rounds = 0\n',
         '[discover]\nqueries_per_round = "lots"\n',
+        '[discover]\njudge_full_max_tokens = 0\n',
     ],
 )
 def test_a_malformed_value_is_refused_not_defaulted(tmp_path, monkeypatch, body: str) -> None:

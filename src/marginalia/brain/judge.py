@@ -1143,6 +1143,7 @@ class Judge:
         chapters: Sequence[str] = (),
         duration_s: int | None = None,
         territory: TerritoryMap | None = None,
+        max_tokens: int | None = None,
     ) -> FullVerdict:
         """Judge one video on everything it says.
 
@@ -1169,6 +1170,9 @@ class Judge:
                     transcript=transcript,
                 ),
                 task="judge_full",
+                # `None` is the global ceiling, as it always was. Set when the
+                # task's reasoning needs more room than the global gives.
+                max_tokens=max_tokens,
             )
         except LlmConfigError:
             raise  # a refusal, not a blip — see judge_metadata
