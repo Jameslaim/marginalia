@@ -1528,3 +1528,35 @@ def test_stage_two_sends_its_own_ceiling_or_the_global_one() -> None:
     judge.judge_full(brief, _candidate(), transcript="[00:00:00.000] words", max_tokens=16384)
 
     assert seen == [make_llm_config().max_tokens, 16384]
+
+
+# -- a reason that says the captions failed names damage (C) -------------------
+#
+# A stage-2 reply said DEGRADED and gave as its reason that the captions failed
+# for most of a short clip. "Failed" was not a recognised damage shape, so the
+# DEGRADED label was overruled to CLEAR and the degraded counter missed it.
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "Captions failed for most of this short clip, so the body was never checked.",
+        "The audio cut out after the first ten seconds and nothing after it was captioned.",
+        "A caption failure left only the outro readable.",
+    ],
+)
+def test_a_degraded_reply_whose_reason_says_the_evidence_failed_stays_degraded(reason: str) -> None:
+    verdict = parse_full(reply(EVIDENCE="DEGRADED", REASON=reason, RELEVANT="NONE"), VIDEO)
+
+    assert verdict.evidence == EVIDENCE_DEGRADED
+    assert "degraded without naming an evidence problem" not in (verdict.problem or "")
+
+
+def test_a_transcript_that_fails_to_explain_something_is_not_damage() -> None:
+    """"Fails to …" is a claim about content; a NO on it stays a NO on clear evidence."""
+    verdict = parse_full(
+        reply(VERDICT="NO", REASON="covers no PART substantively — the transcript fails to explain how the cache works."),
+        VIDEO,
+    )
+
+    assert (verdict.verdict, verdict.evidence) == (VERDICT_NO, EVIDENCE_CLEAR)

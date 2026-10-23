@@ -244,7 +244,14 @@ _DAMAGE_OF_EVIDENCE_RE = re.compile(
     rf"|\b{_AMBIGUOUS_DAMAGE}[\s-]+(?:(?:auto(?:matic)?|machine|auto-generated)[\s-]+)?"
     rf"{_EVIDENCE_NOUN}\b"
     # its quality: "transcript quality", "audio quality"
-    rf"|\b{_EVIDENCE_NOUN}\s+quality\b",
+    rf"|\b{_EVIDENCE_NOUN}\s+quality\b"
+    # its failure: "captions failed for most of the clip", "the audio cut out",
+    # "a caption failure". A DEGRADED reason saying its captions failed was not
+    # recognised as naming damage, so the label was overruled to CLEAR and the
+    # degraded counter missed it. Never "fails to …": "the transcript fails to
+    # explain X" is a NO about content, and must not become a damage claim.
+    rf"|\b{_EVIDENCE_NOUN}\s+{_ADVERBS}(?:failed|fails|fail|dropped\s+out|cut\s+(?:out|off)|broke\s+off)\b(?!\s+to\b)"
+    rf"|\b{_EVIDENCE_NOUN}[\s-]+failures?\b",
     re.IGNORECASE,
 )
 
