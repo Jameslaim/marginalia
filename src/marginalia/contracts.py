@@ -1515,6 +1515,10 @@ class RoundReport:
     # ceiling (which has `too_long_to_note`): under the floor, or a transcript a
     # stage 2 called degraded for another topic. Not coverage.
     not_noteable: int = 0
+    # Of this round's keepers, those stored off the video budget because no
+    # note will ever be written from them (degraded, too long, or refused by
+    # the note rule). Kept and listed for the planner as not answerable.
+    stored_unreadable: int = 0
     # Kept, but stage 2 could not read the transcript well enough to be sure.
     # Not a rejection and not a clean keep — and it suppresses the note, which
     # is a consequence nobody should have to infer from a silent counter.
@@ -1660,6 +1664,13 @@ class DiscoverRun:
     model: str
     rounds: list[RoundReport] = field(default_factory=list)
     stored_ids: list[str] = field(default_factory=list)
+    # Kept by stage 2 and stored, but never noteable — degraded evidence, past
+    # the note ceiling, or refused by the note rule — so nothing ask or the
+    # baseline reads. Kept and counted (rules 8 and 14) but outside
+    # `stored_ids`, so they do not spend `max_videos` or a round's share,
+    # within the bound in discovery (`_judge_round`). Passed to Gate 1 beside
+    # `stored_ids`, so none is fetched twice.
+    kept_unreadable: list[str] = field(default_factory=list)
     # Held transcripts this run judged from disk. Not stored by it, so not in
     # `stored_ids` (or `max_videos`); passed to Gate 1 beside it so a later
     # round does not screen, or judge, the same video again.

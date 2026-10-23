@@ -1048,7 +1048,7 @@ def _gather(
                 # round 2. The disk check stopped the re-download; nothing
                 # stopped the model call or the second row in the round's
                 # evidence, which the planner then read as two findings.
-                stored_this_run=run.stored_ids,
+                stored_this_run=run.stored_ids + run.kept_unreadable,
                 read_this_run=run.read_from_disk,
                 holds=library.has_transcript if library is not None else None,
             )
@@ -1424,6 +1424,7 @@ def _judge_round(
     ] + [(entry.result, entry.verdict, entry) for entry in queue]
     report.allowance += allowance
     stored_here = 0
+    unreadable_here = 0
     stop_at = len(ordered)
 
     for index, (candidate, verdict, entry) in enumerate(ordered):
@@ -1705,7 +1706,24 @@ def _judge_round(
                 report.not_noteable += 1
                 log.info("discover: %s will not be noted (%s)", candidate.video_id, unnoteable)
 
-        if not is_held:
+        # **A keeper no note will ever be written from does not spend the
+        # budget that buys readable coverage** — within a bound. Measured: a run
+        # stored 25 and stopped at `max_videos` with 6 of them never noteable
+        # (3 degraded, 3 under the note floor), so 6 of its 25 places bought
+        # nothing ask or the baseline can read. They stay kept and counted;
+        # they are stored off the budget, up to one round's share per round and
+        # `max_videos` per run. Past either, an unreadable keeper spends the
+        # budget like any other, so a topic made mostly of uncaptioned or
+        # garbled clips cannot fetch without limit: at most twice the video
+        # budget is ever stored.
+        unreadable = too_long or judgement.evidence == EVIDENCE_DEGRADED or bool(unnoteable)
+        if not is_held and unreadable and unreadable_here < allowance and (
+            len(run.kept_unreadable) < max_videos
+        ):
+            run.kept_unreadable.append(candidate.video_id)
+            report.stored_unreadable += 1
+            unreadable_here += 1
+        elif not is_held:
             # Stored by this run. A video judged from disk was stored by an
             # earlier one, and counting it here would inflate `videos_stored`
             # and spend `max_videos` on a download that never happened.

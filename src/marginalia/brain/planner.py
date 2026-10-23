@@ -728,7 +728,10 @@ def render_round(
     # it overturned. The second used to be left out (REVIEW A9), and declined
     # videos are stored too (rule 12), so "kept and stored" was half the story.
     lines.append(
-        f"- stage 2: {report.stored} newly stored and kept, "
+        f"- stage 2: {report.stored} newly stored and kept"
+        + (f" (+{report.stored_unreadable} never noteable, stored off the video budget)"
+           if report.stored_unreadable else "")
+        + ", "
         f"{report.flipped_to_no + report.overturned} declined "
         f"({report.overturned} of them stage-1 YES; declined videos are stored too), "
         f"{report.degraded} unreadable transcripts"

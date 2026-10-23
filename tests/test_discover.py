@@ -1246,9 +1246,13 @@ def test_degraded_evidence_keeps_the_video_and_the_transcript(
 
     outcome = run(config, ledger, library, client, judge, max_rounds=1)
 
-    assert outcome.stored_ids == ["aaaaaaaaaaa"]
+    # Kept and stored — but off the video budget, since no note will ever be
+    # written from it (item A): in `kept_unreadable`, not `stored_ids`.
+    assert outcome.stored_ids == []
+    assert outcome.kept_unreadable == ["aaaaaaaaaaa"]
     assert library.has_transcript("aaaaaaaaaaa")
     assert outcome.rounds[0].degraded == 1
+    assert outcome.rounds[0].stored_unreadable == 1
 
 
 def test_degraded_evidence_blocks_the_note(config, ledger, library, client, searches) -> None:
@@ -4206,3 +4210,65 @@ def test_stage_two_is_given_its_configured_ceiling(
     run(config, ledger, library, client, judge, max_rounds=1)
 
     assert judge.full_max_tokens_seen == [16384]
+
+
+# -- a keeper no note will be written from is off the budget (A) ----------------
+#
+# A run stored 25 and stopped at max_videos with 6 of them never noteable, so 6
+# of its 25 places bought nothing ask or the baseline can read. Such a keeper
+# stays kept and counted, stored off the budget, within a bound.
+
+
+def test_an_unreadable_keeper_does_not_spend_the_video_budget(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa"), result("bbbbbbbbbbb")]
+    judge = FakeJudge(
+        metadata={"aaaaaaaaaaa": (VERDICT_YES, "on topic"), "bbbbbbbbbbb": (VERDICT_YES, "on topic")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "transcript is garbled", [], EVIDENCE_DEGRADED)},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1, max_videos=1)
+
+    assert outcome.kept_unreadable == ["aaaaaaaaaaa"]
+    assert outcome.stored_ids == ["bbbbbbbbbbb"], "the readable keeper still had room"
+    assert outcome.stopped_because == STOP_MAX_VIDEOS
+
+
+def test_unreadable_keepers_past_the_bound_spend_the_budget(
+    config, ledger, library, client, searches
+) -> None:
+    """At most one round's share off the budget per round, and max_videos per
+    run: past that an unreadable keeper counts like any other, so a topic of
+    mostly unreadable clips cannot fetch without limit."""
+    ids = ["aaaaaaaaaaa", "bbbbbbbbbbb", "ccccccccccc"]
+    searches["*"] = [result(video_id) for video_id in ids]
+    judge = FakeJudge(
+        metadata={video_id: (VERDICT_YES, "on topic") for video_id in ids},
+        openings={video_id: (VERDICT_YES, "transcript is garbled", [], EVIDENCE_DEGRADED)
+                  for video_id in ids},
+    )
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1, max_videos=1)
+
+    assert outcome.kept_unreadable == ["aaaaaaaaaaa"], "one round's share off the budget"
+    assert outcome.stored_ids == ["bbbbbbbbbbb"], "the next spends the budget"
+    assert outcome.stopped_because == STOP_MAX_VIDEOS
+    assert len(outcome.kept_unreadable) + len(outcome.stored_ids) <= 2 * 1
+
+
+def test_an_unreadable_keeper_is_not_fetched_again_in_a_later_round(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    provider = FakeTranscripts()
+    judge = FakeJudge(
+        queries=[["q1"], ["q2"]],
+        metadata={"aaaaaaaaaaa": (VERDICT_YES, "on topic")},
+        openings={"aaaaaaaaaaa": (VERDICT_YES, "transcript is garbled", [], EVIDENCE_DEGRADED)},
+    )
+
+    outcome = run(config, ledger, library, client, judge, provider=provider, max_rounds=2)
+
+    assert outcome.kept_unreadable == ["aaaaaaaaaaa"]
+    assert judge.opening_calls.count("aaaaaaaaaaa") == 1

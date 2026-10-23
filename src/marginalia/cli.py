@@ -438,6 +438,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.no_captions, "no captions, sent to ASR"),
             (report.unavailable, "already recorded as unavailable, skipped"),
             (report.not_noteable, "kept, but the note worker will refuse it"),
+            (report.stored_unreadable, "never noteable, stored off the video budget"),
             (report.already_held, "already on disk"),
             # Of those, the ones read from disk because nothing had judged them
             # for this topic. A verdict happened; a download did not.
@@ -499,7 +500,12 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         lines.extend(_plan_lines(report))
     verb = "would store" if run.dry_run else "stored"
     lines.append(
-        f"run:      {len(run.stored_ids)} {verb}, {run.judged} judged, "
+        f"run:      {len(run.stored_ids)} {verb}"
+        # Kept, stored, never noteable, and off the video budget: said beside
+        # the stored count, never folded into it (rule 14).
+        + (f" (+{len(run.kept_unreadable)} never noteable, off the budget)"
+           if run.kept_unreadable else "")
+        + f", {run.judged} judged, "
         f"{len(run.rounds)} rounds, {run.requests} requests, "
         f"stopped: {run.stopped_because}"
     )
@@ -734,6 +740,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         "candidates_seen": run.candidates_seen,
         "judged": run.judged,
         "stored": run.stored_ids,
+        "kept_unreadable": run.kept_unreadable,
         "rounds": [
             {
                 "number": report.number,
@@ -741,6 +748,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "expansion_unaimed": report.expansion_unaimed,
                 "expansion_capped": report.expansion_capped,
                 "expansion_unmatched": report.expansion_unmatched,
+                "stored_unreadable": report.stored_unreadable,
                 "queries": report.queries,
                 # The same queries with their provenance. `queries` above stays
                 # a bare list of strings: it is what every earlier baseline
