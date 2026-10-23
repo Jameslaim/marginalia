@@ -1887,6 +1887,9 @@ class NoteResult:
     # Quoted strings outside Verbatim and outside markers, per section, as
     # (found in the transcript, not found). Counted only.
     quotes_outside: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # The same quotes by script against the transcript's: "same script" and
+    # "other script", each (found, not found). Counted only.
+    quotes_outside_script: dict[str, tuple[int, int]] = field(default_factory=dict)
 
 
 @dataclass

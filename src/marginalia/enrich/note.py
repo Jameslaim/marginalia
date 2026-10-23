@@ -275,22 +275,54 @@ def quotes_outside_verbatim(body: str, transcript: str) -> dict[str, tuple[int, 
     Wrong or shaky reads as the speaker's words as much as one in Verbatim does,
     so it is counted the same way, with the same tolerance.
     """
+    counts: dict[str, tuple[int, int]] = {}
+    for section, _script, hit in _outside_quotes(body, transcript):
+        found, missing = counts.get(section, (0, 0))
+        counts[section] = (found + 1, missing) if hit else (found, missing + 1)
+    return counts
+
+
+SCRIPT_SAME = "same script"
+SCRIPT_OTHER = "other script"
+
+
+def quotes_outside_by_script(body: str, transcript: str) -> dict[str, tuple[int, int]]:
+    """The same quotes as :func:`quotes_outside_verbatim`, as ``(found, not
+    found)`` by whether each is written in the transcript's own script.
+
+    On a note of a video in another language, the counter mixed two things: an
+    English rendering of what was said, which cannot be in the transcript, and
+    a real misquote in the speaker's script. Split, the second is readable. A
+    quote with no letters (a figure, a date) is the same script: it cannot
+    differ. Script, not language — two languages written alike are not told
+    apart. Counted only.
+    """
+    counts: dict[str, tuple[int, int]] = {}
+    for _section, script, hit in _outside_quotes(body, transcript):
+        found, missing = counts.get(script, (0, 0))
+        counts[script] = (found + 1, missing) if hit else (found, missing + 1)
+    return counts
+
+
+def _outside_quotes(body: str, transcript: str):
+    """Every quoted string outside Verbatim and outside a marker, as
+    ``(section, same-or-other script, found in the transcript)``."""
     said_text = spoken_text(transcript)
     said = flatten(said_text)
+    spoken_script = dominant_script(said_text)
     words: Words | None = None
-    counts: dict[str, tuple[int, int]] = {}
     for section, line, is_heading in note_lines(body):
         if is_heading or section is None or section == "Verbatim":
             continue
         for span in quoted_spans(_NOTE_MARKER_RE.sub(" ", line)):
-            found, missing = counts.get(section, (0, 0))
             hit = flatten(span) in said
             if not hit:
                 if words is None:
                     words = Words(said_text)
                 hit = closeness(span, words) >= _VERBATIM_TOLERANCE
-            counts[section] = (found + 1, missing) if hit else (found, missing + 1)
-    return counts
+            script = dominant_script(span)
+            other = bool(script and spoken_script and script != spoken_script)
+            yield section, SCRIPT_OTHER if other else SCRIPT_SAME, hit
 
 
 def untranslated_foreign_verbatim(body: str, transcript: str) -> int:
@@ -860,6 +892,7 @@ def _one(
         )
     foreign = untranslated_foreign_verbatim(body, transcript)
     outside = quotes_outside_verbatim(body, transcript)
+    outside_script = quotes_outside_by_script(body, transcript)
     outside_found = sum(found for found, _missing in outside.values())
     outside_missing = sum(missing for _found, missing in outside.values())
     if foreign:
@@ -965,6 +998,7 @@ def _one(
         markers=settled,
         verbatim_untranslated=foreign,
         quotes_outside=outside,
+        quotes_outside_script=outside_script,
     )
 
 

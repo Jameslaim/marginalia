@@ -962,10 +962,19 @@ def _cmd_note(args: argparse.Namespace) -> int:
         # question the Verbatim check asks, asked of every other section.
         total = sum(f + m for r in outside for f, m in r.quotes_outside.values())
         missing = sum(m for r in outside for _f, m in r.quotes_outside.values())
+        by_script = {}
+        for r in outside:
+            for script, (f, m) in r.quotes_outside_script.items():
+                found, missed = by_script.get(script, (0, 0))
+                by_script[script] = (found + f, missed + m)
+        split = "; ".join(
+            f"{script}: {m} of {f + m} not found"
+            for script, (f, m) in sorted(by_script.items(), key=lambda item: item[0] != "same script")
+        )
         print(
             f"          quotes outside Verbatim: {missing} of {total} not found in the "
             f"transcript, in {sum(1 for r in outside if any(m for _f, m in r.quotes_outside.values()))} "
-            f"note(s); counted, not marked"
+            f"note(s); counted, not marked" + (f" ({split})" if split else "")
         )
     settled = [result for result in run.results if result.outcome == NOTED]
     if any(result.markers.lines_checked for result in settled):
