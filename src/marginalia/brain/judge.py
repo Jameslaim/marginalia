@@ -64,6 +64,7 @@ log = logging.getLogger(__name__)
 __all__ = [
     "BriefUnusable",
     "FULL_PROMPT",
+    "blames_damaged_evidence",
     "METADATA_PROMPT",
     "Judge",
     "guesses",
@@ -307,6 +308,12 @@ def _blames_damaged_evidence(reason: str) -> bool:
         _DAMAGE_OF_EVIDENCE_RE.search(reason)
     )
 
+
+
+def blames_damaged_evidence(reason: str) -> bool:
+    """Public name for `_blames_damaged_evidence`: the note worker asks the same
+    question of a stored stage-2 reason before trusting its CLEAR grade."""
+    return _blames_damaged_evidence(reason)
 
 # -- the outside-knowledge marker, checked rather than requested ---------------
 #

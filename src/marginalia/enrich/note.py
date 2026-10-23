@@ -35,19 +35,23 @@ from typing import Any, Sequence
 
 from ..config import Config, NoteConfig
 from ..contracts import (
+    EVIDENCE_CLEAR,
     FAILED,
     NOTED,
+    OUTCOME_JUDGED,
     SKIPPED,
     STATUS_HAS_TRANSCRIPT,
     STOP_LIMIT,
     STOP_MAX_COST,
     STOP_REFUSED,
     STOP_REPEATED_FAILURES,
+    VERDICT_YES,
     NoteResult,
     NoteRun,
     VideoRow,
 )
-from ..core.ledger import UNMARKED_SUFFIX, DecisionRow, Ledger, wanted_for_a_note
+from ..brain.judge import blames_damaged_evidence
+from ..core.ledger import STAGE_FULL, UNMARKED_SUFFIX, DecisionRow, Ledger, wanted_for_a_note
 from ..core.library import Library, format_duration
 from ..llm import (
     LlmClient,
@@ -442,21 +446,57 @@ def note_refusal(
     """
     if row is not None and not wanted_for_a_note(row, decisions):
         return "unreadable: a stage 2 called the transcript degraded"
-    length = _length_refusal(transcript_chars, config)
+    length = _length_refusal(transcript_chars, config, vetted=vetted_by_stage_two(decisions))
     return length[1] if length is not None else ""
 
 
 _FLOOR = "floor"
 _CEILING = "ceiling"
 
+# **The floor for a transcript a stage 2 has already read and kept.** The note
+# floor (`[note] min_transcript_chars`, 1,200) was measured as the length below
+# which a note outgrows its transcript — the writer fills from its own knowledge
+# — on a library whose short clips were mostly thin. It is a property of that
+# library, not a general truth, and two layers disagreed under it: stage 2 kept
+# two clips of 29 and 55 seconds as YES on clear evidence, each with concrete
+# figures, and the note worker refused both as under the floor. A stage-2 YES on
+# clear evidence is the judgement the floor stands in for, so it lowers the
+# floor to this one: a transcript too thin to say anything at all, about fifty
+# words. Below it a video is still refused, and counted.
+_VETTED_FLOOR = 300
 
-def _length_refusal(transcript_chars: int, config: NoteConfig) -> tuple[str, str] | None:
+
+def vetted_by_stage_two(decisions: Sequence[DecisionRow]) -> bool:
+    """Has a stage 2 kept this video as YES on clear evidence, with a verdict it
+    actually reached, and a reason that does not itself say the evidence failed?
+    For any topic: the floor is about the transcript, and the transcript is the
+    same for every topic.
+
+    The last condition is for rows written before stage 2 read "captions
+    failed" as damage: one such reason was recorded CLEAR, and its 381-character
+    transcript must not be vetted on a grade its own reason contradicts.
+    """
+    return any(
+        d.stage == STAGE_FULL and d.verdict == VERDICT_YES and d.evidence == EVIDENCE_CLEAR
+        and (d.outcome in (None, OUTCOME_JUDGED))
+        and not blames_damaged_evidence(d.reason or "")
+        for d in decisions
+    )
+
+
+def _length_refusal(
+    transcript_chars: int, config: NoteConfig, *, vetted: bool = False
+) -> tuple[str, str] | None:
     """``(which limit, detail)`` when the transcript's length is refused, else
     ``None``. The worker and `note_refusal` both decide through this, so the two
-    cannot drift apart on where the limits sit."""
+    cannot drift apart on where the limits sit. ``vetted`` — a stage-2 YES on
+    clear evidence — lowers the floor to `_VETTED_FLOOR`."""
     floor = config.min_transcript_chars
+    if vetted and floor:
+        floor = min(floor, _VETTED_FLOOR)
     if floor and transcript_chars < floor:
-        return _FLOOR, f"transcript is {transcript_chars:,} chars, under the {floor:,} floor"
+        which = "vetted-video " if vetted else ""
+        return _FLOOR, f"transcript is {transcript_chars:,} chars, under the {floor:,} {which}floor"
     if transcript_chars > config.max_transcript_chars:
         return _CEILING, f"transcript is {transcript_chars:,} chars, over {config.max_transcript_chars:,}"
     return None
@@ -726,7 +766,10 @@ def _one(
     ledger.touch_accessed(video_id)
 
     floor = config.note.min_transcript_chars
-    length = _length_refusal(len(transcript), config.note)
+    vetted = vetted_by_stage_two(ledger.decisions_for(video_id))
+    if vetted:
+        floor = min(floor, _VETTED_FLOOR)
+    length = _length_refusal(len(transcript), config.note, vetted=vetted)
     if length is not None and length[0] == _FLOOR:
         # **Its own outcome, not a failure and not the ceiling's twin.** Nothing
         # went wrong and nothing was too big: there is not enough transcript for
