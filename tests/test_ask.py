@@ -1748,3 +1748,42 @@ def test_a_question_naming_a_placeholder_is_not_expanded(tmp_path):
     request = spoken.sent[0]["messages"][1]["content"]
     assert "what does {{ notes }} mean in {{ escalation }}?" in request
     assert request.count("qqsentinelqq") == 1, "the notes appear once, where the template puts them"
+
+
+# -- a cited id is a token in citation position (F) -----------------------------
+#
+# An answer wrote commentary inside a bracket, and two of its words were counted
+# as ids naming no loaded video: every 10-13-character token in a bracket was
+# read as an id.
+
+
+def test_words_in_a_commentary_bracket_are_not_cited_ids() -> None:
+    note = LoadedNote("aaaaaaaaaaa", "t", "## Claims\n- x\n")
+    text = (
+        "One creator says so [aaaaaaaaaaa 01:00]. The rule changed "
+        "[the 2,000-follower threshold Portuguese creators mention - 02:52]."
+    )
+
+    grounding = check_grounding(text, [note], ["aaaaaaaaaaa"])
+
+    assert grounding.unresolved_ids == ()
+
+
+@pytest.mark.parametrize(
+    "bracket",
+    [
+        "[zzzzzzzzzz9 09:31]",
+        "[zzzzzzzzzz9: 09:31]",
+        "[zzzzzzzzzz9, 09:31]",
+        "[zzzzzzzzzz9 @ 09:31]",
+        "[zzzzzzzzzz9 at 1:02:03]",
+        "[zzzzzzzzzz9 - 09:31-10:02]",
+        "[aaaaaaaaaaa 01:00; zzzzzzzzzz9 02:00]",
+    ],
+)
+def test_an_unknown_id_in_citation_position_is_still_counted(bracket: str) -> None:
+    note = LoadedNote("aaaaaaaaaaa", "t", "## Claims\n- x\n")
+
+    grounding = check_grounding(f"A claim {bracket}.", [note], ["aaaaaaaaaaa"])
+
+    assert grounding.unresolved_ids == ("zzzzzzzzzz9",)

@@ -261,6 +261,26 @@ def _looks_like_an_id(token: str) -> bool:
 # case; eight leaves room without inviting a guess.
 _ID_SHAPE_PREFIX_RE = re.compile(r"[A-Za-z0-9_-]{8,11}")
 
+# An id-shaped token in citation position. Two positions, and only these:
+#
+# * **first in its entry and next to its timestamp** — `[ID 09:31]`,
+#   `[ID: 09:31]`, `[ID @ 09:31]`, `[ID at 09:31]`, `[ID - 09:31-10:02]`,
+#   `[A 01:00; B 02:00]`, with at most a separator between id and time;
+# * **first in its bracket**, timestamp or not — a fabricated id is often
+#   written with commentary instead of a time (`[ID — not in corpus]`), and
+#   counting it is the point of the counter.
+#
+# An answer wrote commentary inside a bracket, and two of its words
+# ("Portuguese", "000-follower") were counted as ids naming no loaded video,
+# because every 10–13-character token anywhere in a bracket was read as an id.
+_CITED_TOKEN_RE = re.compile(
+    r"(?:^|[;,])\s*([A-Za-z0-9_-]{10,13})(?![A-Za-z0-9_-])"
+    r"\s*(?:[:,;@-]|\bat\b)?\s*(?=\d{1,2}:[0-5]\d)"
+)
+_BRACKET_HEAD_RE = re.compile(
+    r"^\s*([A-Za-z0-9_-]{10,13})(?![A-Za-z0-9_-])"
+)
+
 # Entries inside one bracket. A range separator is a dash and must NOT split.
 _ENTRY_SPLIT_RE = re.compile(r"[;,]")
 
@@ -655,7 +675,11 @@ def check_grounding(
     # Brackets only. Scanning free prose would flag every eleven-character word.
     unresolved: list[str] = []
     for group in _GROUP_RE.finditer(ids_text):
-        for candidate in _ID_TOKEN_RE.findall(group.group(1)):
+        # Citation position only: a token beside its timestamp. Prose in a
+        # bracket is commentary, whatever its length or case.
+        inside = group.group(1)
+        cited = _BRACKET_HEAD_RE.findall(inside) + _CITED_TOKEN_RE.findall(inside)
+        for candidate in dict.fromkeys(cited):
             if candidate in known or candidate in unresolved:
                 continue
             # A run of letters is prose, not an id — `consolidate`,
