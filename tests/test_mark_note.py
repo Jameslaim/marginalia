@@ -217,6 +217,16 @@ def test_a_failed_second_pass_leaves_the_first_note_intact(tmp_path, second, pro
     assert "note kept as written" in result.detail
     assert "[note:" not in _written_body(library), "the first note stands, unmarked"
     assert ledger.get("aaaaaaaaaaa").noted_at is not None
+    # Kept, but labelled in the file and still due: never recorded current.
+    from marginalia.core.ledger import UNMARKED_SUFFIX
+    from marginalia.enrich.note import UNMARKED_NOTICE
+
+    assert UNMARKED_NOTICE in _written_body(library)
+    assert ledger.get("aaaaaaaaaaa").note_version.endswith(UNMARKED_SUFFIX)
+    assert not ledger.get("aaaaaaaaaaa").note_is_current(result.version)
+    assert ledger.note_counts(version=result.version)["unmarked"] == 1
+    due = ledger.videos_needing_note(version=result.version)
+    assert [row.video_id for row in due] == ["aaaaaaaaaaa"], "the next plain run writes it again"
 
 
 def test_a_refusal_in_the_second_pass_stops_the_drain_and_keeps_the_note(tmp_path) -> None:

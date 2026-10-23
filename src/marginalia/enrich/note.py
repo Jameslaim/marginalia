@@ -47,7 +47,7 @@ from ..contracts import (
     NoteRun,
     VideoRow,
 )
-from ..core.ledger import DecisionRow, Ledger, wanted_for_a_note
+from ..core.ledger import UNMARKED_SUFFIX, DecisionRow, Ledger, wanted_for_a_note
 from ..core.library import Library, format_duration
 from ..llm import (
     LlmClient,
@@ -73,6 +73,16 @@ from ..quotes import (
 )
 from .markers import settle_markers
 from .marker_times import marker_time_claims
+
+# Written into a note whose marking pass failed, right under its header. In
+# the file rather than only the ledger, so every reader is told — ask's model
+# reads notes from disk and never the ledger. Gone when the note is rewritten.
+# It carries no bracketed marker of its own, so no marker counter reads it.
+UNMARKED_NOTICE = (
+    "> **Unmarked note.** The second pass that marks the note-writer's own "
+    "inference did not run on this note, so some statements of the writer's "
+    "may read as the video's. It will be written again."
+)
 from .timestamps import (
     build_index,
     check_timestamps,
@@ -940,7 +950,18 @@ def _one(
             settled = settled + after_pass
             library.write_note(video_id, header + "\n" + marked_body)
         if mark_problem:
-            log.info("note: %s — marking pass %s; note kept as written", video_id, mark_problem)
+            # Kept, labelled and still due. The notice travels in the file, so
+            # whatever reads the note — ask's model, an export, a person — is
+            # told the writer's inference may be unmarked; the ledger records a
+            # version that is never current, so the next run writes it again.
+            library.write_note(video_id, header + "\n" + UNMARKED_NOTICE + "\n\n" + body)
+            ledger.mark_noted(
+                video_id, version=prompt.version + UNMARKED_SUFFIX, model=reply.model
+            )
+            log.warning(
+                "note: %s — marking pass %s; note kept unmarked, labelled, and still due",
+                video_id, mark_problem,
+            )
         else:
             log.info(
                 "note: %s — marking pass wrapped %d statement(s), %d listed span(s) not applied",

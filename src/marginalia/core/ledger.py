@@ -578,6 +578,15 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
 }
 
 
+
+# A note whose marking pass failed is recorded under its prompt version plus
+# this suffix. Kept — the note is the call's whole cost and stands as written —
+# but never current, so the next `marg note` writes it again, and counted on
+# its own in `note --status`. In an outage one note's pass failed, it was
+# recorded current, and ask read the writer's unmarked inference as the video's
+# words (rule 26).
+UNMARKED_SUFFIX = "+unmarked"
+
 class LedgerError(RuntimeError):
     """Raised when the ledger is used out of order, or is the wrong shape."""
 
@@ -1245,7 +1254,10 @@ class Ledger:
         orders of magnitude under an unchanged name is one nobody can compare
         across two days of ``--status``.
         """
-        counts = {"has_transcript": 0, "current": 0, "stale": 0, "missing": 0, "unreadable": 0}
+        counts = {
+            "has_transcript": 0, "current": 0, "stale": 0, "missing": 0, "unreadable": 0,
+            "unmarked": 0,
+        }
         for row in self.list_by_status(STATUS_HAS_TRANSCRIPT):
             counts["has_transcript"] += 1
             if not wanted_for_a_note(row, self.decisions_for(row.video_id)):
@@ -1256,6 +1268,11 @@ class Ledger:
                 continue
             if row.noted_at is None:
                 counts["missing"] += 1
+            elif (row.note_version or "").endswith(UNMARKED_SUFFIX):
+                # Written, but its marking pass failed: kept, and still due (its
+                # version is never the current one). Its own bucket, not stale —
+                # nothing about the prompt changed.
+                counts["unmarked"] += 1
             elif row.note_version == version:
                 counts["current"] += 1
             else:
