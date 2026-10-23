@@ -26,6 +26,7 @@ instead of erroring at request 41.
 from __future__ import annotations
 
 import logging
+import random
 import re
 import threading
 import time
@@ -307,12 +308,16 @@ class LlmClient:
         limiter: RateLimiter | None = None,
         sleep: Callable[[float], None] | None = None,
         max_attempts: int = 4,
+        jitter: Callable[[], float] | None = None,
     ) -> None:
         self.config = config
         self.usage = Usage()
         self.limiter = limiter or RateLimiter(config.requests_per_minute)
         self._sleep = sleep or time.sleep
         self._max_attempts = max_attempts
+        # A factor in [1 - _JITTER, 1 + _JITTER] per connection-class wait.
+        # Injected so a test's clock sees exact numbers.
+        self._jitter = jitter or (lambda: random.uniform(1.0 - _JITTER, 1.0 + _JITTER))
         self._transport = transport
         self._client: Any = None
         # Consecutive requests refused as over the context window. See
@@ -356,8 +361,14 @@ class LlmClient:
         ]
         extra = self.config.extra_for(task)
         last: Exception | None = None
+        # Raised from `_max_attempts` the first time a connection-class failure
+        # is seen, when retrying is on at all; see `_CONNECTION_BACKOFF_S`.
+        limit = self._max_attempts
+        waited = 0.0
 
-        for attempt in range(1, self._max_attempts + 1):
+        attempt = 0
+        while attempt < limit:
+            attempt += 1
             self.limiter.acquire()
             started = time.monotonic()
             try:
@@ -397,19 +408,38 @@ class LlmClient:
                         f"take — stopping instead {_safe(error, exc)}"
                     ) from exc
 
-                if attempt == self._max_attempts:
+                connection = _is_connection_failure(exc)
+                if connection and self._max_attempts > 1:
+                    limit = max(limit, len(_CONNECTION_BACKOFF_S) + 1)
+                if attempt >= limit:
+                    if connection and waited:
+                        log.warning(
+                            "llm: gave up after %d attempts and %.0fs of waiting on a "
+                            "connection failure (%s)",
+                            attempt, waited, _safe(error, exc),
+                        )
                     break
-                backoff = 2.0 ** (attempt - 1) if asked is None else asked
+                if asked is not None:
+                    backoff = asked
+                elif connection:
+                    base = _CONNECTION_BACKOFF_S[min(attempt, len(_CONNECTION_BACKOFF_S)) - 1]
+                    backoff = min(base * self._jitter(), _CONNECTION_WAIT_S - waited)
+                else:
+                    backoff = 2.0 ** (attempt - 1)
+                backoff = max(0.0, backoff)
+                waited += backoff
                 log.info(
                     "llm: attempt %d/%d failed (%s); retrying in %.0fs%s",
                     attempt,
-                    self._max_attempts,
+                    limit,
                     # Never the exception and never `_brief`: both carry the
                     # provider's message, which is a response body, which is
                     # what rule 1 keeps out of `logs/`.
                     _safe(error, exc),
                     backoff,
-                    " (as the provider asked)" if asked is not None else "",
+                    " (as the provider asked)" if asked is not None
+                    else f" (connection; {waited:.0f}s waited of {_CONNECTION_WAIT_S:.0f}s)"
+                    if connection else "",
                 )
                 self._sleep(backoff)
                 continue
@@ -439,7 +469,7 @@ class LlmClient:
                 )
             return reply
 
-        raise LlmError(f"model call failed after {self._max_attempts} attempts: {last}")
+        raise LlmError(f"model call failed after {attempt} attempts: {last}")
 
     # -- what a failure may say about itself -------------------------------
 
@@ -592,6 +622,32 @@ _RETRY_AFTER_HEADER = "retry-after"
 # rather than hanging. Two minutes is longer than any backoff this file
 # schedules and far shorter than a note drain.
 _MAX_RETRY_AFTER_S = 120.0
+
+# **A connection that drops waits longer than a request that failed.** The
+# 1, 2, 4 s schedule gives up after about 7 seconds, and a connection outage of
+# about 30 seconds failed three notes in a row and stopped a note run on
+# `repeated_failures`. A connection-class failure — the request never reached a
+# server that answered — gets this schedule instead: five waits, each scaled
+# by a jitter of ±`_JITTER` so a drain of many clients does not retry in step,
+# and all of them together capped at `_CONNECTION_WAIT_S`, so the worst case is
+# bounded and logged. Every other failure keeps 1, 2, 4.
+_CONNECTION_BACKOFF_S = (2.0, 4.0, 8.0, 16.0, 30.0)
+_CONNECTION_WAIT_S = 75.0
+_JITTER = 0.25
+
+# What a connection-class failure looks like, by class: the builtin family and
+# the client library's own, matched by name so this module needs no import of
+# it (rule 7 keeps provider specifics out). A status code means a server
+# answered, and is classified by `_classify` instead.
+_CONNECTION_NAMES = frozenset({"APIConnectionError", "APITimeoutError"})
+
+
+def _is_connection_failure(exc: Exception) -> bool:
+    if isinstance(getattr(exc, "status_code", None), int):
+        return False
+    return isinstance(exc, (ConnectionError, TimeoutError)) or any(
+        cls.__name__ in _CONNECTION_NAMES for cls in type(exc).__mro__
+    )
 
 # Where a provider puts the one field its support will ask for. Headers first,
 # because a header cannot contain a transcript; the SDK attribute second.

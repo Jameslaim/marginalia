@@ -1460,3 +1460,66 @@ def test_the_answer_prompt_says_how_a_translation_may_be_quoted() -> None:
     assert "Sharing a word is not sharing a subject." in text
     for leaked in ("prompt caching", "agent memory", "memory system"):
         assert leaked not in prompt.text, leaked
+
+
+# -- a dropped connection waits about a minute, not 7 seconds (E) ---------------
+#
+# 1, 2, 4 s gave up after about 7 seconds; a connection outage of about 30 s
+# failed three notes in a row and stopped a note run. A connection-class
+# failure gets a longer, jittered schedule with a bounded total.
+
+
+class APIConnectionError(Exception):
+    """Named like the client library's own, which is matched by class name."""
+
+
+def test_a_connection_failure_rides_out_a_thirty_second_outage() -> None:
+    clock = FakeClock()
+    outage = [APIConnectionError("down")] * 4  # 2 + 4 + 8 + 16 = 30 s of waiting
+    instance, calls = client(*outage, FakeResponse("back"), clock=clock, jitter=lambda: 1.0)
+
+    assert instance.complete("s", "u").text == "back"
+    assert len(calls) == 5
+    assert clock.slept == [2.0, 4.0, 8.0, 16.0]
+
+
+def test_a_connection_failure_gives_up_within_a_bounded_wait_and_says_so(caplog) -> None:
+    clock = FakeClock()
+    instance, calls = client(*[ConnectionError("down")] * 10, clock=clock, jitter=lambda: 1.25)
+
+    with caplog.at_level(logging.WARNING, logger="marginalia.llm"):
+        with pytest.raises(LlmError) as caught:
+            instance.complete("s", "u")
+
+    assert len(calls) == 6, "five waits, then the last attempt"
+    assert sum(clock.slept) <= 75.0
+    assert "gave up after 6 attempts" in caplog.text
+    assert "after 6 attempts" in str(caught.value)
+
+
+def test_the_connection_wait_is_jittered() -> None:
+    clock = FakeClock()
+    instance, _ = client(ConnectionError("down"), FakeResponse("ok"), clock=clock, jitter=lambda: 0.8)
+
+    instance.complete("s", "u")
+
+    assert clock.slept == [pytest.approx(1.6)]
+
+
+def test_a_server_error_keeps_the_short_schedule() -> None:
+    clock = FakeClock()
+    instance, calls = client(*[HttpError(500)] * 10, clock=clock, jitter=lambda: 1.0)
+
+    with pytest.raises(LlmError):
+        instance.complete("s", "u")
+
+    assert len(calls) == 4
+    assert clock.slept == [1.0, 2.0, 4.0]
+
+
+def test_retrying_turned_off_stays_off_for_a_connection_failure() -> None:
+    instance, calls = client(ConnectionError("down"), FakeResponse("ok"), max_attempts=1)
+
+    with pytest.raises(LlmError):
+        instance.complete("s", "u")
+    assert len(calls) == 1
