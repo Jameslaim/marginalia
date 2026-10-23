@@ -1523,3 +1523,33 @@ def test_retrying_turned_off_stays_off_for_a_connection_failure() -> None:
     with pytest.raises(LlmError):
         instance.complete("s", "u")
     assert len(calls) == 1
+
+
+# -- the served model, per call (G) ---------------------------------------------
+#
+# The provider repointed an alias at another model mid-test, and nothing
+# recorded which model actually answered each call.
+
+
+def test_each_call_logs_the_model_and_fingerprint_the_provider_reports(caplog) -> None:
+    response = FakeResponse("ok", model="vendor-model-2026-10-20")
+    response.system_fingerprint = "fp_abc123"
+    instance, _ = client(response)
+
+    with caplog.at_level(logging.INFO, logger="marginalia.llm"):
+        reply = instance.complete("s", "u")
+
+    assert (reply.served_model, reply.fingerprint) == ("vendor-model-2026-10-20", "fp_abc123")
+    assert "served vendor-model-2026-10-20, fingerprint fp_abc123" in caplog.text
+
+
+def test_what_the_provider_does_not_report_is_said_so(caplog) -> None:
+    response = FakeResponse("ok", model=None)
+    instance, _ = client(response, config={"model": "configured-alias"})
+
+    with caplog.at_level(logging.INFO, logger="marginalia.llm"):
+        reply = instance.complete("s", "u")
+
+    assert reply.served_model is None and reply.fingerprint is None
+    assert reply.model == "configured-alias", "the alias still names the call"
+    assert "served not reported, fingerprint not reported" in caplog.text

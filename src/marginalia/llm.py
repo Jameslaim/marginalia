@@ -286,6 +286,12 @@ class Reply:
     # disappointing rather than truncated. Recorded so a convergence check can
     # ask instead of guess. `None` when a provider does not report it.
     finish_reason: str | None = None
+    # What the provider says it served, as it said it: the response's own
+    # `model` field (None when absent — `model` above falls back to the
+    # configured alias) and its `system_fingerprint`, if it sends one. An alias
+    # can be repointed at another model mid-run, and only these say so.
+    served_model: str | None = None
+    fingerprint: str | None = None
 
 
 # Retry only what a retry can fix. Everything else is the user's to fix, and
@@ -448,13 +454,19 @@ class LlmClient:
             self._too_large = 0
             self.usage.add(reply.usage)
             log.info(
-                "llm: %s replied in %.1fs (in=%d out=%d, finish=%s, %d requests so far)",
+                "llm: %s replied in %.1fs (in=%d out=%d, finish=%s, %d requests so far; "
+                "served %s, fingerprint %s)",
                 reply.model,
                 reply.latency_s,
                 reply.usage.input_tokens,
                 reply.usage.output_tokens,
                 reply.finish_reason or "unreported",
                 self.usage.requests,
+                # Per call, because the alias is not the model: the provider's
+                # own `model` field and fingerprint, or "not reported". Never a
+                # key and never the request.
+                reply.served_model or "not reported",
+                reply.fingerprint or "not reported",
             )
             if reply.finish_reason == "length":
                 # Loud, because the symptom is silence. A truncated reply from a
@@ -543,9 +555,13 @@ class LlmClient:
         finish_reason = getattr(choice, "finish_reason", None)
 
         usage = getattr(response, "usage", None)
+        served = getattr(response, "model", None)
+        fingerprint = getattr(response, "system_fingerprint", None)
         return Reply(
             text=text.strip(),
-            model=str(getattr(response, "model", None) or self.config.model),
+            model=str(served or self.config.model),
+            served_model=str(served) if isinstance(served, str) and served else None,
+            fingerprint=str(fingerprint) if isinstance(fingerprint, str) and fingerprint else None,
             usage=Usage(
                 requests=1,
                 input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
