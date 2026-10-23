@@ -935,6 +935,19 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     the earlier "never repair by edit distance": a wrong link is still worse than a
     missing one, and the margin is what keeps a wrong link out of reach.
 
+35. **Reasoning effort is a measured choice per task, and its output ceiling moves with
+    it.** Effort is set per task in config and chosen by replaying that task against a
+    labelled set — clear accepts, clear refusals and controls — with more than one sample,
+    before and after; one sample is not enough, because the same prompt at no effort
+    disagreed with its own stored verdicts on 8 of 81 videos. Measured on stage 2: with no
+    reasoning it accepted 5 of 15 good contested videos, at low 13 of 15, at the cost of
+    also accepting naming-only clips (1 of 4 refused). Two prompt versions written for the
+    same failures moved nothing at either effort, so a prompt change is credited only with
+    what a replay shows. Reasoning lengthens every reply (median 1,643 output tokens at
+    low, maximum 8,192, against about 150 with none), so the task's output ceiling is set
+    from the same replay — about twice the largest finished reply — or the reasoning runs
+    into it and the call returns nothing.
+
 ## Structure
 
 ```
