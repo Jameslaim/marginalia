@@ -1890,6 +1890,10 @@ class NoteResult:
     # The same quotes by script against the transcript's: "same script" and
     # "other script", each (found, not found). Counted only.
     quotes_outside_script: dict[str, tuple[int, int]] = field(default_factory=dict)
+    # Time differences stated inside markers on lines with two or more
+    # timestamps: (checked, contradicted by every pair of the line's times).
+    # Counted, never rewritten.
+    marker_times: tuple[int, int] = (0, 0)
 
 
 @dataclass

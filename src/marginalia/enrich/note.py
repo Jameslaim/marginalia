@@ -72,6 +72,7 @@ from ..quotes import (
     spoken_text,
 )
 from .markers import settle_markers
+from .marker_times import marker_time_claims
 from .timestamps import (
     build_index,
     check_timestamps,
@@ -891,6 +892,15 @@ def _one(
             video_id, timestamps.unplaceable, timestamps.total,
         )
     foreign = untranslated_foreign_verbatim(body, transcript)
+    time_claims = marker_time_claims(body)
+    contradicted = [claim for claim in time_claims if not claim.holds]
+    if contradicted:
+        log.info(
+            "note: %s — %d of %d time difference(s) stated in markers contradicted by "
+            "their line's timestamps (lines %s)",
+            video_id, len(contradicted), len(time_claims),
+            ", ".join(str(claim.line) for claim in contradicted),
+        )
     outside = quotes_outside_verbatim(body, transcript)
     outside_script = quotes_outside_by_script(body, transcript)
     outside_found = sum(found for found, _missing in outside.values())
@@ -997,6 +1007,7 @@ def _one(
         redrawn=redrawn,
         markers=settled,
         verbatim_untranslated=foreign,
+        marker_times=(len(time_claims), len(contradicted)),
         quotes_outside=outside,
         quotes_outside_script=outside_script,
     )

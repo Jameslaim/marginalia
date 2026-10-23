@@ -977,6 +977,15 @@ def _cmd_note(args: argparse.Namespace) -> int:
             f"note(s); counted, not marked" + (f" ({split})" if split else "")
         )
     settled = [result for result in run.results if result.outcome == NOTED]
+    if any(result.marker_times[0] for result in settled):
+        # Rule 33: a time difference a marker states, checked against its own
+        # line's timestamps. Counted, never rewritten.
+        print(
+            f"          marker times: {sum(r.marker_times[1] for r in settled)} of "
+            f"{sum(r.marker_times[0] for r in settled)} stated time difference(s) "
+            f"contradicted by their line's timestamps, in "
+            f"{sum(1 for r in settled if r.marker_times[1])} note(s); counted, not changed"
+        )
     if any(result.markers.lines_checked for result in settled):
         # Rule 14: marker boundaries that cut a quotation, and which way each
         # was resolved — printed whenever a line held both, zero included.
