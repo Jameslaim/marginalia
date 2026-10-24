@@ -948,6 +948,17 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     from the same replay — about twice the largest finished reply — or the reasoning runs
     into it and the call returns nothing.
 
+36. **The budget buys what the system can read.** A cap on videos is spent only on
+    keepers a later layer can use. A keeper no note will ever be written from — unreadable
+    evidence, past the note ceiling, refused by the note rule — is still kept and counted
+    (rule 8), but stored off the budget, and that exemption is itself bounded (at most one
+    round's share per round and one video budget per run) so a topic made of unreadable
+    clips cannot fetch without limit. One rule decides whether a video can be noted, and
+    every layer that asks reads that rule, so two layers never disagree about the same
+    video. Measured: one run spent 6 of its 25 places on keepers no note could be written
+    from; two of them were short clips stage 2 had judged substantive on clear evidence,
+    and a shared rule now notes them.
+
 ## Structure
 
 ```
