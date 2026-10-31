@@ -87,6 +87,7 @@ from .flow.discover import discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
+from .flow.repair import MIN_SPAN_SHARE, replace_translated
 from .flow.store import reconcile_stored, store_transcript, unreconciled
 from .brain.judge import BriefUnusable, Judge
 from .llm import LlmClient, LlmConfigError, LlmError
@@ -1067,12 +1068,59 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
     }
 
 
+def _replace_translated(args: argparse.Namespace) -> int:
+    """Rule 3's one exception: replace transcripts rule 40 shows to be
+    translations, and clean stored track ids. yt-dlp only — no search quota,
+    no model calls. ``--dry-run`` judges every video and writes nothing."""
+    from .contracts import (
+        REPAIR_ACCEPTED,
+        REPAIR_FAILED,
+        REPAIR_LANGUAGE_CLEANED,
+        REPAIR_REPLACED,
+        REPAIR_SKIPPED,
+    )
+
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+    ids = [extract_video_id(video) or video for video in args.video]
+    with Ledger(library.ledger_path) as ledger:
+        run = replace_translated(config, ledger, library, video_ids=ids,
+                                 dry_run=args.dry_run, limit=args.limit)
+    verb = {REPAIR_REPLACED: "would replace" if run.dry_run else "replaced",
+            REPAIR_LANGUAGE_CLEANED: "would clean" if run.dry_run else "cleaned",
+            REPAIR_SKIPPED: "skipped", REPAIR_FAILED: "failed"}
+    for result in run.results:
+        if result.action == REPAIR_ACCEPTED:
+            continue
+        change = f"{result.old_language or '?'} -> {result.new_language or '?'}"
+        track = f" ({result.new_track})" if result.new_track else ""
+        _report(verb[result.action], result.video_id, change + track, result.detail or None)
+    skipped: dict[str, int] = {}
+    for result in run.results:
+        if result.action == REPAIR_SKIPPED:
+            skipped[result.detail] = skipped.get(result.detail, 0) + 1
+    reasons = "; ".join(f"{n} {why}" for why, n in sorted(skipped.items()))
+    print(
+        f"repair:   {run.considered} considered{' (dry run, nothing written)' if run.dry_run else ''} — "
+        f"{run.count(REPAIR_REPLACED)} replaced, {run.count(REPAIR_LANGUAGE_CLEANED)} language cleaned, "
+        f"{run.count(REPAIR_ACCEPTED)} accepted, {run.count(REPAIR_SKIPPED)} skipped"
+        f"{' (' + reasons + ')' if reasons else ''}, {run.count(REPAIR_FAILED)} failed; "
+        f"span guard {MIN_SPAN_SHARE:.0%}; {_elapsed(run.elapsed_s)}, stopped: {run.stopped_because}"
+    )
+    return EXIT_FAILED if run.count(REPAIR_FAILED) else EXIT_OK
+
+
 def _cmd_refetch(args: argparse.Namespace) -> int:
     """Retry the transcript fetches that failed transiently.
 
     Uses no search quota — this is transcript fetching, not the search API — and
     makes no model calls at all.
     """
+    if args.replace_translated:
+        return _replace_translated(args)
+    if args.video:
+        return _error("video ids are taken only with --replace-translated", EXIT_FAILED)
     config = _load(args)
     library = Library(config.library_path)
     library.ensure()
@@ -2168,7 +2216,18 @@ def _build_parser() -> argparse.ArgumentParser:
     again.add_argument(
         "--dry-run",
         action="store_true",
-        help="list what would be retried, in judged-YES-first order, and touch nothing",
+        help="list what would be retried, in judged-YES-first order, and touch nothing; "
+        "with --replace-translated, judge every video and write nothing",
+    )
+    again.add_argument(
+        "--replace-translated",
+        action="store_true",
+        help="rule 3's one exception: replace stored transcripts rule 40 shows to be machine "
+        "translations (the old file kept as transcript.translated.txt), and clean stored track ids",
+    )
+    again.add_argument(
+        "video", nargs="*",
+        help="with --replace-translated: only these videos (default: every stored transcript)",
     )
     again.set_defaults(handler=_cmd_refetch)
 

@@ -480,6 +480,13 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "MarkerSettle",
         "RefetchResult",
         "RefetchRun",
+        "REPAIR_REPLACED",
+        "REPAIR_LANGUAGE_CLEANED",
+        "REPAIR_ACCEPTED",
+        "REPAIR_SKIPPED",
+        "REPAIR_FAILED",
+        "RepairResult",
+        "RepairRun",
         "LoadedNote",
         # M7. One line per note, built in `ask.py` and read by `brain/selector.py`.
         "NoteSummary",

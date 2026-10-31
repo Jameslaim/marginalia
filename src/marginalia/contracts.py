@@ -157,6 +157,13 @@ __all__ = [
     "STOP_THROTTLED",
     "RefetchResult",
     "RefetchRun",
+    "REPAIR_REPLACED",
+    "REPAIR_LANGUAGE_CLEANED",
+    "REPAIR_ACCEPTED",
+    "REPAIR_SKIPPED",
+    "REPAIR_FAILED",
+    "RepairResult",
+    "RepairRun",
     "NoteResult",
     "NoteRun",
     # answers
@@ -2291,6 +2298,40 @@ class RefetchRun:
 
     def count(self, outcome: str) -> int:
         return sum(1 for result in self.results if result.outcome == outcome)
+
+
+
+# -- rule 3's one exception: `marg refetch --replace-translated` -------------
+
+# What the repair did with each stored video. Accepted is the common case and
+# touches nothing; skipped carries its reason; failed is the fetch's.
+REPAIR_REPLACED = "replaced"
+REPAIR_LANGUAGE_CLEANED = "language_cleaned"
+REPAIR_ACCEPTED = "accepted"
+REPAIR_SKIPPED = "skipped"
+REPAIR_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class RepairResult:
+    video_id: str
+    action: str
+    detail: str = ""
+    old_language: str = ""
+    new_language: str = ""
+    new_track: str = ""
+
+
+@dataclass
+class RepairRun:
+    results: list[RepairResult] = field(default_factory=list)
+    considered: int = 0
+    dry_run: bool = False
+    elapsed_s: float = 0.0
+    stopped_because: str = STOP_DONE
+
+    def count(self, action: str) -> int:
+        return sum(1 for result in self.results if result.action == action)
 
 
 # -- answers -----------------------------------------------------------------

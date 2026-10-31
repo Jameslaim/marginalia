@@ -22,6 +22,7 @@ from .base import (
     TranscriptResult,
     TransientError,
     TranslatedOnly,
+    clean_language,
 )
 
 log = logging.getLogger(__name__)
@@ -335,28 +336,6 @@ class YtDlpProvider:
 
 
 # -- parsing ---------------------------------------------------------------
-
-
-# A language subtag after the primary one: a script (`Hans`), a region (`US`,
-# `419`). Anything else after a hyphen is not part of a language code — YouTube
-# appends a track id to a named manual track (`en-eEY6OEpapPo`) — and is cut.
-_SUBTAG_RE = re.compile(r"\A(?:[A-Za-z]{4}|[A-Za-z]{2}|\d{3})\Z")
-
-
-def clean_language(key: str) -> str:
-    """A caption track's key as a clean language code: `en-orig` -> `en`,
-    `en-eEY6OEpapPo` -> `en`, `de-DE-orig` -> `de-DE`, `es-419` -> `es-419`."""
-    parts = [part for part in (key or "").split("-") if part]
-    if parts and parts[-1].lower() == "orig":
-        parts = parts[:-1]
-    if not parts:
-        return ""
-    code = [parts[0].lower()]
-    for part in parts[1:]:
-        if not _SUBTAG_RE.match(part):
-            break
-        code.append(part.upper() if len(part) == 2 else part)
-    return "-".join(code)
 
 
 def _base(code: str) -> str:

@@ -270,6 +270,36 @@ class Library:
         _atomic_write(path, render_transcript(lines))
         return len(lines)
 
+    def translated_path(self, video_id: str) -> Path:
+        """Where a replaced machine-translated transcript is kept (rule 3)."""
+        return self.video_dir(video_id) / "transcript.translated.txt"
+
+    def replace_translated_transcript(
+        self, video_id: str, lines: Sequence[TranscriptLine]
+    ) -> int:
+        """Rule 3's one exception: replace a machine-translated ``transcript.txt``.
+
+        Only `marg refetch --replace-translated` calls this, after rule 40's
+        selector has shown the stored track to be a translation. Nothing is
+        deleted: the old file is renamed to ``transcript.translated.txt``, and
+        a video that already has one is refused, so a kept translation is never
+        itself overwritten. The new file is written beside it first and moved
+        into place, so a crash leaves the old transcript where it was.
+        """
+        path = self.transcript_path(video_id)
+        kept = self.translated_path(video_id)
+        if not path.exists():
+            raise FileNotFoundError(f"no transcript.txt for {video_id} to replace")
+        if kept.exists():
+            raise FileExistsError(
+                f"transcript.translated.txt already exists for {video_id}; it is never overwritten"
+            )
+        staged = path.with_name("transcript.replacement.tmp")
+        _atomic_write(staged, render_transcript(lines))
+        os.replace(path, kept)
+        os.replace(staged, path)
+        return len(lines)
+
     def write_meta(self, video_id: str, meta: dict[str, Any]) -> None:
         path = self.meta_path(video_id)
         path.parent.mkdir(parents=True, exist_ok=True)

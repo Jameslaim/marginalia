@@ -69,6 +69,8 @@ __all__ = [
     "QueryRow",
     "PlanRow",
     "BriefRow",
+    "RepairRow",
+    "STALE_TRANSCRIPT_SUFFIX",
     "skip_reason",
     "normalise_topic",
     "in_library",
@@ -255,6 +257,25 @@ CREATE TABLE IF NOT EXISTS briefs (
   approved_at    TEXT NOT NULL,
   PRIMARY KEY (topic, version)
 );
+
+-- Rule 3's one exception, recorded. A transcript rule 40's selector shows to
+-- be a machine translation is replaced (the old file kept beside it as
+-- `transcript.translated.txt`), and a stored track id is cleaned to a language
+-- code; each is one row here, never an update to an earlier one.
+CREATE TABLE IF NOT EXISTS transcript_repairs (
+  video_id     TEXT NOT NULL,
+  action       TEXT NOT NULL,     -- replaced | language_cleaned
+  repaired_at  TEXT NOT NULL,
+  old_language TEXT,
+  new_language TEXT,
+  old_track    TEXT,
+  new_track    TEXT,
+  old_hash     TEXT,
+  new_hash     TEXT,
+  old_end_ms   INTEGER,
+  new_end_ms   INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_repairs_video ON transcript_repairs(video_id);
 """
 
 # Columns added after a table shipped, which can be introduced in place.
@@ -558,6 +579,28 @@ class QueryRow:
 
 
 @dataclass(frozen=True)
+class RepairRow:
+    """One repair of a stored transcript or its language, under rule 3's one
+    exception. ``action`` is ``replaced`` or ``language_cleaned``."""
+
+    video_id: str
+    action: str
+    repaired_at: str
+    old_language: str | None = None
+    new_language: str | None = None
+    old_track: str | None = None
+    new_track: str | None = None
+    old_hash: str | None = None
+    new_hash: str | None = None
+    old_end_ms: int | None = None
+    new_end_ms: int | None = None
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> "RepairRow":
+        return cls(**_values(cls, row))
+
+
+@dataclass(frozen=True)
 class BriefRow:
     """One approved version of a topic's brief.
 
@@ -618,6 +661,7 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "queries": frozenset(field.name for field in fields(QueryRow)),
     "plans": frozenset(field.name for field in fields(PlanRow)),
     "briefs": frozenset(field.name for field in fields(BriefRow)),
+    "transcript_repairs": frozenset(field.name for field in fields(RepairRow)),
 }
 
 
@@ -629,6 +673,10 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
 # recorded current, and ask read the writer's unmarked inference as the video's
 # words (rule 26).
 UNMARKED_SUFFIX = "+unmarked"
+# A note written from a transcript that has since been replaced (rule 3's one
+# exception). Its version is never the current one, so the note is stale and
+# due, and `marg note --regenerate <id>` rewrites it from the new transcript.
+STALE_TRANSCRIPT_SUFFIX = "+stale-transcript"
 
 class LedgerError(RuntimeError):
     """Raised when the ledger is used out of order, or is the wrong shape."""
@@ -1725,6 +1773,44 @@ class Ledger:
             )
         log.info("brief v%d approved for %r", version, key)
         return BriefRow(key, version, sha256, brief, prompt_version, approved_at)
+
+    def record_repair(self, row: RepairRow) -> RepairRow:
+        """Add one repair row. Additive: an earlier row is never changed."""
+        names = [field.name for field in fields(RepairRow)]
+        with self._conn:
+            self._conn.execute(
+                f"INSERT INTO transcript_repairs ({', '.join(names)}) "
+                f"VALUES ({', '.join('?' for _ in names)})",
+                tuple(getattr(row, name) for name in names),
+            )
+        log.info("ledger: %s transcript repair recorded (%s)", row.video_id, row.action)
+        return row
+
+    def repairs_for(self, video_id: str) -> list[RepairRow]:
+        if "transcript_repairs" in self._absent:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM transcript_repairs WHERE video_id = ? ORDER BY rowid", (video_id,)
+        ).fetchall()
+        return [RepairRow.from_sqlite(row) for row in rows]
+
+    def mark_note_stale(self, video_id: str) -> VideoRow:
+        """The note was written from a transcript that has been replaced.
+
+        Its version gains a suffix that no prompt version carries, so it counts
+        as stale and is due; a video with no note is left as it is — it has
+        nothing to be stale."""
+        row = self._require(video_id)
+        if row.noted_at is not None and not (row.note_version or "").endswith(
+            STALE_TRANSCRIPT_SUFFIX
+        ):
+            self._update(
+                video_id,
+                "UPDATE videos SET note_version = ?, last_updated = ? WHERE video_id = ?",
+                (f"{row.note_version or ''}{STALE_TRANSCRIPT_SUFFIX}", _utcnow(), video_id),
+            )
+            log.info("ledger: %s note marked stale (transcript replaced)", video_id)
+        return self._require(video_id)
 
     def plans_for_run(self, run_id: str) -> list[PlanRow]:
         rows = self._conn.execute(

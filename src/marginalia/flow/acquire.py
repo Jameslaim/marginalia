@@ -77,16 +77,28 @@ def transcript_providers(config: Config) -> list[TranscriptProvider]:
 
 
 def acquire(
-    ledger: Ledger, video_id: str, providers: Sequence[TranscriptProvider]
+    ledger: Ledger,
+    video_id: str,
+    providers: Sequence[TranscriptProvider],
+    *,
+    record: bool = True,
 ) -> Acquisition:
     """Try each provider in order. The row is written before the first call.
 
     On ``ACQUIRED`` the row is still `pending` and the caller stores the
     transcript; every other outcome has been written to the ledger here.
+
+    ``record=False`` writes no state at all, for a video whose transcript is
+    already stored (`marg refetch --replace-translated`): its row says
+    `has_transcript` and must go on saying so whatever this fetch returns —
+    a `pending` or `needs_asr` written over it would misstate a transcript
+    that is on disk. Rule 6's ordering protects a fetch that has nothing yet;
+    this one already has its transcript.
     """
     if not providers:
         raise ValueError("acquire needs at least one provider")
-    ledger.mark_pending(video_id)
+    if record:
+        ledger.mark_pending(video_id)
 
     transient: tuple[str, str] | None = None
     no_captions_from: str | None = None
@@ -98,7 +110,8 @@ def acquire(
         except PermanentError as exc:
             detail = _bounded(exc)
             log.info("acquire: %s permanently unavailable via %s (%s)", video_id, provider.name, detail)
-            ledger.mark_failed(video_id, FAIL_PERMANENT, provider=provider.name)
+            if record:
+                ledger.mark_failed(video_id, FAIL_PERMANENT, provider=provider.name)
             return Acquisition(ACQUIRE_FAILED_PERMANENT, provider=provider.name, detail=detail)
         except TranslatedOnly as exc:
             # Another provider may have the spoken language's own track.
@@ -124,17 +137,20 @@ def acquire(
 
     if transient is not None:
         name, detail = transient
-        ledger.mark_failed(video_id, FAIL_TRANSIENT, provider=name)
+        if record:
+            ledger.mark_failed(video_id, FAIL_TRANSIENT, provider=name)
         return Acquisition(ACQUIRE_FAILED_TRANSIENT, provider=name, detail=detail)
 
     if translated is not None:
         # Routed as a video with no captions is, and named apart from one.
         name, detail = translated
-        ledger.mark_needs_asr(video_id, provider=name)
+        if record:
+            ledger.mark_needs_asr(video_id, provider=name)
         return Acquisition(ACQUIRE_TRANSLATED_ONLY, provider=name, detail=detail)
 
     # No captions is a route, not a failure: M4's ASR queue.
-    ledger.mark_needs_asr(video_id, provider=no_captions_from)
+    if record:
+        ledger.mark_needs_asr(video_id, provider=no_captions_from)
     return Acquisition(ACQUIRE_NO_CAPTIONS, provider=no_captions_from, detail="no caption track")
 
 
