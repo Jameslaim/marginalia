@@ -178,7 +178,7 @@ class FakeJudge:
         self.coverage_seen.append(list(coverage))
         return self._queries.pop(0) if self._queries else []
 
-    def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+    def judge_metadata(self, brief, candidates, *, batch_size, territory=None, coverage=()):
         self.batch_sizes.append(batch_size)
         self.territory_seen.append(territory)
         return [
@@ -847,7 +847,7 @@ def test_the_run_row_exists_before_judging(config, ledger, library, client, sear
     seen: list[bool] = []
 
     class Watcher(FakeJudge):
-        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None, coverage=()):
             seen.append(bool(ledger.list_runs()))
             return super().judge_metadata(
                 brief, candidates, batch_size=batch_size, territory=territory
@@ -875,7 +875,7 @@ def test_a_crashed_run_leaves_a_row_without_finished_at(
     searches["*"] = [result("aaaaaaaaaaa")]
 
     class Exploding(FakeJudge):
-        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None, coverage=()):
             raise RuntimeError("boom")
 
     with pytest.raises(RuntimeError):
@@ -1409,7 +1409,7 @@ def test_the_map_is_stored_before_any_judging(config, ledger, library, client, s
     seen: list[str | None] = []
 
     class Watcher(FakeJudge):
-        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None, coverage=()):
             seen.append(ledger.list_runs()[0].territory_map)
             return super().judge_metadata(
                 brief, candidates, batch_size=batch_size, territory=territory
@@ -2796,7 +2796,7 @@ class _SpendingJudge(FakeJudge):
         super().__init__(**kwargs)
         self._client = client
 
-    def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+    def judge_metadata(self, brief, candidates, *, batch_size, territory=None, coverage=()):
         self._client.usage = Usage(
             requests=self._client.usage.requests + 1,
             input_tokens=self._client.usage.input_tokens,
@@ -4016,7 +4016,7 @@ def test_an_absent_evidence_no_kept_as_maybe_is_counted_apart_from_a_guess(
     config, ledger, library, client, searches
 ) -> None:
     class Resolving(FakeJudge):
-        def judge_metadata(self, brief, candidates, *, batch_size, territory=None):
+        def judge_metadata(self, brief, candidates, *, batch_size, territory=None, coverage=()):
             return [
                 MetadataVerdict(candidates[0].video_id, VERDICT_MAYBE, "45-second clip, no evidence",
                                 said=VERDICT_NO, resolved="unshown"),

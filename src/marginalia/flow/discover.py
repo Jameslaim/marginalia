@@ -54,13 +54,26 @@ import time
 import uuid
 from typing import Any, Callable, Hashable, Mapping, Sequence, TypeVar
 
-from ..brain.judge import FULL_PROMPT, METADATA_PROMPT, RESOLVED_UNSHOWN, Judge
+from ..brain.judge import (
+    FULL_PROMPT,
+    METADATA_PROMPT,
+    RESOLVED_UNSHOWN,
+    Judge,
+    aim_words,
+    item_lines,
+    match_item,
+)
 from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
 from ..brain.territory import Mapper, validate, waiver_applies
 from ..config import Config
 from ..contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
+    ITEM_HELD,
+    ITEM_MISSING,
+    ITEM_PARTLY,
+    ITEM_STATES,
+    ITEM_UNTAGGED,
     KNOWN,
     LoadedNote,
     NEW,
@@ -417,6 +430,7 @@ def _loop(
             allowance=round_allowance(
                 max_videos - len(run.stored_ids), max_rounds - number + 1
             ),
+            last=number >= max_rounds,
         )
         # Recorded on the round that *produced* them, so a later reader can ask
         # whether round N+1's queries actually came from round N's findings.
@@ -502,7 +516,7 @@ def _spend_remaining(
     run.stopped_because = ""
     _judge_round(
         config, ledger, library, client, judge, run, report, [], providers,
-        max_videos=max_videos, max_requests=max_requests, allowance=remaining,
+        max_videos=max_videos, max_requests=max_requests, allowance=remaining, last=True,
     )
     run.stopped_because = run.stopped_because or stopped
 
@@ -906,12 +920,9 @@ def cap_per_aim(queries: Sequence[str]) -> tuple[list[str], int, int]:
     return kept, unaimed, capped
 
 
-_AIM_WORD_RE = re.compile(r"[^\W_]{3,}", re.UNICODE)
-_AIM_STOP = frozenset({"and", "the", "for", "with", "from", "into", "its", "how", "what", "why"})
-
-
-def _aim_words(text: str) -> set[str]:
-    return {word for word in _AIM_WORD_RE.findall(text.lower()) if word not in _AIM_STOP}
+# The matcher lives beside the stage-1 tag matcher in `brain/judge.py`, so an
+# aim and a tag are matched against a coverage line by the same rule.
+_aim_words = aim_words
 
 
 def unmatched_aims(queries: Sequence[str], coverage: Sequence[CoverageItem]) -> int:
@@ -1191,11 +1202,30 @@ def spread_fetches(
     return order
 
 
+# The order of the item levels a round reads in: what the coverage is missing,
+# then a part held only in part, then candidates naming no item, then what is
+# already held. Untagged before held because an untagged candidate has not been
+# shown to repeat anything — a tag that matched no line may name a gap in other
+# words — while a held one has. With no coverage every candidate is untagged,
+# and the order is the one level it always was.
+_LEVELS = (ITEM_MISSING, ITEM_PARTLY, ITEM_UNTAGGED, ITEM_HELD)
+# States that fill a gap, and so are never capped.
+_GAP_STATES = frozenset({ITEM_MISSING, ITEM_PARTLY})
+
+
 def fetch_order(
     entries: Sequence[UnreadCandidate], fetched_so_far: Mapping[str, int]
 ) -> list[UnreadCandidate]:
-    """The order a round reads its candidates in. YES before MAYBE; within each,
-    one per query in turn.
+    """The order a round reads its candidates in: by the state of the coverage
+    item each would serve (`_LEVELS`), then YES before MAYBE within a level,
+    and within each, one per query in turn.
+
+    **By item first, because YES-first spent the budget on what was held.**
+    YouTube ranks popular general explainers first even for a narrow gap query,
+    and stage 1 says YES most readily to familiar subjects, so a round's share
+    filled with YES on held parts before a gap's MAYBE was read. Measured on
+    run `71cc2c8f5c57`: of 25 keepers, 16 to 22 were on parts the library
+    already held, and 166 stage-1 MAYBEs were never read.
 
     Which query goes first in each turn is two rules, both general:
 
@@ -1228,11 +1258,42 @@ def fetch_order(
     def by_query(entry: UnreadCandidate) -> str:
         return entry.query
 
-    return spread_fetches(
-        [entry for entry in entries if entry.verdict.verdict == VERDICT_YES], by_query, rank
-    ) + spread_fetches(
-        [entry for entry in entries if entry.verdict.verdict == VERDICT_MAYBE], by_query, rank
-    )
+    order: list[UnreadCandidate] = []
+    for level in _LEVELS:
+        here = [entry for entry in entries if _level(entry) == level]
+        for word in (VERDICT_YES, VERDICT_MAYBE):
+            order.extend(
+                spread_fetches(
+                    [entry for entry in here if entry.verdict.verdict == word], by_query, rank
+                )
+            )
+    return order
+
+
+def _level(entry: UnreadCandidate) -> str:
+    return entry.item_state if entry.item_state in _LEVELS else ITEM_UNTAGGED
+
+
+def held_cap(allowance: int) -> int:
+    """How many of a round's keepers may be candidates on a held item or none.
+
+    A third, rounded down, and never less than one. The rest of the share is
+    left for the gaps: two thirds is the majority of every round's keepers,
+    where run `71cc2c8f5c57` gave held parts 16 to 22 of 25. Not zero, because
+    a further perspective on a held part has some value and a mis-tagged gap
+    lands here; at least one, so a round of one slot is not shut to them. A cap
+    reached is not a loss: the candidates wait in the queue and the slots stay
+    in the budget for the next round's share, and the safeguard releases both
+    when no later round could spend them.
+    """
+    if allowance <= 0:
+        return 0
+    return max(1, allowance // 3)
+
+
+def coverage_has_gap(coverage: Sequence[CoverageItem]) -> bool:
+    """Is anything in this coverage missing or partly held?"""
+    return any(state in _GAP_STATES for state, _, _ in item_lines(coverage))
 
 
 def round_allowance(remaining: int, rounds_left: int) -> int:
@@ -1266,17 +1327,25 @@ def _judge_round(
     max_videos: int,
     max_requests: int,
     allowance: int | None = None,
+    last: bool = False,
 ) -> list[str]:
     """Screen this round's candidates, then fetch and judge within `allowance`.
 
     ``allowance`` is how many keepers this round may store; ``None`` means the
     run's whole remaining `max_videos`. What it does not reach is carried on
     `run.backlog` and recorded on the report, never dropped.
+
+    ``last`` says no later round can spend what this one leaves: the final
+    round, or the remaining budget spent when the search dried up. Only then
+    may candidates on a held item or none take keepers past `held_cap`.
     """
     if not candidates and not run.backlog:
         return []
     if allowance is None:
         allowance = max(0, max_videos - len(run.stored_ids))
+    # The coverage this round has: the plan the last round ended with, or the
+    # baseline in round one — the lines the expansion was aimed with.
+    coverage = coverage_so_far(run)
 
     # **Partition before stage 1.** Stage 1 decides whether to *fetch* (rule
     # 13), and a transcript already on disk has nothing left to fetch — so a
@@ -1353,6 +1422,9 @@ def _judge_round(
             # the only thing that can stop that — under the rule, stated in the
             # prompt, that a word from the map is never a reason to keep.
             territory=run.territory,
+            # Each verdict also names the coverage item the video would add
+            # to, which orders the fetches below and decides nothing else.
+            coverage=coverage,
         )
         if to_screen
         else []
@@ -1375,6 +1447,10 @@ def _judge_round(
                 report.unshown_no += 1
             else:
                 report.guessed_no += 1
+        state = verdict.item_state if verdict.item_state in ITEM_STATES else ITEM_UNTAGGED
+        report.tagged[state] = report.tagged.get(state, 0) + 1
+        if verdict.unmatched:
+            report.tags_unmatched += 1
         if verdict.verdict == VERDICT_YES:
             report.verdict_yes += 1
         elif verdict.verdict == VERDICT_NO:
@@ -1411,14 +1487,28 @@ def _judge_round(
         UnreadCandidate(
             by_id[v.video_id], v, report.found_by.get(v.video_id, ""), report.number,
             origin=origin_of.get(report.found_by.get(v.video_id, ""), ""),
+            item=v.item, item_state=v.item_state,
         )
         for v in verdicts
         if v.verdict in (VERDICT_YES, VERDICT_MAYBE)
     ]
     # Waiting first, so that among queries with equal reads an older one wins.
-    pool = run.backlog + fresh
+    # A waiting candidate's tag is matched again against this round's coverage:
+    # a gap an earlier round filled is held now, and its candidates wait behind
+    # the gaps still open.
+    pool = [_retagged(entry, coverage) for entry in run.backlog] + fresh
     run.backlog = []
     queue = fetch_order(pool, run.fetched_by_query)
+    # **What is held gets a capped share.** Applied only where the round has
+    # coverage to tag against; a fresh topic has none, and reads as it always
+    # did. Released past the cap only when no later round could spend the slots
+    # *and* the coverage still names a gap: when nothing is missing any more,
+    # what is left would buy only repeats, and stopping is the planner's call.
+    capped = bool(coverage)
+    cap = held_cap(allowance) if capped else 0
+    release = last and coverage_has_gap(coverage)
+    report.held_cap = max(report.held_cap, cap)
+    off_gap_here = 0
     ordered: list[tuple[SearchResult, object | None, UnreadCandidate | None]] = [
         (c, None, None) for c in held
     ] + [(entry.result, entry.verdict, entry) for entry in queue]
@@ -1439,6 +1529,14 @@ def _judge_round(
             # This round's share is spent. Not a stop: the rest wait for the
             # next round, whose planner is told they are waiting.
             stop_at = index
+            break
+        off_gap = entry is not None and capped and _level(entry) not in _GAP_STATES
+        if off_gap and off_gap_here >= cap and not release:
+            # The held share is spent. Everything after this in the queue is on
+            # a held item or none, so they wait together; the slots stay in the
+            # budget for the next round's share.
+            stop_at = index
+            report.held_capped += sum(1 for _, _, rest in ordered[index:] if rest is not None)
             break
         if entry is not None:
             run.fetched_by_query[entry.query] = run.fetched_by_query.get(entry.query, 0) + 1
@@ -1508,6 +1606,9 @@ def _judge_round(
         else:
             _pace(config, fetched_any)
             fetched_any = True
+            if entry is not None:
+                state = _level(entry)
+                report.fetched_by_state[state] = report.fetched_by_state.get(state, 0) + 1
             acquisition = acquire(ledger, candidate.video_id, providers)
             if acquisition.outcome == ACQUIRE_NO_CAPTIONS:
                 # A route, not a failure — counted as one in discovery alone,
@@ -1730,6 +1831,11 @@ def _judge_round(
             run.stored_ids.append(candidate.video_id)
             report.stored += 1
             stored_here += 1
+            if off_gap:
+                off_gap_here += 1
+                if off_gap_here > cap:
+                    # Past the cap, because nothing later could spend the slot.
+                    report.released += 1
         # The other half of what the planner reads, and the half that makes
         # coverage answerable at all. A planner shown only rejections can only
         # ever learn what to avoid; it needs what was kept to say which part of
@@ -1770,6 +1876,21 @@ def _judge_round(
     if screened_short and not run.stopped_because:
         run.stopped_because = STOP_MAX_REQUESTS
     return _dedupe_concepts(concepts)
+
+
+def _retagged(entry: UnreadCandidate, coverage: Sequence[CoverageItem]) -> UnreadCandidate:
+    """A waiting candidate with its tag matched against this round's coverage.
+
+    Kept as it was when there is no tag, or when the tag no longer matches a
+    line because the coverage was worded differently: a change of wording is
+    not evidence the item's state changed.
+    """
+    if not entry.verdict.serves or not coverage:
+        return entry
+    state, item, unmatched = match_item(entry.verdict.serves, coverage)
+    if unmatched:
+        return entry
+    return replace(entry, item=item, item_state=state)
 
 
 def _overflowed(run: DiscoverRun) -> bool:

@@ -183,3 +183,216 @@ def test_a_failed_batch_is_still_maybe_and_untagged() -> None:
     verdicts = judge.judge_metadata(BRIEF, _candidates(2), batch_size=10, coverage=COVERAGE)
 
     assert [(v.verdict, v.item_state) for v in verdicts] == [(VERDICT_MAYBE, ITEM_UNTAGGED)] * 2
+
+
+# -- the fetch order and the held cap, through the discovery loop ---------------
+
+import pytest  # noqa: E402
+
+from marginalia.contracts import MetadataVerdict  # noqa: E402
+from marginalia.flow.discover import fetch_order, held_cap  # noqa: E402
+from test_discover import (  # noqa: E402,F401 - fixtures are found by name
+    FakeJudge,
+    FakePlanner,
+    FakeTranscripts,
+    client,
+    config,
+    ledger,
+    library,
+    result,
+    run,
+    searches,
+)
+
+HELD = [f"held{index:07d}" for index in range(4)]
+GAP = [f"gaps{index:07d}" for index in range(3)]
+
+
+class TaggingJudge(FakeJudge):
+    """Stage 1 as scripted, each verdict carrying the item state it was given."""
+
+    def __init__(self, tags, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._tags = dict(tags)
+        self.coverage_given: list[list] = []
+
+    def judge_metadata(self, brief, candidates, *, batch_size, territory=None, coverage=()):
+        self.coverage_given.append(list(coverage))
+        out = []
+        for verdict in super().judge_metadata(brief, candidates, batch_size=batch_size):
+            state, unmatched = self._tags.get(verdict.video_id, (ITEM_UNTAGGED, False))
+            out.append(
+                MetadataVerdict(
+                    verdict.video_id, verdict.verdict, verdict.reason,
+                    serves="" if state == ITEM_UNTAGGED and not unmatched else "x",
+                    item_state=state, unmatched=unmatched,
+                )
+            )
+        return out
+
+
+def _shape(searches, library, held_yes=HELD, gaps_maybe=GAP):
+    """Held YES ranked first by search, gap MAYBEs after: the measured shape."""
+    searches["*"] = [result(video_id) for video_id in [*held_yes, *gaps_maybe]]
+    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    tags = {video_id: (ITEM_HELD, False) for video_id in held_yes}
+    tags.update({video_id: (ITEM_MISSING, False) for video_id in gaps_maybe})
+    metadata = {video_id: (VERDICT_MAYBE, "may cover a gap") for video_id in gaps_maybe}
+    return TaggingJudge(tags, metadata=metadata)
+
+
+def test_gap_maybes_are_read_before_held_yes(config, ledger, library, client, searches) -> None:
+    judge = _shape(searches, library)
+    transcripts = FakeTranscripts()
+
+    outcome = run(config, ledger, library, client, judge, provider=transcripts,
+                  max_rounds=3, max_videos=9, planner=FakePlanner(baseline=COVERAGE))
+
+    first = outcome.rounds[0]
+    assert first.allowance == 3
+    assert transcripts.fetched[:3] == GAP, "every gap candidate before any held YES"
+    assert first.fetched_by_state == {ITEM_MISSING: 3}
+    assert first.tagged == {ITEM_HELD: 4, ITEM_MISSING: 3}
+    assert judge.coverage_given[0] == COVERAGE, "round one tags against the baseline"
+
+
+def test_held_candidates_take_a_capped_share_and_wait(config, ledger, library, client, searches) -> None:
+    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+
+    outcome = run(config, ledger, library, client, judge,
+                  max_rounds=3, max_videos=9, planner=FakePlanner(baseline=COVERAGE))
+
+    first = outcome.rounds[0]
+    assert (first.held_cap, first.stored) == (1, 2), "one gap, one held, one slot kept"
+    assert first.fetched_by_state == {ITEM_MISSING: 1, ITEM_HELD: 1}
+    assert first.held_capped == 3
+    assert [entry.video_id for entry in first.unread] == HELD[1:], "waiting, not dropped"
+    assert first.released == 0
+
+
+def test_the_safeguard_releases_held_slots_when_no_later_round_can_use_them(
+    config, ledger, library, client, searches
+) -> None:
+    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+
+    outcome = run(config, ledger, library, client, judge,
+                  max_rounds=1, max_videos=4, planner=FakePlanner(baseline=COVERAGE))
+
+    only = outcome.rounds[0]
+    assert (only.held_cap, only.stored, only.released) == (1, 4, 2)
+    assert only.fetched_by_state == {ITEM_MISSING: 1, ITEM_HELD: 3}, "the gap first"
+
+
+def test_with_nothing_missing_held_candidates_never_pass_the_cap(
+    config, ledger, library, client, searches
+) -> None:
+    """Spending the rest on repeats is the cost this cap exists to cut; whether
+    to stop is the planner's call (`coverage_satisfied`)."""
+    judge = _shape(searches, library, gaps_maybe=[])
+    held_only = [item for item in COVERAGE if item.satisfied]
+
+    outcome = run(config, ledger, library, client, judge,
+                  max_rounds=1, max_videos=4, planner=FakePlanner(baseline=held_only))
+
+    only = outcome.rounds[0]
+    assert (only.held_cap, only.stored, only.released, only.held_capped) == (1, 1, 0, 3)
+
+
+def test_a_fresh_topic_reads_as_it_always_did(config, ledger, library, client, searches) -> None:
+    """Nothing held, so nothing to tag against: no cap, YES before MAYBE."""
+    ids = ["yesyesyes01", "maybemaybe1", "yesyesyes02"]
+    searches["*"] = [result(video_id) for video_id in ids]
+    judge = TaggingJudge({}, metadata={"maybemaybe1": (VERDICT_MAYBE, "unclear")})
+    transcripts = FakeTranscripts()
+
+    outcome = run(config, ledger, library, client, judge, provider=transcripts,
+                  max_rounds=1, max_videos=3)
+
+    only = outcome.rounds[0]
+    assert transcripts.fetched == ["yesyesyes01", "yesyesyes02", "maybemaybe1"]
+    assert (only.held_cap, only.held_capped, only.stored) == (0, 0, 3)
+    assert only.fetched_by_state == {ITEM_UNTAGGED: 3}
+    assert judge.coverage_given == [[]]
+
+
+def test_a_single_part_topic_spends_its_budget(config, ledger, library, client, searches) -> None:
+    single = [CoverageItem("Knife sharpening", False, "", missing=("whetstone angle",))]
+    ids = ["onegap00001", "onegap00002", "untagged001"]
+    searches["*"] = [result(video_id) for video_id in ids]
+    library.write_note("zzzzzzzzzzz", "# An old note\n\nAbout something else.\n")
+    judge = TaggingJudge({"onegap00001": (ITEM_MISSING, False), "onegap00002": (ITEM_MISSING, False)})
+
+    outcome = run(config, ledger, library, client, judge,
+                  max_rounds=1, max_videos=3, planner=FakePlanner(baseline=single))
+
+    only = outcome.rounds[0]
+    assert only.stored == 3
+    assert only.fetched_by_state == {ITEM_MISSING: 2, ITEM_UNTAGGED: 1}
+
+
+def test_an_unmatched_tag_is_counted_and_read_as_untagged(
+    config, ledger, library, client, searches
+) -> None:
+    ids = ["heldheld001", "unmatched01", "partpart001"]
+    searches["*"] = [result(video_id) for video_id in ids]
+    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    judge = TaggingJudge({
+        "heldheld001": (ITEM_HELD, False),
+        "unmatched01": (ITEM_UNTAGGED, True),
+        "partpart001": (ITEM_PARTLY, False),
+    })
+    transcripts = FakeTranscripts()
+
+    outcome = run(config, ledger, library, client, judge, provider=transcripts,
+                  max_rounds=1, max_videos=3, planner=FakePlanner(baseline=COVERAGE))
+
+    only = outcome.rounds[0]
+    assert only.tags_unmatched == 1
+    assert only.tagged == {ITEM_HELD: 1, ITEM_UNTAGGED: 1, ITEM_PARTLY: 1}
+    assert transcripts.fetched == ["partpart001", "unmatched01", "heldheld001"]
+
+
+@pytest.mark.parametrize("allowance, cap", [(0, 0), (1, 1), (3, 1), (9, 3), (25, 8)])
+def test_the_held_cap_is_a_third_and_at_least_one(allowance, cap) -> None:
+    assert held_cap(allowance) == cap
+
+
+def test_fetch_order_is_by_item_then_yes_before_maybe() -> None:
+    from marginalia.contracts import UnreadCandidate
+
+    def entry(video_id, verdict, state):
+        return UnreadCandidate(
+            result(video_id), MetadataVerdict(video_id, verdict, "r"), "q", 1,
+            origin="brief", item_state=state,
+        )
+
+    entries = [
+        entry("heldyes0001", VERDICT_YES, ITEM_HELD),
+        entry("untagyes001", VERDICT_YES, ITEM_UNTAGGED),
+        entry("partmaybe01", VERDICT_MAYBE, ITEM_PARTLY),
+        entry("missmaybe01", VERDICT_MAYBE, ITEM_MISSING),
+        entry("missyes0001", VERDICT_YES, ITEM_MISSING),
+    ]
+
+    assert [e.video_id for e in fetch_order(entries, {})] == [
+        "missyes0001", "missmaybe01", "partmaybe01", "untagyes001", "heldyes0001",
+    ]
+
+
+def test_a_waiting_candidate_is_retagged_against_the_round_it_waits_in() -> None:
+    """A gap an earlier round filled is held now; its candidates wait behind
+    the gaps still open."""
+    from marginalia.contracts import UnreadCandidate
+    from marginalia.flow.discover import _retagged
+
+    verdict = MetadataVerdict(
+        "waiting0001", VERDICT_MAYBE, "r", serves="Common failures — burnt base",
+        item_state=ITEM_MISSING,
+    )
+    waiting = UnreadCandidate(result("waiting0001"), verdict, "q", 1, item_state=ITEM_MISSING)
+    filled = [
+        CoverageItem("Common failures", True, "", held=("dense crumb", "burnt base")),
+    ]
+
+    assert _retagged(waiting, filled).item_state == ITEM_HELD
+    assert _retagged(waiting, [CoverageItem("Something reworded", True, "")]) == waiting
