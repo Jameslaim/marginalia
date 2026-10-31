@@ -372,9 +372,13 @@ territory_queries = 8
 # written in each language the brief names, and queries tagged with the item).
 # Both are asked for `territory_queries` queries, so a comparison runs at the
 # same quota. A plan that cannot be used falls back to the map, never to
-# nothing. `map` until a live run has compared the two; `marg discover
-# --search-source plan` runs one without editing this file.
-search_source = "map"
+# nothing. `plan` is the default. Measured on a live, same-day comparison of
+# round one: on a topic whose parts were all held, the plan's 8 queries brought 9
+# keepers on missing items and the map's brought 0 (its 12 keepers were general
+# explainers of held parts); on a topic whose missing items barely appear on the
+# video site, neither found any.
+# `map` stays available here and through `marg discover --search-source map`.
+search_source = "plan"
 
 # B5. Queries the planner writes at the end of each round, for the next one.
 # They run *first* in that round — they were written against the gaps the last

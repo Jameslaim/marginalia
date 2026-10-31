@@ -988,17 +988,21 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     `search_source = "plan"` (or `--search-source plan`), a plan replaces the territory
     map as round one's source. Each of its items states what a satisfying video is like,
     how such videos are really titled, the languages and scripts to search in, and
-    queries tagged with the coverage line they serve, matched as in rule 37. The baseline
-    runs first, and queries are spent missing PART lines first, then partly held PART
-    lines, then ALSO WANTED gaps, then held lines only with budget left. Every distinct
-    gap gets one query before any gets a second, and an item serves every gap its line
-    names. A gap reachable only through EXCLUDED material is skipped and named. Language
-    queries aim at the brief's language or market item, or else the broadest one. The
-    reply is checked (rule 30), and a failed plan falls back to the map, never to
-    nothing. A "current context" block may be passed in. It is untrusted data, marked and
-    counted. `map` stays the default until a live run has compared the two on the same
-    day. Measured, without searching: a plan made before the baseline spent all 8 queries
-    on parts the library already held. Once it saw coverage, 5 and 7 of 8 aimed at gaps.
+    queries tagged with the coverage line they serve, matched as in rule 37. The
+    baseline runs first, and queries are spent missing PART lines first, then partly
+    held PART lines, then ALSO WANTED gaps, then held lines only with budget left. Every
+    distinct gap gets one query before any gets a second, and an item serves every gap
+    its line names. A gap reachable only through EXCLUDED material is skipped and named.
+    Language queries aim at the brief's language or market item, or else the broadest
+    one. The reply is checked (rule 30), and a failed plan falls back to the map, never
+    to nothing. A "current context" block may be passed in. It is untrusted data, marked
+    and counted. The plan is the default, and `map` stays available through the switch.
+    Measured on a live, same-day comparison of round one: on a topic whose parts were
+    all held, the plan's 8 queries brought 9 keepers on missing items, and the map's
+    brought 0. The map's 12 keepers were general explainers of parts the library already
+    held. On a topic whose missing items barely appear on YouTube, neither found any.
+    Measured, without searching: a plan made before the baseline spent all 8 queries on
+    parts the library already held. Once it saw coverage, 5 and 7 of 8 aimed at gaps.
     Two bugs in counting which gaps a query served left 3 of 8 slots unused until they
     were fixed.
 

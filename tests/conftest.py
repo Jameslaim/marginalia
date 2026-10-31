@@ -47,6 +47,12 @@ def make_discover_config(**overrides: object) -> DiscoverConfig:
         # actually slept three seconds per fetch would stop being run.
         "fetch_delay_s": 0.0,
         "trust_caption_hint": False,
+        # The map, named, though the plan is the default (rule 39). The loop's
+        # tests inject a scripted `FakeMapper` and are about the loop, not the
+        # source; with the default they would first call the real search
+        # planner on a test client. The plan path and the default itself are
+        # tested in test_search_source.py.
+        "search_source": "map",
     }
     values.update(overrides)
     return DiscoverConfig(**values)  # type: ignore[arg-type]

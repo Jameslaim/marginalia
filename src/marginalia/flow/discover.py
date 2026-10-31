@@ -4,9 +4,10 @@
 
     once:
       write brief -> review brief              (M2b)
-      map the territory -> concepts, vocabulary, recency, queries   (B4)
-        or the search plan -> items, title phrasing, languages, queries
-        ([discover] search_source; a plan that cannot be used runs the map)
+      the search plan -> items, title phrasing, languages, queries  (rule 39)
+        or the territory map -> concepts, vocabulary, recency, queries   (B4)
+        ([discover] search_source, `plan` by default; a plan that cannot be
+        used runs the map)
 
     round:
       expand brief -> queries, plus the map's own queries in round 1

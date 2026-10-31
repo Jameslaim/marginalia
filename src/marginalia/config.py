@@ -158,10 +158,15 @@ DEFAULT_PLANNER_MAX_TOKENS = 16384
 DEFAULT_TRUST_CAPTION_HINT = False
 # Which source writes round one's planned queries: the search plan, written from
 # the brief's coverage items (`plan/search`), or the territory map
-# (`territory/map`). `map` until a live run on the same day has compared the two:
-# the plan has been read, not searched, and rule 35's lesson is that a prompt is
-# credited only with what a measurement shows. A failed plan falls back to the map.
-DEFAULT_SEARCH_SOURCE = "map"
+# (`territory/map`). `plan` since a live run compared the two (rule 39).
+# Measured on a live, same-day comparison of
+# round one: on a topic whose parts were all held, the plan's 8 queries brought 9
+# keepers on missing items and the map's brought 0 (its 12 keepers were general
+# explainers of held parts); on a topic whose missing items barely appear on the
+# video site, neither found any.
+# `map` stays reachable by the setting and by `--search-source map`, and a
+# failed plan falls back to the map, never to nothing.
+DEFAULT_SEARCH_SOURCE = "plan"
 SEARCH_SOURCE_VALUES = ("plan", "map")
 DEFAULT_MAX_COST_USD = 2.0
 DEFAULT_FETCH_DELAY_S = 3.0

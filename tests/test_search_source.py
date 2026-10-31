@@ -106,11 +106,27 @@ def _with_source(config, source):
 # -- the switch --------------------------------------------------------------------
 
 
-def test_the_default_is_the_map(config) -> None:
-    assert config.discover.search_source == SOURCE_MAP
+def test_the_default_is_the_plan(config) -> None:
+    """Rule 39: the plan is the default since the live comparison."""
+    from marginalia.config import DEFAULT_SEARCH_SOURCE, DiscoverConfig
+
+    assert DEFAULT_SEARCH_SOURCE == SOURCE_PLAN
+    default = DiscoverConfig(max_rounds=1, max_videos=1, max_requests=1, quiet_rounds=1,
+                             queries_per_round=1, results_per_query=1, max_cost_usd=1.0,
+                             fetch_delay_s=0.0)
+    assert default.search_source == SOURCE_PLAN
     mapper, planner = FakeMapper(mapped("map query")), FakeSearchPlanner(a_plan("plan query"))
 
-    territory = round_one_source(config, mapper, planner, BRIEF, source=config.discover.search_source)
+    territory = round_one_source(config, mapper, planner, BRIEF, source=default.search_source)
+
+    assert (mapper.calls, planner.calls) == (0, 1)
+    assert territory.source == SOURCE_PLAN and territory.fallback == ""
+
+
+def test_the_map_stays_reachable_by_the_setting(config) -> None:
+    mapper, planner = FakeMapper(mapped("map query")), FakeSearchPlanner(a_plan("plan query"))
+
+    territory = round_one_source(config, mapper, planner, BRIEF, source=SOURCE_MAP)
 
     assert (mapper.calls, planner.calls) == (1, 0)
     assert territory.source == SOURCE_MAP and territory.fallback == ""
@@ -349,8 +365,8 @@ def _config(tmp_path: Path, monkeypatch, body: str):
 
 
 def test_the_setting_is_read_and_checked(tmp_path, monkeypatch) -> None:
-    assert _config(tmp_path, monkeypatch, "").discover.search_source == "map"
-    assert _config(tmp_path, monkeypatch, '[discover]\nsearch_source = "Plan"\n').discover.search_source == "plan"
+    assert _config(tmp_path, monkeypatch, "").discover.search_source == "plan"
+    assert _config(tmp_path, monkeypatch, '[discover]\nsearch_source = "Map"\n').discover.search_source == "map"
     with pytest.raises(ConfigError, match="search_source must be one of plan, map"):
         _config(tmp_path, monkeypatch, '[discover]\nsearch_source = "both"\n')
 
