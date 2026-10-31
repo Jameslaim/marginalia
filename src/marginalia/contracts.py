@@ -1290,6 +1290,16 @@ class Brief:
     draft_attempts: int = 1
     draft_problems: tuple[str, ...] = ()
     review_problem: str = ""
+    # Which brief the run used: the topic's approved version, reused with no
+    # write or review, or a fresh one (`None`). `sha256` is of the text either
+    # way, so two runs can be checked against one target (rule 23).
+    approved_version: int | None = None
+    sha256: str = ""
+
+    @property
+    def source(self) -> str:
+        """``approved`` when an approved version was reused, else ``fresh``."""
+        return "approved" if self.approved_version is not None else "fresh"
 
     @property
     def final_is(self) -> str:
@@ -1304,6 +1314,9 @@ class Brief:
             "draft_problems": list(self.draft_problems),
             "review_problem": self.review_problem,
             "final_is": self.final_is,
+            "source": self.source,
+            "approved_version": self.approved_version,
+            "sha256": self.sha256,
         }
 
     @property

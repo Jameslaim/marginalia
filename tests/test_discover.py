@@ -3859,8 +3859,12 @@ def test_an_ordinary_brief_is_recorded_as_one_draft_reviewed(
 
     outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1)
 
+    from marginalia.brain.judge import brief_sha256
+
     assert json.loads(ledger.get_run(outcome.run_id).brief_outcome) == {
         "draft_attempts": 1, "draft_problems": [], "review_problem": "", "final_is": "review",
+        # Which brief the run used, and the digest of its text (rule 23).
+        "source": "fresh", "approved_version": None, "sha256": brief_sha256(BRIEF.text),
     }
 
 

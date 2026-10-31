@@ -210,3 +210,175 @@ def test_parts_are_split_into_their_listed_things() -> None:
         ("Blocked drains", ["why they clog", "clearing tools (plungers, augers)", "when to call a plumber"]),
         ("Leaking taps", ["worn washers", "cartridge failures"]),
     ]
+
+
+# -- discovery reuses it --------------------------------------------------------
+
+from dataclasses import replace  # noqa: E402
+
+from marginalia.flow.brief import BriefNotApproved, approve, write_pending  # noqa: E402
+from test_discover import (  # noqa: E402,F401 - fixtures are found by name
+    BRIEF as FRESH,
+    FakeJudge,
+    FakeMapper,
+    FakePlanner,
+    client,
+    config,
+    ledger,
+    library,
+    result,
+    run,
+    searches,
+)
+
+
+class Recording(FakeJudge):
+    """Records the brief text every judge call was given."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.briefs_seen: list[str] = []
+        self.writes = 0
+
+    def write_brief(self, topic, *, max_tokens=None):
+        self.writes += 1
+        return super().write_brief(topic, max_tokens=max_tokens)
+
+    def expand_queries(self, brief, **kwargs):
+        self.briefs_seen.append(brief.text)
+        return super().expand_queries(brief, **kwargs)
+
+    def judge_metadata(self, brief, candidates, **kwargs):
+        self.briefs_seen.append(brief.text)
+        return super().judge_metadata(brief, candidates, **kwargs)
+
+    def judge_full(self, brief, candidate, **kwargs):
+        self.briefs_seen.append(brief.text)
+        return super().judge_full(brief, candidate, **kwargs)
+
+
+class RecordingMapper(FakeMapper):
+    def map(self, brief, **kwargs):
+        self.brief_seen = brief.text
+        return super().map(brief, **kwargs)
+
+
+class RecordingPlanner(FakePlanner):
+    def plan(self, brief, territory, report, **kwargs):
+        self.brief_seen = brief.text
+        return super().plan(brief, territory, report, **kwargs)
+
+
+def _approve(config, ledger, library, topic, text):
+    class Writer:
+        def write_brief(self, topic, *, max_tokens=None):
+            return Brief(topic=topic, text=text, version="5/5")
+
+    write_pending(config, library, Writer(), topic)
+    return approve(ledger, library, topic)
+
+
+def test_pending_edit_approve_then_discover_reuses_it(config, ledger, library, client, searches) -> None:
+    import json
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    pending = write_pending(config, library, type("W", (), {
+        "write_brief": lambda self, topic, max_tokens=None: Brief(topic, BRIEF, "5/5"),
+    })(), "prompt caching")
+    edited = BRIEF.replace("adverts for drain cleaners", "adverts")
+    Path(pending.path).write_text(edited, encoding="utf-8")
+    approval = approve(ledger, library, "Prompt  Caching")
+    judge, mapper, planner = Recording(queries=[["q1"], ["q2"]]), RecordingMapper(), RecordingPlanner()
+
+    outcome = run(config, ledger, library, client, judge, topic="prompt caching",
+                  mapper=mapper, planner=planner, max_rounds=2)
+
+    assert judge.writes == 0, "no write and no review call"
+    assert outcome.brief.text == edited.strip()
+    assert (outcome.brief.approved_version, outcome.brief.sha256) == (1, approval.sha256)
+    assert set(judge.briefs_seen) == {edited.strip()}, "expansion, stage 1 and stage 2"
+    assert mapper.brief_seen == planner.brief_seen == edited.strip()
+    row = ledger.get_run(outcome.run_id)
+    assert row.brief == edited.strip()
+    stored = json.loads(row.brief_outcome)
+    assert (stored["source"], stored["approved_version"], stored["sha256"]) == (
+        "approved", 1, approval.sha256,
+    )
+
+
+def test_with_no_approved_brief_a_fresh_one_is_written(config, ledger, library, client, searches) -> None:
+    import json
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    judge = Recording()
+
+    outcome = run(config, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.writes == 1
+    assert outcome.brief.text == FRESH.text and outcome.brief.approved_version is None
+    stored = json.loads(ledger.get_run(outcome.run_id).brief_outcome)
+    assert stored["source"] == "fresh" and stored["approved_version"] is None
+    assert stored["sha256"] == brief_sha256(FRESH.text)
+
+
+def test_requiring_an_approved_brief_stops_before_the_run(config, ledger, library, client, searches) -> None:
+    strict = replace(config, discover=replace(config.discover, require_approved_brief=True))
+    judge = Recording()
+
+    with pytest.raises(BriefNotApproved, match="marg brief"):
+        run(strict, ledger, library, client, judge, max_rounds=1)
+
+    assert judge.writes == 0
+    assert ledger.list_runs() == [], "nothing searched or recorded"
+
+
+def test_a_topics_earlier_runs_keep_the_brief_they_used(config, ledger, library, client, searches) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    first = run(config, ledger, library, client, Recording(), max_rounds=1)
+    _approve(config, ledger, library, first.topic, BRIEF)
+    searches["*"] = [result("bbbbbbbbbbb")]
+
+    second = run(config, ledger, library, client, Recording(), max_rounds=1)
+
+    assert ledger.get_run(first.run_id).brief == FRESH.text
+    assert ledger.get_run(second.run_id).brief == BRIEF.strip()
+
+
+def test_the_brief_line_says_which_brief(config, ledger, library, client, searches) -> None:
+    from marginalia.cli import _brief_line
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    fresh = run(config, ledger, library, client, Recording(), max_rounds=1)
+    assert _brief_line(fresh).endswith(
+        '[fresh brief: no approved brief for this topic; make one with marg brief "prompt caching"]'
+    )
+    _approve(config, ledger, library, fresh.topic, BRIEF)
+    searches["*"] = [result("bbbbbbbbbbb")]
+    reused = run(config, ledger, library, client, Recording(), max_rounds=1)
+    assert _brief_line(reused).endswith("[approved brief v1, reused]")
+
+
+def test_the_export_says_the_approved_brief_was_reused() -> None:
+    import json
+
+    from marginalia.flow.export import _brief_made
+
+    outcome = Brief("t", BRIEF, "5/5", approved_version=3, sha256="ab" * 32).outcome
+
+    assert "- The topic's approved brief v3 was reused (sha256 abababababab); no brief was written." in (
+        _brief_made(json.dumps(outcome))
+    )
+
+
+def test_the_cli_names_the_commands_when_an_approved_brief_is_required(
+    configured, monkeypatch, capsys
+) -> None:
+    def refuse(*args, **kwargs):
+        raise BriefNotApproved("home plumbing repairs")
+
+    monkeypatch.setattr("marginalia.cli.discover", refuse)
+
+    assert main(["discover", "home plumbing repairs"]) == EXIT_FAILED
+    err = capsys.readouterr().err
+    assert 'marg brief "home plumbing repairs" --approve' in err
+    assert "Nothing was searched or recorded" in err

@@ -19,17 +19,63 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 
 from ..brain.judge import Judge, brief_check, brief_parts, brief_sha256, normalise_brief
 from ..config import Config
-from ..contracts import BriefApproval, BriefStatus, PendingBrief
+from ..contracts import Brief, BriefApproval, BriefStatus, PendingBrief
 from ..core.ledger import Ledger, normalise_topic
 from ..core.ledger import now as ledger_now
 from ..core.library import Library
 
 log = logging.getLogger(__name__)
 
-__all__ = ["BriefPendingExists", "approve", "brief_status", "write_pending"]
+__all__ = [
+    "BriefNotApproved",
+    "BriefPendingExists",
+    "approve",
+    "brief_status",
+    "run_brief",
+    "write_pending",
+]
+
+
+class BriefNotApproved(RuntimeError):
+    """`[discover] require_approved_brief` is on and the topic has none."""
+
+    def __init__(self, topic: str) -> None:
+        self.topic = topic
+        quoted = json.dumps(topic, ensure_ascii=False)
+        super().__init__(
+            f"no approved brief for {quoted}, and [discover] require_approved_brief is on. "
+            f"Write one with: marg brief {quoted} — edit the file it names — then "
+            f"marg brief {quoted} --approve. Nothing was searched or recorded."
+        )
+
+
+def run_brief(config: Config, ledger: Ledger, judge: Judge, topic: str) -> Brief:
+    """The brief a discovery run on ``topic`` uses.
+
+    The topic's latest approved version when one exists — no write and no
+    review call, and the same text every run on the topic is measured against.
+    Otherwise a fresh brief, written and reviewed as it always was, unless
+    `[discover] require_approved_brief` says to stop instead. Either way the
+    text's digest travels on the brief, so the run row records it.
+    """
+    approved = ledger.approved_brief(topic)
+    if approved is not None:
+        log.info("brief: reusing approved brief v%d for %r", approved.version, approved.topic)
+        return Brief(
+            topic=topic,
+            text=approved.brief,
+            version=approved.prompt_version or "approved",
+            approved_version=approved.version,
+            sha256=approved.sha256,
+        )
+    if config.discover.require_approved_brief:
+        raise BriefNotApproved(normalise_topic(topic))
+    brief = judge.write_brief(topic, max_tokens=config.discover.brief_max_tokens)
+    return replace(brief, sha256=brief_sha256(brief.text))
 
 
 class BriefPendingExists(RuntimeError):

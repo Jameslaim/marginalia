@@ -315,6 +315,9 @@ class DiscoverConfig:
     # global one because these two are the long structured outputs, and a
     # truncated reply from either is discarded whole rather than parsed.
     brief_max_tokens: int = DEFAULT_BRIEF_MAX_TOKENS
+    # Refuse to run a topic with no approved brief rather than write a fresh
+    # one. Off by default, so an unattended run never blocks on a person.
+    require_approved_brief: bool = False
     baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
@@ -619,6 +622,9 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         brief_max_tokens=_positive(
             section, "brief_max_tokens", DEFAULT_BRIEF_MAX_TOKENS,
             config_path, "discover",
+        ),
+        require_approved_brief=_flag(
+            section, "require_approved_brief", False, config_path, "discover"
         ),
         baseline_max_tokens=_positive(
             section, "baseline_max_tokens", DEFAULT_BASELINE_MAX_TOKENS,

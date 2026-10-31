@@ -77,7 +77,7 @@ from .contracts import (
 )
 from .core.ids import extract_video_id, is_video_id
 from .flow.acquire import acquire, transcript_providers
-from .flow.brief import BriefPendingExists, approve, brief_status, write_pending
+from .flow.brief import BriefNotApproved, BriefPendingExists, approve, brief_status, write_pending
 from .flow.discover import discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
@@ -136,6 +136,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except SelectionFailed as exc:
         # Same shape as AskTooLarge: a sentence naming what happened and
         # what was not sent, rather than a class name and a traceback.
+        return _error(str(exc), EXIT_FAILED)
+    except BriefNotApproved as exc:
+        # Opted in, and the topic has no approved brief: stopped before the run
+        # row, with the three commands that make one.
         return _error(str(exc), EXIT_FAILED)
     except BriefUnusable as exc:
         # The run stopped before it started: no draft was usable, so nothing
@@ -386,6 +390,19 @@ def _cmd_discover(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _brief_line(run) -> str:
+    """The brief's intent, and which brief it was: the topic's approved
+    version, reused, or a fresh one — with the command that makes one."""
+    brief = run.brief
+    if brief.approved_version is not None:
+        return f"brief:    {brief.intent} [approved brief v{brief.approved_version}, reused]"
+    quoted = json.dumps(run.topic, ensure_ascii=False)
+    return (
+        f"brief:    {brief.intent} [fresh brief: no approved brief for this topic; "
+        f"make one with marg brief {quoted}]"
+    )
+
+
 def _cmd_brief(args: argparse.Namespace) -> int:
     """Write a topic's brief to review, approve it, or show where it stands.
 
@@ -499,7 +516,7 @@ def _gap_first_line(report) -> str | None:
 
 
 def _discover_report(run: DiscoverRun) -> list[str]:
-    lines = [f"brief:    {run.brief.intent}"]
+    lines = [_brief_line(run)]
     lines.extend(_brief_outcome_lines(run.brief))
     lines.extend(_territory_lines(run))
     lines.extend(_baseline_lines(run))

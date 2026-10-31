@@ -1430,6 +1430,8 @@ def test_an_ordinary_brief_records_one_draft_reviewed(tmp_path) -> None:
 
     assert brief.outcome == {
         "draft_attempts": 1, "draft_problems": [], "review_problem": "", "final_is": "review",
+        # A written brief is fresh; its digest is set by the run that uses it.
+        "source": "fresh", "approved_version": None, "sha256": "",
     }
 
 

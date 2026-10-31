@@ -531,6 +531,13 @@ def _brief_made(brief_outcome: str | None) -> list[str]:
     except ValueError:
         return ["", f"How it was made: {_cell(brief_outcome)}"]
     lines = []
+    # Which brief the run used. Absent on runs made before approved briefs,
+    # which all wrote a fresh one.
+    if outcome.get("source") == "approved":
+        lines.append(
+            f"- The topic's approved brief v{outcome.get('approved_version')} was reused "
+            f"(sha256 {str(outcome.get('sha256') or '')[:12]}); no brief was written."
+        )
     for number, problem in enumerate(outcome.get("draft_problems") or [], start=1):
         lines.append(f"- Draft {number} was unusable ({problem}) and was drawn again.")
     if outcome.get("review_problem"):

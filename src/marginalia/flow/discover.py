@@ -121,6 +121,7 @@ from ..llm import LlmClient, LlmConfigError
 from ..providers import PermanentError, TransientError
 from ..providers.base import TranscriptProvider
 from .acquire import acquire, transcript_providers
+from .brief import run_brief
 from .search import quota_headroom, run_search
 from ..enrich.note import note_refusal
 from .store import reconcile_stored, store_transcript
@@ -223,7 +224,12 @@ def discover(
     # when no draft was usable: stopping here spends nothing beyond the calls
     # already made, where a run on a brief written from the topic alone would
     # spend quota and store what that brief let through.
-    brief = judge.write_brief(topic, max_tokens=config.discover.brief_max_tokens)
+    #
+    # **The topic's approved brief, when it has one.** Every run used to write
+    # a fresh brief, so the PARTS and their listed things moved between runs of
+    # one topic and coverage was judged against whichever brief a run drew.
+    # Reused, it costs no call, and every run of the topic shares one target.
+    brief = run_brief(config, ledger, judge, topic)
 
     ledger.start_run(
         run_id,

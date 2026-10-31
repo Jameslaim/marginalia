@@ -110,7 +110,12 @@ def test_the_report_leads_with_the_brief(stubbed, capsys) -> None:
     assert main(["discover", "prompt caching"]) == EXIT_OK
 
     lines = capsys.readouterr().out.strip().splitlines()
-    assert lines[0] == "brief:    Understand how prompt caching cuts cost in practice."
+    # The brief line also says which brief the run used, and for a fresh one
+    # names the command that makes an approved one.
+    assert lines[0] == (
+        "brief:    Understand how prompt caching cuts cost in practice. "
+        '[fresh brief: no approved brief for this topic; make one with marg brief "prompt caching"]'
+    )
 
 
 def test_the_report_has_one_line_per_round_then_a_summary(stubbed, capsys) -> None:
@@ -650,6 +655,7 @@ def test_the_json_carries_how_the_brief_was_made(stubbed, capsys) -> None:
     assert body["brief_outcome"] == {
         "draft_attempts": 2, "draft_problems": ["empty"], "review_problem": "",
         "final_is": "review",
+        "source": "fresh", "approved_version": None, "sha256": "",
     }
 
 
