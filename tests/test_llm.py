@@ -1327,7 +1327,7 @@ def test_both_coverage_prompts_assess_a_part_per_listed_thing() -> None:
     """A part is a list; a yes-or-no per part could only call a half-held part
     covered (the wrong YES) or a gap. Both coverage prompts write PARTLY with
     what is held and what is missing, and a single-item part is YES or NO."""
-    for name, version in (("plan/round", "11"), ("plan/baseline", "6")):
+    for name, version in (("plan/round", "12"), ("plan/baseline", "6")):
         prompt = load_prompt(name)
         text = " ".join(prompt.text.split())
         assert prompt.version == version, name

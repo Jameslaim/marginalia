@@ -396,3 +396,82 @@ def test_a_waiting_candidate_is_retagged_against_the_round_it_waits_in() -> None
 
     assert _retagged(waiting, filled).item_state == ITEM_HELD
     assert _retagged(waiting, [CoverageItem("Something reworded", True, "")]) == waiting
+
+
+# -- visible and counted: the round line, --json, the planner, the ledger ------
+
+
+def _capped_run(config, ledger, library, client, searches):
+    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+    return run(config, ledger, library, client, judge,
+               max_rounds=3, max_videos=9, planner=FakePlanner(baseline=COVERAGE))
+
+
+def test_the_round_line_and_json_carry_the_gap_first_counters(
+    config, ledger, library, client, searches
+) -> None:
+    from marginalia.cli import _discover_json, _discover_report
+
+    outcome = _capped_run(config, ledger, library, client, searches)
+
+    report = "\n".join(_discover_report(outcome))
+    assert (
+        "items: stage 1 tagged 1 missing, 0 partly, 4 held, 0 untagged (0 unmatched); "
+        "fetched 1 missing, 0 partly, 1 held, 0 untagged; held cap 1, 3 left by it, "
+        "0 released past it"
+    ) in report
+    first = _discover_json(outcome)["rounds"][0]
+    assert first["tagged"] == {ITEM_MISSING: 1, ITEM_PARTLY: 0, ITEM_HELD: 4, ITEM_UNTAGGED: 0}
+    assert first["fetched_by_state"][ITEM_HELD] == 1
+    assert (first["held_cap"], first["held_capped"], first["released"]) == (1, 3, 0)
+    assert first["unread_by_item"] == {ITEM_HELD: 3}
+
+
+def test_a_fresh_topic_prints_no_items_line(config, ledger, library, client, searches) -> None:
+    from marginalia.cli import _discover_report
+
+    searches["*"] = [result("yesyesyes01")]
+    outcome = run(config, ledger, library, client, TaggingJudge({}), max_rounds=1)
+
+    assert "items:" not in "\n".join(_discover_report(outcome))
+
+
+def test_the_planner_sees_the_queue_grouped_by_item() -> None:
+    from marginalia.brain.planner import render_round
+    from marginalia.contracts import RoundReport, UnreadCandidate
+
+    def waiting(video_id, state, item):
+        return UnreadCandidate(
+            result(video_id), MetadataVerdict(video_id, VERDICT_MAYBE, "r"), "a query", 1,
+            item=item, item_state=state,
+        )
+
+    report = RoundReport(number=1, queries=["a query"], held_cap=1, held_capped=2)
+    report.unread = [
+        waiting("missing0001", ITEM_MISSING, "Common failures — burnt base"),
+        waiting("held0000001", ITEM_HELD, "Oven temperature"),
+        waiting("held0000002", ITEM_HELD, "Oven temperature"),
+    ]
+
+    text = render_round(report)
+
+    assert "- MISSING: Common failures — burnt base — 1 waiting (0 stage-1 YES)" in text
+    assert "- HELD: Oven temperature — 2 waiting (0 stage-1 YES)" in text
+    assert "  - a query — 3 waiting (0 stage-1 YES)" in text
+    assert "at most 1 keepers on held or no item, 2 left waiting by that cap" in text
+
+
+def test_the_decision_row_stores_the_tag_and_its_state(
+    config, ledger, library, client, searches
+) -> None:
+    from marginalia.core.ledger import STAGE_METADATA
+
+    _capped_run(config, ledger, library, client, searches)
+
+    rows = {
+        row.video_id: row.item
+        for video_id in (HELD[0], GAP[0])
+        for row in ledger.decisions_for(video_id)
+        if row.stage == STAGE_METADATA
+    }
+    assert rows == {HELD[0]: "held: x", GAP[0]: "missing: x"}

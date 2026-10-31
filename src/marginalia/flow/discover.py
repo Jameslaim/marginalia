@@ -94,6 +94,7 @@ from ..contracts import (
     DiscoverRun,
     JudgedVideo,
     LibraryCoverage,
+    MetadataVerdict,
     PlannedQuery,
     RoundPlan,
     RoundReport,
@@ -1438,6 +1439,7 @@ def _judge_round(
         _log(
             ledger, run, verdict.video_id, STAGE_METADATA, verdict.verdict, verdict.reason,
             prompt_version=metadata_version, outcome=verdict.outcome, said=verdict.said,
+            item=_item_record(verdict),
         )
         if verdict.said == VERDICT_NO:
             # A NO kept as MAYBE, counted by its ground: a guess, or what the
@@ -2072,6 +2074,7 @@ def _log(
     relevant: str | None = None,
     outcome: str,
     said: str | None = None,
+    item: str | None = None,
 ) -> None:
     """Every verdict at every stage, unless this is a dry run.
 
@@ -2096,7 +2099,17 @@ def _log(
         model=run.model,
         outcome=outcome,
         said=said,
+        item=item,
     )
+
+
+def _item_record(verdict: MetadataVerdict) -> str:
+    """A stage-1 tag as the decision row stores it: `state: tag`."""
+    if verdict.unmatched:
+        return f"unmatched: {verdict.serves}"
+    if not verdict.serves:
+        return ITEM_UNTAGGED
+    return f"{verdict.item_state}: {verdict.serves}"
 
 
 def _dedupe_concepts(concepts: Sequence[str]) -> list[str]:

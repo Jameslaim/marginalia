@@ -38,6 +38,7 @@ from typing import Any, Sequence
 from . import __version__
 from .config import Config, ConfigError, library_root, load_config
 from .contracts import (
+    ITEM_STATES,
     ACQUIRE_FAILED_PERMANENT,
     ACQUIRE_FAILED_TRANSIENT,
     ACQUIRE_NO_CAPTIONS,
@@ -410,6 +411,29 @@ def _count_by_query(unread) -> dict[str, int]:
     return counts
 
 
+def _count_by_item(unread) -> dict[str, int]:
+    """What is waiting, by the coverage item it would serve, as `state: item`."""
+    counts: dict[str, int] = {}
+    for entry in unread:
+        key = f"{entry.item_state}: {entry.item}" if entry.item else entry.item_state
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _gap_first_line(report) -> str | None:
+    """What gap-first fetching did this round, on its own line, zeros included
+    once the round had coverage to tag against (rule 14)."""
+    if not report.held_cap and not any(report.tagged.get(state) for state in ITEM_STATES[:3]):
+        return None
+    tagged = ", ".join(f"{report.tagged.get(state, 0)} {state}" for state in ITEM_STATES)
+    fetched = ", ".join(f"{report.fetched_by_state.get(state, 0)} {state}" for state in ITEM_STATES)
+    return (
+        f"          items: stage 1 tagged {tagged} ({report.tags_unmatched} unmatched); "
+        f"fetched {fetched}; held cap {report.held_cap}, "
+        f"{report.held_capped} left by it, {report.released} released past it"
+    )
+
+
 def _discover_report(run: DiscoverRun) -> list[str]:
     lines = [f"brief:    {run.brief.intent}"]
     lines.extend(_brief_outcome_lines(run.brief))
@@ -497,6 +521,9 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         if report.rejected_this_run:
             line += f", {report.rejected_this_run} declined earlier in this run"
         lines.append(line)
+        gap_first = _gap_first_line(report)
+        if gap_first:
+            lines.append(gap_first)
         lines.extend(_plan_lines(report))
     verb = "would store" if run.dry_run else "stored"
     lines.append(
@@ -693,10 +720,24 @@ def _coverage_lines(run: DiscoverRun) -> list[str]:
         return []
 
     lines = [f"coverage: assessed at the end of round {final.round_number}"]
+    # What is still queued for each part, so a gap with candidates waiting
+    # reads differently from one with nothing found.
+    waiting: dict[str, int] = {}
+    for entry in run.backlog:
+        part = entry.item.split(" — ", 1)[0] if entry.item else ""
+        waiting[part] = waiting.get(part, 0) + 1
     for item in final.coverage:
         mark = {"yes": "yes", "partly": "part", "no": "NO "}[item.mark]
         detail = f" — {item.detail}" if item.detail else ""
-        lines.append(f"  {mark}  {item.part}{detail}")
+        queued = f" [{waiting[item.part]} waiting]" if waiting.get(item.part) else ""
+        lines.append(f"  {mark}  {item.part}{detail}{queued}")
+    if waiting.get(""):
+        lines.append(f"  ({waiting['']} waiting on no item)")
+    # Tagged against an earlier round's wording of a part: still counted.
+    parts = {item.part for item in final.coverage}
+    elsewhere = sum(count for part, count in waiting.items() if part and part not in parts)
+    if elsewhere:
+        lines.append(f"  ({elsewhere} waiting on parts an earlier round worded differently)")
     return lines
 
 
@@ -779,6 +820,18 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "read_from_earlier": report.read_from_earlier,
                 "already_waiting": report.already_waiting,
                 "unread_by_query": _count_by_query(report.unread),
+                # Gap-first fetching: stage 1's tags by item state, the tags that
+                # matched no coverage line, fetches by state, the held cap and
+                # what it left and released, and the queue by item.
+                "tagged": {state: report.tagged.get(state, 0) for state in ITEM_STATES},
+                "tags_unmatched": report.tags_unmatched,
+                "fetched_by_state": {
+                    state: report.fetched_by_state.get(state, 0) for state in ITEM_STATES
+                },
+                "held_cap": report.held_cap,
+                "held_capped": report.held_capped,
+                "released": report.released,
+                "unread_by_item": _count_by_item(report.unread),
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next
                 # round, the map revisions it proposed and the ones the code

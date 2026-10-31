@@ -669,8 +669,10 @@ def render_round(
     lines.append(
         f"FOUND BUT NOT YET READ ({len(report.unread)}) — stage 1 judged these worth "
         "reading, and this round's share of the video budget ran out before they were "
-        "fetched. They join the next round's queue, where a query with nothing read yet "
-        "goes before one that has had a read, so they are not pushed behind new finds. They "
+        "fetched, or the share kept for parts already held did. Grouped by the coverage "
+        "item stage 1 said each would serve: they join the next round's queue, where "
+        "candidates on a missing item go first, then a part held in part, then those on "
+        "no item, then those on a held item. They "
         "satisfy nothing yet. Searching for them again only finds what is already "
         "queued: a listed thing with candidates waiting here needs no new query, "
         "and the listed things with nothing kept and nothing waiting are the gaps."
@@ -741,6 +743,14 @@ def render_round(
         f"{report.unread_yes} stage-1 YES and {report.unread_maybe} MAYBE left unread "
         f"and carried forward; {report.read_from_earlier} read from an earlier round"
     )
+    if report.held_cap:
+        fetched = report.fetched_by_state
+        lines.append(
+            f"- fetched by item: {fetched.get('missing', 0)} missing, "
+            f"{fetched.get('partly', 0)} partly held, {fetched.get('untagged', 0)} on no item, "
+            f"{fetched.get('held', 0)} held; at most {report.held_cap} keepers on held or no "
+            f"item, {report.held_capped} left waiting by that cap"
+        )
     lines.append(
         f"- {report.failed} fetches failed, {report.no_captions} had no captions, "
         f"{report.already_held} were already on disk "
@@ -776,23 +786,35 @@ def _marked_video_lines(videos: Sequence[tuple[int, JudgedVideo]]) -> list[str]:
 
 
 def _unread_lines(unread: Sequence[UnreadCandidate]) -> list[str]:
-    """What is waiting, by the query that found it, then each title.
+    """What is waiting, by the coverage item it would serve, then by the query
+    that found it, then each title.
 
-    Per query first, because that is the planner's unit: a query that already
-    has finds waiting is a part of the brief with candidates queued, and
-    writing another query for it spends a search on what the next round reads
-    anyway. Titles after, capped and said so like every other list here.
+    By item first, because that is what the next round reads by and what a
+    gap is: an item with candidates waiting needs no new query, and an item
+    with none is where the queries should go. Per query after, because that is
+    the planner's own unit. Titles last, capped and said so like every other
+    list here.
     """
     if not unread:
         return []
+    per_item: dict[str, list[UnreadCandidate]] = {}
+    for entry in unread:
+        key = f"{entry.item_state.upper()}: {entry.item}" if entry.item else "NO ITEM NAMED"
+        per_item.setdefault(key, []).append(entry)
+    lines = [
+        f"- {item} — {len(entries)} waiting "
+        f"({sum(1 for e in entries if e.verdict.verdict == VERDICT_YES)} stage-1 YES)"
+        for item, entries in per_item.items()
+    ]
     per_query: dict[str, list[UnreadCandidate]] = {}
     for entry in unread:
         per_query.setdefault(entry.query or "(no query recorded)", []).append(entry)
-    lines = [
-        f"- {query} — {len(entries)} waiting "
+    lines.append("  by the query that found them:")
+    lines.extend(
+        f"  - {query} — {len(entries)} waiting "
         f"({sum(1 for e in entries if e.verdict.verdict == VERDICT_YES)} stage-1 YES)"
         for query, entries in per_query.items()
-    ]
+    )
     shown = list(unread)[:_MAX_SHOWN]
     lines.extend(
         f"  - [{entry.verdict.verdict.upper()}] {entry.result.title[:_MAX_TITLE]} — "

@@ -1,8 +1,10 @@
 ---
 name: plan_round
-version: "11"
+version: "12"
 stage: plan
-note: "v11 assesses each part per listed thing. Briefs write a part as a list,
+note: "v12 says the FOUND BUT NOT YET READ section is grouped by
+  coverage item and read missing first, as discovery now fetches. Wording only.
+  v11 assesses each part per listed thing. Briefs write a part as a list,
   and a yes-or-no per part could only call a half-held part covered or a gap;
   one run marked parts the library held as gaps and spent 2 of 10 queries
   re-seeking them. A part is now YES when every thing it lists is held, PARTLY
@@ -147,9 +149,9 @@ apt its title. Treat the part of the brief it seems to cover as unmet; it will b
 judged again on a later run.
 
 A video under FOUND BUT NOT YET READ was judged worth reading from its metadata,
-and this round's share of the video budget ran out before it was fetched. It joins
-the next round's queue, where a query with nothing read yet goes before one that
-has had a read. It satisfies nothing yet, so a part of the brief it looks
+and this round's share of the video budget ran out before it was fetched. It is
+listed under the coverage item stage 1 said it would serve, and joins the next
+round's queue, where a missing item's candidates go first and a held item's last. It satisfies nothing yet, so a part of the brief it looks
 like it covers is not covered — but it is not a gap either, because candidates for
 it are already queued and another search would find them again. Spend your
 queries on the listed things with nothing kept and nothing waiting.

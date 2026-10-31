@@ -167,7 +167,8 @@ CREATE TABLE IF NOT EXISTS decisions (
   relevant   TEXT,            -- stage 2's RELEVANT ranges or sentinel; read by nothing
   outcome    TEXT,            -- judged | call_failed | too_large | truncated | no_verdict;
                               -- NULL on search rows and on rows written before it existed
-  said       TEXT             -- the judge's own verdict word, before any resolution
+  said       TEXT,            -- the judge's own verdict word, before any resolution
+  item       TEXT             -- stage 1: the coverage item it was tagged with, as `state: tag`
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_topic ON decisions(topic, verdict);
 CREATE INDEX IF NOT EXISTS idx_decisions_video ON decisions(video_id);
@@ -292,6 +293,10 @@ _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
     # recognise historical reason text, so nothing else ever does.
     ("decisions", "outcome", "TEXT"),
     ("decisions", "said", "TEXT"),
+    # The coverage item stage 1 said a candidate would serve, with the state it
+    # matched, so "why was this fetched before that?" is answerable from the
+    # ledger (rule 23). NULL on every earlier row: nothing tagged them.
+    ("decisions", "item", "TEXT"),
     # Note failures, so the drain stops meeting the same failing videos first.
     # Zero on every existing row, which is the honest answer: nothing recorded
     # a failure before this, and treating unrecorded as "never failed" puts
@@ -444,6 +449,9 @@ class DecisionRow:
     # before the columns existed; read through `resolved_outcome`, never raw.
     outcome: str | None = None
     said: str | None = None
+    # Stage 1 only: `state: tag` — the coverage item the judge named and the
+    # state it matched (`untagged`, or `unmatched: tag` for one matching none).
+    item: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> DecisionRow:
@@ -1313,6 +1321,7 @@ class Ledger:
         relevant: str | None = None,
         outcome: str | None = None,
         said: str | None = None,
+        item: str | None = None,
     ) -> DecisionRow:
         """Record one verdict. ``topic`` is normalised on the way in.
 
@@ -1363,14 +1372,15 @@ class Ledger:
             relevant=relevant,
             outcome=outcome,
             said=said,
+            item=item,
         )
         with self._conn:
             self._conn.execute(
                 """
                 INSERT INTO decisions
                     (video_id, topic, stage, verdict, reason, decided_at, run_id,
-                     model, evidence, prompt_version, relevant, outcome, said)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     model, evidence, prompt_version, relevant, outcome, said, item)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     row.video_id,
@@ -1386,6 +1396,7 @@ class Ledger:
                     row.relevant,
                     row.outcome,
                     row.said,
+                    row.item,
                 ),
             )
         log.info("decision: %s %s/%s for %r", video_id, stage, verdict, row.topic)
