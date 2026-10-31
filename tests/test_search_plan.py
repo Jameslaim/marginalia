@@ -781,3 +781,33 @@ def test_the_prompt_states_the_tiers_and_the_exclusion_rule() -> None:
     assert "Never aim a query at anything EXCLUDED names" in text
     assert "SKIP: <the COVERAGE line, as written there> | <the EXCLUDED item" in text
     assert "a thing listed under two lines is one gap" in text
+
+
+def test_an_item_written_as_the_kind_and_a_thing_resolves_to_its_line() -> None:
+    """Measured: a reply wrote `ALSO WANTED — <thing>` and four items were dropped."""
+    reply = TIERED_PLAN.replace(
+        "ITEM: MISSING ALSO WANTED: costs of the equipment — equipment costs",
+        "ITEM: ALSO WANTED — equipment costs",
+    )
+    plan = _tiered(reply)[0].plan
+    assert plan.unknown_items == ()
+    assert (plan.items[0].item, plan.items[0].tier) == (
+        "costs of the equipment — equipment costs", "also wanted",
+    )
+
+
+def test_a_coverage_line_longer_than_two_hundred_characters_resolves_whole() -> None:
+    """Measured: a line cut at 200 characters resolved to its part, not its gap."""
+    long_part = "Hot composting " + "with a very long baseline description " * 5
+    thing = "pile temperature, each with a stated reading"
+    coverage = [CoverageItem(long_part.strip(), False, partly=True, held=("turning schedule",),
+                             missing=(thing,))]
+    line = f"{long_part.strip()} — {thing}"
+    assert len(line) > 200
+    reply = (
+        "RECENCY: ANY — stable\nMAIN LANGUAGE: en\nLANGUAGE ITEMS: none\nBROAD ITEM: P1\n\n"
+        f"ITEM: {line}\nCOVERS: {line}\nINTENT: x\nTITLED: my pile log\n"
+        "QUERY: my compost pile temperature log\nFILTERS: none\n"
+    )
+    item = _tiered(reply, coverage=coverage)[0].plan.items[0]
+    assert (item.line, item.state) == (line, "missing")

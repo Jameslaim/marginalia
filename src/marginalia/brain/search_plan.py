@@ -101,6 +101,10 @@ _MAX_QUERIES = 24
 _MAX_QUERY_WORDS = 12
 _MAX_TITLED = 30
 _MAX_REASON = 200
+# An ITEM, COVERS or SKIP line copies a coverage line, and a baseline's part
+# name with its thing runs past 200 characters: measured, a line cut at 200
+# ended "each with a stat…" and resolved to its part instead of its gap.
+_MAX_LINE = 600
 _MAX_INTENT = 300
 _MAX_LANGUAGES = 8
 # Step 4's current context: a ceiling on what one run may be shown.
@@ -219,13 +223,13 @@ def _resolve_item(
     one that is not keeps the PART's own tag and is counted, because a wording
     difference is not a reason to drop the item's queries.
     """
-    body = tidy(raw, limit=_MAX_REASON)
+    body = tidy(raw, limit=_MAX_LINE)
     match = _ITEM_REF_RE.match(body)
     if match is not None:
         number = int(match.group(1))
         if not 1 <= number <= len(parts):
             return None
-        thing = tidy(match.group("thing") or "", limit=_MAX_REASON).strip("\"'")
+        thing = tidy(match.group("thing") or "", limit=_MAX_LINE).strip("\"'")
     else:
         words = aim_words(body)
         hits = [n for n, (_, text, _) in enumerate(parts, start=1) if words and words <= aim_words(text)]
@@ -243,8 +247,11 @@ def _resolve_item(
 
 # The label the coverage block puts before a line, which a reply copying the
 # line may copy too: `MISSING ALSO WANTED: `, `PARTLY PART: `.
+# Measured: one reply wrote `ALSO WANTED — production costs`, the kind alone
+# with a dash, and four of its seven items were dropped as naming nothing.
 _COVERAGE_LABEL_RE = re.compile(
-    r"^\s*-?\s*(?:MISSING|PARTLY|HELD)\s+(?:PART|ALSO\s+WANTED)\s*:\s*", re.IGNORECASE
+    r"^\s*-?\s*(?:(?:MISSING|PARTLY|HELD)\s+)?(?:PART|ALSO\s+WANTED)\s*(?::|—|–|-)\s*",
+    re.IGNORECASE,
 )
 _REPEAT_NOTE = " (the same gap as a line above: one query serves both)"
 
@@ -269,7 +276,7 @@ def _resolve_any(
     so an ALSO WANTED gap hung under the nearest PART is not counted as the
     PART's. None when nothing in the brief or the coverage is named.
     """
-    body = _strip_label(tidy(raw, limit=_MAX_REASON))
+    body = _strip_label(tidy(raw, limit=_MAX_LINE))
 
     def from_line(text: str) -> tuple[int, str, bool, str] | None:
         if not coverage:
@@ -414,7 +421,7 @@ def parse_plan(
             broad = (_part_numbers(body, len(parts)) or (0,))[0]
         elif label in ("SKIP", "SKIPPED"):
             line, _, reason = body.partition("|")
-            line = _strip_label(tidy(line, limit=_MAX_REASON))
+            line = _strip_label(tidy(line, limit=_MAX_LINE))
             if line and line.lower() not in {"none", "n/a", "-"}:
                 skipped.append(f"{line} | {tidy(reason, limit=_MAX_REASON) or 'no reason given'}")
         elif label == "ITEM":
@@ -456,7 +463,7 @@ def parse_plan(
         elif label == "TITLED" and current is not None and not current["titled"]:
             current["titled"] = terms(body, _MAX_TITLED)
         elif label == "COVERS" and current is not None and not current["covers"]:
-            covers = _strip_label(tidy(body, limit=_MAX_REASON).strip("\"'"))
+            covers = _strip_label(tidy(body, limit=_MAX_LINE).strip("\"'"))
             current["covers"] = "" if covers.lower().rstrip(".") in {"none", "n/a", "-"} else covers
         elif label == "LANGUAGE":
             language = _parse_language(body)
