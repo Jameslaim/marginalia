@@ -959,6 +959,21 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     from; two of them were short clips stage 2 had judged substantive on clear evidence,
     and a shared rule now notes them.
 
+37. **The fetch budget is spent on what the coverage is missing.** Stage 1 tags each
+    candidate with the coverage item it would serve; the tag is matched against the
+    round's coverage lines with the same matcher as expansion aims, an unmatched tag
+    counts as no item and is counted, and the tag never decides a verdict. Fetching reads
+    missing items first, then partly held, then no item, then held, YES before MAYBE
+    within each, with rule 31's spread inside every level. Candidates on held items or on
+    none take at most a third of a round's keepers; past that they are released only
+    where no later round could spend the slots and a gap is still listed, and when nothing
+    is missing the cap holds and stopping stays the planner's call. A fresh topic, with no
+    coverage, fetches exactly as before. Measured on one replayed run: held keepers fell
+    from 22 of 25 to about 3, at about twice the fetches, because stage 2 declined about 2
+    of every 3 gap candidates — so the request ceiling is set with that in view. The tag
+    leans stage 1 slightly (gap-tagged NO → MAYBE, held-tagged YES → MAYBE, about 4% of
+    verdicts), which is the cheap direction.
+
 ## Structure
 
 ```
