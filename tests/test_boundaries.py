@@ -352,6 +352,11 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "ORIGIN_TERRITORY",
         "ORIGIN_PLANNER",
         "ORIGIN_THREAD",
+        # round one's planned queries: the search plan or the map
+        "ORIGIN_PLAN",
+        "SOURCE_MAP",
+        "SOURCE_PLAN",
+        "SEARCH_SOURCES",
         # search filters — the vocabulary the model writes, the validator
         # reads and the provider sends. Shared three ways, so it is here.
         "FILTER_PUBLISHED_AFTER",
@@ -374,6 +379,9 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "MapSnapshot",
         "TerritoryRevision",
         "TerritoryMap",
+        "PlanLanguage",
+        "PlanItem",
+        "SearchPlan",
         # planning
         "RECOMMEND_CONTINUE",
         "RECOMMEND_STOP",

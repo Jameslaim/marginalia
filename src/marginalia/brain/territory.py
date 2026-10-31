@@ -75,6 +75,12 @@ __all__ = [
     # there would make the validator's guarantees provable in only one of them.
     "parse_filters",
     "tidy",
+    # And with `search_plan.py`, which reads the same RECENCY line and term
+    # lists out of the plan reply, for the same reason.
+    "parse_recency",
+    "terms",
+    "RECENCY_SAMPLES",
+    "widest_recency",
 ]
 
 # In a subdirectory for the same reason `judge/full` is: mapping is going to
@@ -472,6 +478,10 @@ def _terms(body: str, limit: int) -> list[str]:
         if len(terms) >= limit:
             break
     return terms
+
+
+parse_recency = _parse_recency
+terms = _terms
 
 
 def tidy(raw: str, *, limit: int) -> str:

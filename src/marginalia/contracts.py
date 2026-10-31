@@ -42,6 +42,10 @@ __all__ = [
     "ORIGIN_TERRITORY",
     "ORIGIN_PLANNER",
     "ORIGIN_THREAD",
+    "ORIGIN_PLAN",
+    "SOURCE_MAP",
+    "SOURCE_PLAN",
+    "SEARCH_SOURCES",
     # search filters
     "FILTER_PUBLISHED_AFTER",
     "FILTER_ORDER",
@@ -68,6 +72,9 @@ __all__ = [
     "MapSnapshot",
     "TerritoryRevision",
     "TerritoryMap",
+    "PlanLanguage",
+    "PlanItem",
+    "SearchPlan",
     # planning
     "RECOMMEND_CONTINUE",
     "RECOMMEND_STOP",
@@ -243,6 +250,17 @@ ORIGIN_BRIEF = "brief"
 ORIGIN_TERRITORY = "territory"
 ORIGIN_PLANNER = "planner"
 ORIGIN_THREAD = "thread"
+# Round one's planned queries when they come from the search plan rather than
+# the territory map, so "which source found it?" stays a query on the ledger.
+ORIGIN_PLAN = "plan"
+
+# Which of the two wrote round one's planned queries (`[discover]
+# search_source`). Both produce a `TerritoryMap`, so every reader of the run's
+# territory — recency, round one, the judges, the planner, the report — reads
+# whichever one ran, and `TerritoryMap.source` says which.
+SOURCE_MAP = "map"
+SOURCE_PLAN = "plan"
+SEARCH_SOURCES = (SOURCE_PLAN, SOURCE_MAP)
 
 
 # -- search filters -----------------------------------------------------------
@@ -606,6 +624,98 @@ class MapSnapshot:
 
 
 @dataclass(frozen=True)
+class PlanLanguage:
+    """A language the brief names, and how titles in that market are written.
+
+    ``script`` is ``native``, ``romanised`` or ``mixed``. It is the field the
+    queries are checked against: measured on one topic, every native-script
+    query in one language returned nothing, while every keeper in it was found
+    by romanised or English queries, because its creators title in a romanised
+    mix.
+    """
+
+    name: str
+    code: str = ""
+    script: str = ""
+    how: str = ""
+
+    def as_dict(self) -> dict:
+        return {"name": self.name, "code": self.code, "script": self.script, "how": self.how}
+
+
+@dataclass(frozen=True)
+class PlanItem:
+    """One coverage item of the brief, and how round one searches for it.
+
+    ``item`` is the tag its queries carry (`aim: <item>`): a PART's name, or
+    the name and one thing it lists. It is matched against coverage lines with
+    the same matcher as expansion aims and stage-1 tags (rule 37).
+    """
+
+    part: int
+    item: str
+    intent: str = ""
+    titled: tuple[str, ...] = ()
+    queries: tuple[str, ...] = ()
+    languages: tuple[str, ...] = ()
+
+    def as_dict(self) -> dict:
+        return {
+            "part": self.part,
+            "item": self.item,
+            "intent": self.intent,
+            "titled": list(self.titled),
+            "queries": list(self.queries),
+            "languages": list(self.languages),
+        }
+
+
+@dataclass(frozen=True)
+class SearchPlan:
+    """The search plan's own account, kept beside the queries it produced.
+
+    Everything here is what the plan line, the export and ``--json`` show, and
+    each problem has its own counter (rule 14): an item the brief does not
+    have, a listed thing no PART lists, a query written in the script its
+    language's titles do not use, and the brief's PARTS no query reaches.
+    """
+
+    items: tuple[PlanItem, ...] = ()
+    languages: tuple[PlanLanguage, ...] = ()
+    # The parts of the brief, by name, that no kept query aims at.
+    parts_without_query: tuple[str, ...] = ()
+    # ITEM lines naming no PART of the brief; their queries were not run.
+    unknown_items: tuple[str, ...] = ()
+    queries_dropped: int = 0
+    # A listed thing no PART of the brief lists; the item kept its PART's tag.
+    things_unmatched: int = 0
+    # A query whose script is not the one its language's titles use.
+    script_mismatches: int = 0
+    # Languages the plan declared with no query carrying their code.
+    languages_without_query: tuple[str, ...] = ()
+    # Step 4's slot. "absent" until something supplies current context; when
+    # it does, the lines are untrusted data and only their count is kept here.
+    context: str = "absent"
+    context_lines: int = 0
+    context_dropped: int = 0
+
+    def as_dict(self) -> dict:
+        return {
+            "items": [item.as_dict() for item in self.items],
+            "languages": [language.as_dict() for language in self.languages],
+            "parts_without_query": list(self.parts_without_query),
+            "unknown_items": list(self.unknown_items),
+            "queries_dropped": self.queries_dropped,
+            "things_unmatched": self.things_unmatched,
+            "script_mismatches": self.script_mismatches,
+            "languages_without_query": list(self.languages_without_query),
+            "context": self.context,
+            "context_lines": self.context_lines,
+            "context_dropped": self.context_dropped,
+        }
+
+
+@dataclass(frozen=True)
 class TerritoryMap:
     """What a subject actually covers, worked out before anything is searched.
 
@@ -648,6 +758,14 @@ class TerritoryMap:
     # no vote in the widest-of-three — an unreadable line must not vote `ANY`
     # and win — while its concepts, vocabulary and queries are still used.
     recency_readable: bool = True
+    # Which source wrote it (`SOURCE_MAP` or `SOURCE_PLAN`). A search plan is
+    # carried in this same shape — its title phrasing as the vocabulary, its
+    # queries as the queries — so no reader of the run's territory needs a
+    # second path, and `plan` holds what only a plan has. `fallback` says why a
+    # run asked for a plan and ran the map instead.
+    source: str = SOURCE_MAP
+    plan: SearchPlan | None = None
+    fallback: str = ""
 
     def __bool__(self) -> bool:
         """Is there anything usable in it? Separate from `parsed`, which means
@@ -746,6 +864,11 @@ class TerritoryMap:
                     }
                     for snapshot in self.history
                 ],
+                # Additive again: a map stored before the search plan existed
+                # reads as `source: map` by its absence.
+                "source": self.source,
+                "fallback": self.fallback,
+                "plan": self.plan.as_dict() if self.plan is not None else None,
             },
             ensure_ascii=False,
             indent=2,
