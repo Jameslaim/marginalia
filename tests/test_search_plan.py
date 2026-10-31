@@ -811,3 +811,54 @@ def test_a_coverage_line_longer_than_two_hundred_characters_resolves_whole() -> 
     )
     item = _tiered(reply, coverage=coverage)[0].plan.items[0]
     assert (item.line, item.state) == (line, "missing")
+
+
+# -- the gaps an item serves -------------------------------------------------------
+
+COSTS = [
+    CoverageItem("Worm bins", True, held=("bedding", "feeding")),
+    CoverageItem("costs of the equipment", False,
+                 missing=("bin prices", "thermometer costs", "shredder costs")),
+]
+
+
+def _costs_plan(covers: str, extra: str = "") -> str:
+    return (
+        "RECENCY: ANY — stable\nMAIN LANGUAGE: en\nLANGUAGE ITEMS: none\nBROAD ITEM: P1\n\n"
+        "ITEM: costs of the equipment\n"
+        f"COVERS: {covers}\n"
+        "INTENT: a\nTITLED: what my compost kit cost\n"
+        "QUERY: what my compost kit cost\nFILTERS: none\n"
+        "QUERY: compost equipment prices I paid\nFILTERS: none\n"
+        + extra
+    )
+
+
+def test_a_covers_line_listing_several_gaps_serves_each_of_them() -> None:
+    """Measured: COVERS listed four gaps as a comma list and only the first counted."""
+    reply = _costs_plan(
+        "MISSING ALSO WANTED: costs of the equipment — bin prices, thermometer costs, shredder costs"
+    )
+    plan = _tiered(reply, coverage=COSTS)[0].plan
+    assert plan.unserved_gaps == ()
+    assert plan.duplicates_avoided == 0
+    assert plan.items[0].queries == ("what my compost kit cost", "compost equipment prices I paid")
+
+
+def test_a_covers_line_listing_some_gaps_leaves_the_rest_open() -> None:
+    plan = _tiered(_costs_plan("costs of the equipment — bin prices, thermometer costs"),
+                   coverage=COSTS)[0].plan
+    assert plan.unserved_gaps == ("costs of the equipment — shredder costs",)
+    assert plan.duplicates_avoided == 1, "its second query waits for the open gap"
+
+
+def test_an_item_naming_a_whole_coverage_item_serves_all_its_gaps() -> None:
+    plan = _tiered(_costs_plan("costs of the equipment"), coverage=COSTS)[0].plan
+    assert plan.unserved_gaps == () and plan.duplicates_avoided == 0
+
+
+def test_covers_decides_the_line_over_the_item() -> None:
+    """Measured: an ITEM naming a whole item kept its line over a COVERS naming one gap."""
+    item = _tiered(_costs_plan("costs of the equipment — thermometer costs"),
+                   coverage=COSTS)[0].plan.items[0]
+    assert item.line == "costs of the equipment — thermometer costs"

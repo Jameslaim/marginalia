@@ -462,9 +462,15 @@ def parse_plan(
             current["intent"] = tidy(body, limit=_MAX_INTENT)
         elif label == "TITLED" and current is not None and not current["titled"]:
             current["titled"] = terms(body, _MAX_TITLED)
-        elif label == "COVERS" and current is not None and not current["covers"]:
+        elif label == "COVERS" and current is not None and not current.get("covers_written"):
+            # The reply's own COVERS line wins over the line its ITEM resolved
+            # to: measured, an ITEM named a whole coverage item while its
+            # COVERS named the four gaps it served, and the ITEM's line made
+            # the four look open.
             covers = _strip_label(tidy(body, limit=_MAX_LINE).strip("\"'"))
-            current["covers"] = "" if covers.lower().rstrip(".") in {"none", "n/a", "-"} else covers
+            current["covers_written"] = True
+            if covers.lower().rstrip(".") not in {"none", "n/a", "-"}:
+                current["covers"] = covers
         elif label == "LANGUAGE":
             language = _parse_language(body)
             if language is not None and len(languages) < _MAX_LANGUAGES:
@@ -622,6 +628,49 @@ def gap_key(line: str, coverage_item: CoverageItem | None = None) -> frozenset[s
     return frozenset(aim_words(thing or line))
 
 
+def _served(
+    tag: str, line: str, covered: CoverageItem
+) -> frozenset[frozenset[str]]:
+    """The gaps one item serves, by gap key.
+
+    A line naming a coverage item whole serves every gap it has: measured, an
+    item aimed at a whole ALSO WANTED item left its four gaps looking open, and
+    four second queries were held back for them. A tag listing several of the
+    item's things — `<part> — a, b, c` — serves each thing it names. Otherwise
+    the one line it resolved to.
+    """
+    gaps = [gap for gap, owner in _gap_lines([covered])]
+    if line == covered.part:
+        named = _listed_things(tag, covered)
+        if named:
+            return frozenset(gap_key(f"{covered.part} — {thing}", covered) for thing in named)
+        return frozenset(gap_key(gap, covered) for gap in gaps) or frozenset({gap_key(line, covered)})
+    named = _listed_things(tag, covered)
+    if len(named) > 1:
+        return frozenset(gap_key(f"{covered.part} — {thing}", covered) for thing in named)
+    return frozenset({gap_key(line, covered)})
+
+
+def _listed_things(tag: str, covered: CoverageItem) -> list[str]:
+    """The coverage item's things a tag lists after the part's own name, one
+    per comma- or semicolon-separated piece whose words are all in the thing."""
+    prefix = covered.part + " — "
+    wanted = " ".join(tag.split())
+    if not wanted.lower().startswith(" ".join(prefix.split()).lower()):
+        return []
+    rest = wanted[len(" ".join(prefix.split())):]
+    pieces = [piece.strip() for piece in re.split(r"[,;]|\band\b", rest) if piece.strip()]
+    things = (*covered.missing, *covered.held)
+    named: list[str] = []
+    for piece in pieces:
+        words = aim_words(piece)
+        for thing in things:
+            if words and words <= aim_words(thing) and thing not in named:
+                named.append(thing)
+                break
+    return named
+
+
 def _gap_lines(coverage: Sequence[CoverageItem]) -> list[tuple[str, CoverageItem]]:
     """``(line, item)`` for every coverage line that is a gap: each missing
     thing of a part not held whole, or the part itself when it names none."""
@@ -675,31 +724,32 @@ def _settle(
     states: list[str] = []
     tiers: list[str] = []
     lines: list[str] = []
-    keys: list[frozenset[str]] = []
+    keys: list[frozenset[frozenset[str]]] = []
     unmatched = 0
     for number, item in enumerate(plan.plan.items):
         if not coverage:
             states.append(ITEM_MISSING)
             tiers.append(TIER_MISSING_PART)
             lines.append("")
-            keys.append(frozenset({f"item {number}"}))
+            keys.append(frozenset({frozenset({f"item {number}"})}))
             continue
-        state, index, line = ITEM_UNTAGGED, -1, ""
+        state, index, line, used = ITEM_UNTAGGED, -1, "", ""
         for tag in (item.covers, item.item):
             if tag:
                 state, index, line = _resolve_line(tag, coverage)
                 if index >= 0:
+                    used = tag
                     break
         states.append(state)
         lines.append(line)
         if index < 0:
             unmatched += 1
             tiers.append(TIER_UNTAGGED)
-            keys.append(frozenset({f"item {number}"}))
+            keys.append(frozenset({frozenset({f"item {number}"})}))
             continue
         covered = coverage[index]
         kind = kinds[index][0] if index < len(kinds) else "part"
-        keys.append(gap_key(line, covered))
+        keys.append(_served(used, line, covered))
         if state == ITEM_HELD:
             tiers.append(TIER_HELD)
         elif kind == "also":
@@ -731,10 +781,11 @@ def _settle(
         index = pair[0]
         if tiers[index] == TIER_HELD:
             held.append(pair)
-        elif keys[index] in seen_keys:
+        elif keys[index] <= seen_keys:
+            # Every gap this item serves already has a query.
             second.append(pair)
         else:
-            seen_keys.add(keys[index])
+            seen_keys.update(keys[index])
             first.append(pair)
     open_gaps = [
         line for key, line in by_key.items() if key not in seen_keys and key not in skipped_keys
@@ -780,7 +831,7 @@ def _settle(
     for index, _ in ordered:
         by_state[states[index]] += 1
         by_tier[tiers[index]] += 1
-    run_keys = {keys[index] for index, _ in ordered if tiers[index] != TIER_HELD}
+    run_keys = {key for index, _ in ordered if tiers[index] != TIER_HELD for key in keys[index]}
     gaps = tuple(
         line for key, line in by_key.items() if key not in run_keys and key not in skipped_keys
     )
