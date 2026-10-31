@@ -66,6 +66,12 @@ without them re-breaks bugs that have already been found, fixed and paid for.
    fetch anything. `marg note --regenerate --all` must complete with YouTube
    unreachable, and that is checked by running it that way, not by assuming it.
 
+   The one exception is a transcript that rule 40's selector shows to be a machine
+   translation. It may be replaced only through `marg refetch --replace-translated`,
+   which keeps the old file beside it as `transcript.translated.txt`, records the
+   replacement in the ledger, and marks the video's note stale. Nothing else ever
+   rewrites a stored transcript.
+
 4. **All sources go behind a provider interface** — `TranscriptProvider` for
    transcripts, `SearchProvider` for search. Never import `yt_dlp`, or any other
    search or transcript library, outside `src/marginalia/providers/`, and never let
@@ -1005,6 +1011,18 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     parts the library already held. Once it saw coverage, 5 and 7 of 8 aimed at gaps.
     Two bugs in counting which gaps a query served left 3 of 8 slots unused until they
     were fixed.
+
+40. **A transcript is the spoken language's own track.** The spoken language is read from
+    the audio: the track marked original, else the one audio language. Failing that, it
+    is read from an original-speech caption track (`-orig`). It is never read from the
+    video's reported language alone. A manual track in that language comes first, then
+    its original automatic track. An original-speech track is the speaker's words even
+    when the audio label disagrees, and that disagreement is counted. A video whose
+    tracks are all translations is not stored from them: it is routed to ASR and counted
+    as translated-only. The stored language is a clean code, and the track as named is
+    kept beside it. Measured: 17 of 177 stored transcripts were machine translations of
+    English speech into Arabic, picked because the video reported `ar`, and 2 more were
+    translations into Bengali.
 
 ## Structure
 
