@@ -70,6 +70,9 @@ __all__ = [
     "render_context",
     "render_coverage",
     "render_parts",
+    "coverage_kinds",
+    "gap_key",
+    "TIERS",
 ]
 
 # Beside the planner's prompts: it plans searches, from the brief.
@@ -84,7 +87,7 @@ _FALLBACK_TASK = "map_territory"
 
 _LABEL_RE = re.compile(
     r"^\s*\**\s*(RECENCY|MAIN[- ]LANGUAGE|LANGUAGE[- ]ITEMS?|BROAD[- ]ITEM|LANGUAGE|ITEM|INTENT"
-    r"|TITLED|COVERS|QUERY|FILTERS|VARIANT[- ]OF)"
+    r"|TITLED|COVERS|SKIP(?:PED)?|QUERY|FILTERS|VARIANT[- ]OF)"
     r"\s*\**\s*[:\-]\s*(.*)$",
     re.IGNORECASE,
 )
@@ -127,13 +130,17 @@ def render_parts(parts: Sequence[tuple[str, str, list[str]]]) -> str:
     return "\n".join(f"P{number}. {text}" for number, (_, text, _) in enumerate(parts, start=1))
 
 
-def render_coverage(coverage: Sequence[CoverageItem], note: str = "") -> str:
-    """What the library already holds, one line per coverage item, by state.
+def render_coverage(
+    coverage: Sequence[CoverageItem], note: str = "", brief_text: str = ""
+) -> str:
+    """What the library already holds, one line per coverage item, by tier.
 
-    The lines stage 1 tags candidates against (`item_lines`), so a COVERS line
-    copied from here resolves with the same matcher. With none, every item of
-    the brief is missing — a fresh topic, or a baseline that could not be used,
-    which `note` says.
+    The lines stage 1 tags candidates against (`item_lines`), each labelled
+    with its state and whether it is a PART or an ALSO WANTED item, so the
+    reply can name a line as its item and spend in tier order. A missing thing
+    that an earlier line already names is marked, so it is searched for once.
+    With no coverage every item of the brief is missing — a fresh topic, or a
+    baseline that could not be used, which `note` says.
     """
     lines = item_lines(coverage)
     if not lines:
@@ -142,9 +149,20 @@ def render_coverage(coverage: Sequence[CoverageItem], note: str = "") -> str:
             f"{head}{f' ({note})' if note else ''}. Every item counts as missing: "
             "spread the queries across every PART before any PART gets a second."
         )
-    out = ["COVERAGE — what the library already holds, one item per line:"]
+    kinds = coverage_kinds(coverage, brief_text)
+    index_of = {item.part: number for number, item in enumerate(coverage)}
+    out = ["COVERAGE — what the library already holds, one line per item:"]
+    seen: set[frozenset[str]] = set()
     for state, part, thing in lines:
-        out.append(f"- {state.upper()}: {f'{part} — {thing}' if thing else part}")
+        number = index_of.get(part, -1)
+        kind = "ALSO WANTED" if number >= 0 and kinds[number][0] == "also" else "PART"
+        line = f"{part} — {thing}" if thing else part
+        repeat = ""
+        if state != ITEM_HELD:
+            key = gap_key(line, coverage[number] if number >= 0 else None)
+            repeat = " (the same gap as a line above: one query serves both)" if key in seen else ""
+            seen.add(key)
+        out.append(f"- {state.upper()} {kind}: {line}{repeat}")
     return "\n".join(out)
 
 
@@ -223,6 +241,63 @@ def _resolve_item(
     return number, name, False
 
 
+# The label the coverage block puts before a line, which a reply copying the
+# line may copy too: `MISSING ALSO WANTED: `, `PARTLY PART: `.
+_COVERAGE_LABEL_RE = re.compile(
+    r"^\s*-?\s*(?:MISSING|PARTLY|HELD)\s+(?:PART|ALSO\s+WANTED)\s*:\s*", re.IGNORECASE
+)
+_REPEAT_NOTE = " (the same gap as a line above: one query serves both)"
+
+
+def _strip_label(text: str) -> str:
+    return _COVERAGE_LABEL_RE.sub("", text).replace(_REPEAT_NOTE, "").strip()
+
+
+def _resolve_any(
+    raw: str,
+    parts: Sequence[tuple[str, str, list[str]]],
+    coverage: Sequence[CoverageItem],
+    kinds: Sequence[tuple[str, int]],
+) -> tuple[int, str, bool, str] | None:
+    """``(part number, tag, thing matched, coverage line)`` for an ITEM line.
+
+    `P<n>` names a PART, as before. Otherwise, with coverage, a coverage line
+    named directly — the stage-1 matcher, ALSO WANTED included — is the item:
+    its tag is the line, and its part number is the PART the line belongs to,
+    or 0 for an ALSO WANTED line. Otherwise a PART by its words. A listed
+    thing no PART lists but a coverage line names becomes that line's item,
+    so an ALSO WANTED gap hung under the nearest PART is not counted as the
+    PART's. None when nothing in the brief or the coverage is named.
+    """
+    body = _strip_label(tidy(raw, limit=_MAX_REASON))
+
+    def from_line(text: str) -> tuple[int, str, bool, str] | None:
+        if not coverage:
+            return None
+        _, index, line = _resolve_line(text, coverage)
+        if index < 0:
+            return None
+        kind, number = kinds[index] if index < len(kinds) else ("part", 0)
+        return (number if kind == "part" else 0), line, True, line
+
+    # `P3`, `P3 — thing` or a bare `3`; not a coverage line that happens to
+    # begin with a number.
+    if re.match(r"^\s*P\s*\d+\b|^\s*\d+\s*$", body, re.IGNORECASE) is not None:
+        resolved = _resolve_item(body, parts)
+        if resolved is None:
+            return None
+        number, tag, matched = resolved
+        if not matched:
+            thing = _ITEM_REF_RE.match(body).group("thing") or ""
+            retargeted = from_line(thing)
+            if retargeted is not None:
+                return retargeted
+        return number, tag, matched, ""
+    return from_line(body) or (
+        (lambda r: (r[0], r[1], r[2], "") if r else None)(_resolve_item(body, parts))
+    )
+
+
 def _part_numbers(body: str, parts: int) -> tuple[int, ...]:
     """``P4, P5`` -> ``(4, 5)``: the PART numbers a line names, in range."""
     numbers = [int(n) for n in re.findall(r"\bP?\s*(\d+)\b", body, re.IGNORECASE)]
@@ -266,8 +341,14 @@ def parse_plan(
     brief_text: str,
     topic: str,
     version: str,
+    coverage: Sequence[CoverageItem] = (),
 ) -> tuple[TerritoryMap, list[int]]:
     """Read a plan reply. Returns the plan and, per query, its item's index.
+
+    An ITEM names a PART (`P<n>`, or `P<n> — <thing>`), or — when there is
+    coverage — a coverage line as the coverage block wrote it, ALSO WANTED
+    lines included. A PART's listed thing that the PART does not list but a
+    coverage line does is that line's item.
 
     Tolerant where the map's parser is — decoration, prose, blocks in any
     order within an item — and strict about the one thing that is new: an
@@ -292,6 +373,8 @@ def parse_plan(
     main_language = ""
     language_items: tuple[int, ...] = ()
     broad = 0
+    skipped: list[str] = []
+    kinds = coverage_kinds(coverage, brief_text) if coverage else []
 
     def close_query() -> None:
         nonlocal pending
@@ -329,14 +412,19 @@ def parse_plan(
             language_items = _part_numbers(body, len(parts))
         elif label == "BROAD-ITEM":
             broad = (_part_numbers(body, len(parts)) or (0,))[0]
+        elif label in ("SKIP", "SKIPPED"):
+            line, _, reason = body.partition("|")
+            line = _strip_label(tidy(line, limit=_MAX_REASON))
+            if line and line.lower() not in {"none", "n/a", "-"}:
+                skipped.append(f"{line} | {tidy(reason, limit=_MAX_REASON) or 'no reason given'}")
         elif label == "ITEM":
             close_query()
-            resolved = _resolve_item(body, parts)
+            resolved = _resolve_any(body, parts, coverage, kinds)
             if resolved is None:
                 current = None
                 unknown.append(tidy(body, limit=80))
                 continue
-            number, tag, matched = resolved
+            number, tag, matched, line = resolved
             unmatched += not matched
             current = {
                 "index": len(items),
@@ -344,7 +432,7 @@ def parse_plan(
                 "item": tag,
                 "intent": "",
                 "titled": [],
-                "covers": "",
+                "covers": line,
             }
             items.append(current)
         elif label == "QUERY":
@@ -368,7 +456,7 @@ def parse_plan(
         elif label == "TITLED" and current is not None and not current["titled"]:
             current["titled"] = terms(body, _MAX_TITLED)
         elif label == "COVERS" and current is not None and not current["covers"]:
-            covers = tidy(body, limit=_MAX_REASON).strip("\"'")
+            covers = _strip_label(tidy(body, limit=_MAX_REASON).strip("\"'"))
             current["covers"] = "" if covers.lower().rstrip(".") in {"none", "n/a", "-"} else covers
         elif label == "LANGUAGE":
             language = _parse_language(body)
@@ -389,7 +477,7 @@ def parse_plan(
         queries, owners = queries[:_MAX_QUERIES], owners[:_MAX_QUERIES]
         problems.append(f"{capped} queries over the ceiling of {_MAX_QUERIES} not kept")
     if unknown:
-        problems.append(f"{len(unknown)} item(s) name no PART of the brief")
+        problems.append(f"{len(unknown)} item(s) name no PART or coverage line of the brief")
     if not seen_recency:
         problems.append("no recency line")
         recency_readable = False
@@ -421,6 +509,7 @@ def parse_plan(
         main_language=main_language,
         language_items=language_items,
         broad_item=broad,
+        excluded_gaps=tuple(skipped),
     )
     vocabulary = terms(", ".join(phrase for item in items for phrase in item["titled"]), _MAX_TITLED)
     return (
@@ -441,28 +530,102 @@ def parse_plan(
     )
 
 
-# The order a round-one budget is spent in: what the library lacks first,
-# then what it holds in part, then an item no coverage line matched, and only
-# then what it already holds.
+# The tiers a round-one budget is spent in, in order: a PART the library holds
+# nothing of, then a PART it holds in part, then an ALSO WANTED item it lacks,
+# then an item no coverage line matched, and only then what it already holds.
+# ALSO WANTED is below every PART because it is wanted, not required: measured,
+# a plan that ranked them level spent 4 of 8 queries on one ALSO WANTED item few
+# creators ever report, and 3 on the partly held PART the brief requires.
+TIER_MISSING_PART = "missing part"
+TIER_PARTLY_PART = "partly part"
+TIER_ALSO_WANTED = "also wanted"
+TIER_UNTAGGED = "untagged"
+TIER_HELD = "held"
+TIERS = (TIER_MISSING_PART, TIER_PARTLY_PART, TIER_ALSO_WANTED, TIER_UNTAGGED, TIER_HELD)
 _STATE_ORDER = (ITEM_MISSING, ITEM_PARTLY, ITEM_UNTAGGED, ITEM_HELD)
 
 
-def _item_state(item: PlanItem, coverage: Sequence[CoverageItem]) -> tuple[str, bool]:
-    """``(state, unmatched)`` for one plan item against the run's coverage.
+def coverage_kinds(
+    coverage: Sequence[CoverageItem], brief_text: str
+) -> list[tuple[str, int]]:
+    """``("part", n)`` or ``("also", n)`` for each coverage line's item.
 
-    The stage-1 matcher, on the COVERS line the reply copied from the coverage
-    block, then on the item's own tag. With no coverage every item is missing:
-    a fresh topic plans exactly as it did before coverage existed.
+    The baseline names a PART or an ALSO WANTED item in its own words, so each
+    is placed by the brief item sharing the largest share of its content
+    words, a PART winning a tie. Below half a share the baseline's own order
+    decides — it assesses every PART, then every ALSO WANTED item. Measured on
+    two real baselines, the words placed 25 of 25 lines as the order does.
     """
-    if not coverage:
-        return ITEM_MISSING, False
-    for tag in (item.covers, item.item):
-        if not tag:
+    parts = brief_items(brief_text, "PARTS TO COVER")
+    also = brief_items(brief_text, "ALSO WANTED")
+    kinds: list[tuple[str, int]] = []
+    for position, item in enumerate(coverage):
+        words = aim_words(item.part)
+        scored = [
+            (len(words & aim_words(text)) / max(1, len(words)), kind == "part", kind, number)
+            for kind, texts in (("part", parts), ("also", also))
+            for number, text in enumerate(texts, start=1)
+        ]
+        best = max(scored, default=(0.0, True, "part", 0))
+        if best[0] >= 0.5:
+            kinds.append((best[2], best[3]))
+        elif position < len(parts) or not also:
+            kinds.append(("part", min(position + 1, len(parts)) if parts else 0))
+        else:
+            kinds.append(("also", position - len(parts) + 1))
+    return kinds
+
+
+def _resolve_line(tag: str, coverage: Sequence[CoverageItem]) -> tuple[str, int, str]:
+    """``(state, coverage index, line)`` for a tag, by the stage-1 matcher; the
+    index is -1 when no line matched."""
+    state, line, _ = match_item(tag, coverage)
+    if state == ITEM_UNTAGGED:
+        return state, -1, ""
+    candidates = [
+        (len(item.part), index)
+        for index, item in enumerate(coverage)
+        if line == item.part or line.startswith(item.part + " — ")
+    ]
+    if not candidates:
+        return state, -1, line
+    index = max(candidates)[1]
+    # A tag that copies one of the line's own things exactly is that thing's
+    # line, even where the matcher stopped at the part — as it does when every
+    # word of the thing is also in the part's name.
+    item = coverage[index]
+    wanted = " ".join(tag.lower().split())
+    for thing in (*item.missing, *item.held):
+        exact = f"{item.part} — {thing}"
+        if wanted in (" ".join(exact.lower().split()), " ".join(thing.lower().split())):
+            return (ITEM_HELD if thing in item.held else ITEM_MISSING), index, exact
+    return state, index, line
+
+
+def gap_key(line: str, coverage_item: CoverageItem | None = None) -> frozenset[str]:
+    """What makes two gaps one gap: the content words of the missing thing, so
+    a thing listed under two coverage lines is searched for once. A line that
+    names no thing is its part. The thing is what follows the part's own name,
+    which may itself contain a dash."""
+    if coverage_item is not None:
+        prefix = coverage_item.part + " — "
+        thing = line[len(prefix):] if line.startswith(prefix) else ""
+    else:
+        thing = line.split(" — ", 1)[1] if " — " in line else ""
+    return frozenset(aim_words(thing or line))
+
+
+def _gap_lines(coverage: Sequence[CoverageItem]) -> list[tuple[str, CoverageItem]]:
+    """``(line, item)`` for every coverage line that is a gap: each missing
+    thing of a part not held whole, or the part itself when it names none."""
+    lines: list[tuple[str, CoverageItem]] = []
+    for item in coverage:
+        if item.satisfied:
             continue
-        state, _, unmatched = match_item(tag, coverage)
-        if state != ITEM_UNTAGGED:
-            return state, False
-    return ITEM_UNTAGGED, True
+        lines.extend((f"{item.part} — {thing}", item) for thing in item.missing)
+        if not item.missing:
+            lines.append((item.part, item))
+    return lines
 
 
 def _settle(
@@ -472,15 +635,18 @@ def _settle(
     parts: Sequence[tuple[str, str, list[str]]],
     coverage: Sequence[CoverageItem] = (),
     count: int | None = None,
+    kinds: Sequence[tuple[str, int]] = (),
 ) -> tuple[SearchPlan, list[PlannedQuery]]:
     """The plan's own account, and the queries that run, in the order they run.
 
     Validation decided which queries may execute; this decides which the
-    budget buys. Each item gets its coverage state, and the queries are spent
-    missing first, then partly held, then untagged, then held — so a reply that
-    wrote more than `count` loses its held queries first, counted. A held query
-    kept while a gap no item serves is still open is counted too: the reply
-    did not follow the order, and the run should say so (rule 30).
+    budget buys. Each item gets its coverage state and tier, and the budget is
+    spent in three passes: the first query for each distinct gap, tier by tier;
+    then a second query for a gap, only once every gap the plan did not skip as
+    excluded has one — otherwise it is not run, and counted; then held items.
+    A reply that wrote more than `count` loses its last queries in that order,
+    counted. A held query kept while a gap no item serves is still open is
+    counted too: the reply did not follow the order (rule 30).
     """
     assert plan.plan is not None
     # `validate` keeps order and only drops, so the kept queries are walked
@@ -497,13 +663,81 @@ def _settle(
             owned.append((owners[position], query))
             position += 1
 
-    states, unmatched = [], 0
-    for item in plan.plan.items:
-        state, missed = _item_state(item, coverage)
+    # Each item's state, tier, coverage line and gap. With no coverage every
+    # item is a missing PART and its own gap: a fresh topic plans as before.
+    states: list[str] = []
+    tiers: list[str] = []
+    lines: list[str] = []
+    keys: list[frozenset[str]] = []
+    unmatched = 0
+    for number, item in enumerate(plan.plan.items):
+        if not coverage:
+            states.append(ITEM_MISSING)
+            tiers.append(TIER_MISSING_PART)
+            lines.append("")
+            keys.append(frozenset({f"item {number}"}))
+            continue
+        state, index, line = ITEM_UNTAGGED, -1, ""
+        for tag in (item.covers, item.item):
+            if tag:
+                state, index, line = _resolve_line(tag, coverage)
+                if index >= 0:
+                    break
         states.append(state)
-        unmatched += missed
-    rank = {state: number for number, state in enumerate(_STATE_ORDER)}
-    ordered = sorted(owned, key=lambda pair: rank[states[pair[0]]])
+        lines.append(line)
+        if index < 0:
+            unmatched += 1
+            tiers.append(TIER_UNTAGGED)
+            keys.append(frozenset({f"item {number}"}))
+            continue
+        covered = coverage[index]
+        kind = kinds[index][0] if index < len(kinds) else "part"
+        keys.append(gap_key(line, covered))
+        if state == ITEM_HELD:
+            tiers.append(TIER_HELD)
+        elif kind == "also":
+            tiers.append(TIER_ALSO_WANTED)
+        elif covered.partly:
+            tiers.append(TIER_PARTLY_PART)
+        else:
+            tiers.append(TIER_MISSING_PART)
+
+    # The gaps the coverage names, each counted once however many lines name
+    # it, and the ones the reply skipped as reachable only through EXCLUDED.
+    gap_lines = _gap_lines(coverage)
+    by_key: dict[frozenset[str], str] = {}
+    for line, covered in gap_lines:
+        by_key.setdefault(gap_key(line, covered), line)
+    skipped_keys = set()
+    for skipped in plan.plan.excluded_gaps:
+        line = skipped.split(" | ", 1)[0]
+        state, index, resolved = _resolve_line(line, coverage) if coverage else (ITEM_UNTAGGED, -1, "")
+        if index >= 0:
+            skipped_keys.add(gap_key(resolved, coverage[index]))
+
+    tier_rank = {tier: number for number, tier in enumerate(TIERS)}
+    first: list[tuple[int, PlannedQuery]] = []
+    second: list[tuple[int, PlannedQuery]] = []
+    held: list[tuple[int, PlannedQuery]] = []
+    seen_keys: set[frozenset[str]] = set()
+    for pair in sorted(owned, key=lambda pair: tier_rank[tiers[pair[0]]]):
+        index = pair[0]
+        if tiers[index] == TIER_HELD:
+            held.append(pair)
+        elif keys[index] in seen_keys:
+            second.append(pair)
+        else:
+            seen_keys.add(keys[index])
+            first.append(pair)
+    open_gaps = [
+        line for key, line in by_key.items() if key not in seen_keys and key not in skipped_keys
+    ]
+    avoided = 0
+    if open_gaps and second:
+        log.info("search plan: %d second quer(ies) not run while %d gap(s) have none",
+                 len(second), len(open_gaps))
+        avoided, second = len(second), []
+    ordered = [*first, *second, *held]
     over = max(0, len(ordered) - count) if count else 0
     if over:
         log.info("search plan: %d quer(ies) over the budget of %d not run, held first", over, count)
@@ -529,24 +763,19 @@ def _settle(
                 sorted({q.filters.relevance_language or "" for q in per_item.get(index, [])} - {""})
             ),
             state=states[index],
+            tier=tiers[index],
+            line=lines[index],
         )
         for index, item in enumerate(plan.plan.items)
     )
     by_state: dict[str, int] = {state: 0 for state in _STATE_ORDER}
+    by_tier: dict[str, int] = {tier: 0 for tier in TIERS}
     for index, _ in ordered:
         by_state[states[index]] += 1
-    # The coverage lines still open that no item with a query serves.
-    served = {
-        match_item(tag, coverage)[1]
-        for item in items if item.queries
-        for tag in (item.covers, item.item) if tag
-    }
+        by_tier[tiers[index]] += 1
+    run_keys = {keys[index] for index, _ in ordered if tiers[index] != TIER_HELD}
     gaps = tuple(
-        f"{part} — {thing}" if thing else part
-        for state, part, thing in item_lines(coverage)
-        if state in (ITEM_MISSING, ITEM_PARTLY)
-        and (f"{part} — {thing}" if thing else part) not in served
-        and part not in served
+        line for key, line in by_key.items() if key not in run_keys and key not in skipped_keys
     )
     reached = {item.part for item in items if item.queries}
     used = {query.filters.relevance_language for query in run}
@@ -580,12 +809,15 @@ def _settle(
         ),
         coverage_lines=len(item_lines(coverage)),
         queries_by_state=by_state,
+        queries_by_tier=by_tier,
         unserved_gaps=gaps,
         held_while_gaps=by_state[ITEM_HELD] if gaps else 0,
         over_budget=over,
         coverage_unmatched=unmatched if coverage else 0,
         queries_by_language=by_language,
         language_misaimed=misaimed,
+        duplicates_avoided=avoided,
+        distinct_gaps=len(by_key),
     )
     return settled, run
 
@@ -637,7 +869,7 @@ class SearchPlanner:
         """
         parts = plan_parts(brief.text)
         context_block, context_record = render_context(context)
-        coverage_block = render_coverage(coverage, coverage_note)
+        coverage_block = render_coverage(coverage, coverage_note, brief.text)
         record = {
             "context": context_record.context,
             "context_lines": context_record.context_lines,
@@ -651,7 +883,8 @@ class SearchPlanner:
 
         for attempt in range(max(1, recency_samples)):
             sample, owners = self._sample(
-                brief, parts, context_block, coverage_block, count=count, max_tokens=max_tokens
+                brief, parts, context_block, coverage_block, count=count, max_tokens=max_tokens,
+                coverage=coverage,
             )
             spent.add(
                 Usage(requests=1, input_tokens=sample.input_tokens, output_tokens=sample.output_tokens)
@@ -678,7 +911,10 @@ class SearchPlanner:
         plan, owners = first
         recency = widest_recency(recencies)
         kept, rejections = validate(plan.queries, recency=recency, topic=brief.topic)
-        settled, kept = _settle(plan, owners, kept, parts, coverage, count)
+        settled, kept = _settle(
+            plan, owners, kept, parts, coverage, count,
+            coverage_kinds(coverage, brief.text) if coverage else (),
+        )
         settled = replace(settled, **record)
         others = [
             f"sample {number}: {sample.problem if sample.queries else 'unusable'}"
@@ -709,6 +945,7 @@ class SearchPlanner:
         *,
         count: int,
         max_tokens: int | None,
+        coverage: Sequence[CoverageItem] = (),
     ) -> tuple[TerritoryMap, list[int]]:
         """One plan call, parsed. Validation happens once, in `plan`."""
         prompt = self.prompt()
@@ -760,7 +997,9 @@ class SearchPlanner:
                 [],
             )
 
-        parsed, owners = parse_plan(reply.text, brief_text=brief.text, topic=brief.topic, version=version)
+        parsed, owners = parse_plan(
+            reply.text, brief_text=brief.text, topic=brief.topic, version=version, coverage=coverage
+        )
         return (
             replace(
                 parsed,

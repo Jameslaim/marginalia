@@ -664,6 +664,11 @@ class PlanItem:
     # coverage — a fresh topic — every item is `missing`.
     covers: str = ""
     state: str = ""
+    # The allocation tier (`TIER_*`): a missing PART line, a partly held PART
+    # line, an ALSO WANTED gap, untagged, or held. `line` is the coverage line
+    # the item resolved to, which is what a gap is counted once by.
+    tier: str = ""
+    line: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -675,6 +680,8 @@ class PlanItem:
             "languages": list(self.languages),
             "covers": self.covers,
             "state": self.state,
+            "tier": self.tier,
+            "line": self.line,
         }
 
 
@@ -723,6 +730,15 @@ class SearchPlan:
     held_while_gaps: int = 0
     over_budget: int = 0
     coverage_unmatched: int = 0
+    # Queries per allocation tier, in tier order. Gaps the reply skipped
+    # because they can only be searched through what EXCLUDED names, each with
+    # its reason. Queries not run because their gap — the same missing thing,
+    # under whichever coverage line — already had one, and the number of
+    # distinct gaps the coverage lines name.
+    queries_by_tier: dict = field(default_factory=dict)
+    excluded_gaps: tuple[str, ...] = ()
+    duplicates_avoided: int = 0
+    distinct_gaps: int = 0
     # Languages: the topic's main language, the brief's own language or market
     # items and its broadest item, as the reply named them; and the queries in
     # another language aimed at neither.
@@ -753,6 +769,10 @@ class SearchPlan:
             "held_while_gaps": self.held_while_gaps,
             "over_budget": self.over_budget,
             "coverage_unmatched": self.coverage_unmatched,
+            "queries_by_tier": dict(self.queries_by_tier),
+            "excluded_gaps": list(self.excluded_gaps),
+            "duplicates_avoided": self.duplicates_avoided,
+            "distinct_gaps": self.distinct_gaps,
             "main_language": self.main_language,
             "language_items": list(self.language_items),
             "broad_item": self.broad_item,

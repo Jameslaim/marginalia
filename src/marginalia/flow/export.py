@@ -667,6 +667,8 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
         lines.append(f"- intent: {item.get('intent') or MISSING}")
         lines.append(f"- titled: {', '.join(item.get('titled') or []) or MISSING}")
         lines.append(f"- languages: {', '.join(item.get('languages') or []) or 'none set'}")
+        lines.append(f"- tier: {item.get('tier') or MISSING}"
+                     + (f" (line: {item['line']})" if item.get("line") else ""))
         lines.append(f"- coverage: {item.get('state') or MISSING}"
                      + (f" (covers: {item['covers']})" if item.get("covers") else ""))
         lines.append("- queries:")
@@ -705,6 +707,13 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
             "- language items: " + (", ".join(f"P{n}" for n in plan.get("language_items") or [])
                                     or "none") + f"; broad item: P{plan.get('broad_item') or '?'}",
             f"- queries in another language aimed at a narrow part: {plan.get('language_misaimed', 0)}",
+            "- queries by tier: " + (", ".join(
+                f"{tier} {count}" for tier, count in (plan.get("queries_by_tier") or {}).items()
+            ) or "none"),
+            f"- distinct gaps: {plan.get('distinct_gaps', 0)}; duplicates avoided: "
+            f"{plan.get('duplicates_avoided', 0)}",
+            f"- gaps skipped as excluded: {len(plan.get('excluded_gaps') or [])}",
+            *(f"  - {gap}" for gap in plan.get("excluded_gaps") or []),
             f"- coverage gaps with no query: {len(plan.get('unserved_gaps') or [])}",
             *(f"  - {gap}" for gap in plan.get("unserved_gaps") or []),
             f"- queries on held items while a gap had none: {plan.get('held_while_gaps', 0)}",

@@ -765,6 +765,15 @@ def _search_plan_lines(territory) -> list[str]:
     lines.append(f"          coverage: {plan.coverage} — {plan.coverage_note or 'no note'}")
     by_state = ", ".join(f"{state} {n}" for state, n in plan.queries_by_state.items()) or "none"
     lines.append(f"          by state: {by_state}")
+    by_tier = ", ".join(f"{tier} {n}" for tier, n in plan.queries_by_tier.items()) or "none"
+    lines.append(
+        f"          by tier: {by_tier} ({plan.distinct_gaps} distinct gap(s), "
+        f"{plan.duplicates_avoided} duplicate(s) avoided)"
+    )
+    lines.append(f"          skipped as excluded: {len(plan.excluded_gaps)}")
+    for skipped in plan.excluded_gaps[:5]:
+        line, _, reason = skipped.partition(" | ")
+        lines.append(f"            {line} — {reason}")
     by_language = ", ".join(f"{code} {n}" for code, n in plan.queries_by_language.items()) or "none"
     aimed = ", ".join(f"P{n}" for n in plan.language_items) or (
         f"none, so the broad item P{plan.broad_item}" if plan.broad_item else "none named"

@@ -516,3 +516,19 @@ def test_the_plan_line_shows_queries_by_language() -> None:
 
     assert "by language: en 1, xx 1 (main en; other languages aim at P4, P5)" in text
     assert "1 quer(ies) in another language aimed at a narrow part" in text
+
+
+def test_the_plan_line_shows_tiers_exclusions_and_duplicates() -> None:
+    plan = a_plan("one", "two")
+    plan = replace(plan, plan=replace(
+        plan.plan,
+        queries_by_tier={"missing part": 1, "partly part": 1, "also wanted": 0, "untagged": 0, "held": 0},
+        distinct_gaps=3, duplicates_avoided=1,
+        excluded_gaps=("Cost side — page acquisition | pitches for buying pages",),
+    ))
+    text = "\n".join(_territory_lines(_run_with(plan)))
+
+    assert ("by tier: missing part 1, partly part 1, also wanted 0, untagged 0, held 0 "
+            "(3 distinct gap(s), 1 duplicate(s) avoided)") in text
+    assert "skipped as excluded: 1" in text
+    assert "Cost side — page acquisition — pitches for buying pages" in text

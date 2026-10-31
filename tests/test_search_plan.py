@@ -144,7 +144,7 @@ def test_an_item_naming_no_part_is_not_planned_and_its_queries_are_counted() -> 
     assert territory.plan.unknown_items == ("P9",)
     assert territory.plan.queries_dropped == 1
     assert "something the brief never asked" not in [q.text for q in territory.queries]
-    assert "name no PART of the brief" in territory.problem
+    assert "name no PART or coverage line of the brief" in territory.problem
 
 
 def test_a_listed_thing_the_brief_does_not_list_keeps_its_parts_tag() -> None:
@@ -415,10 +415,10 @@ FILTERS: relevanceLanguage=xx (the brief asks for a second language)
 
 def test_coverage_is_rendered_by_state_for_the_plan() -> None:
     block = render_coverage(COVERAGE)
-    assert "- PARTLY: Hot composting" not in block, "a partly part lists its missing things"
-    assert "- MISSING: Hot composting — pile temperature" in block
-    assert "- HELD: Worm bins — bedding; feeding; harvesting castings" in block
-    assert "- MISSING: Videos in a second language — second-language compost videos" in block
+    assert "- PARTLY PART: Hot composting" not in block, "a partly part lists its missing things"
+    assert "- MISSING PART: Hot composting — pile temperature" in block
+    assert "- HELD PART: Worm bins — bedding; feeding; harvesting castings" in block
+    assert "- MISSING PART: Videos in a second language — second-language compost videos" in block
 
 
 def test_with_no_coverage_every_item_is_missing_and_the_note_is_said() -> None:
@@ -440,10 +440,13 @@ def test_queries_are_spent_missing_first_and_held_last() -> None:
     territory, client = _covered()
     plan = territory.plan
 
-    assert "- MISSING: Hot composting — pile temperature" in client.prompts[0]
+    assert "- MISSING PART: Hot composting — pile temperature" in client.prompts[0]
     assert [item.state for item in plan.items] == ["held", "missing", "missing"]
+    # A PART with nothing held (the language part) before a gap in a partly
+    # held PART (pile temperature), and held last.
+    assert [item.tier for item in plan.items] == ["held", "partly part", "missing part"]
     assert [q.text for q in territory.queries] == [
-        "my compost pile temperature log", "kompo kasa mia vidu", "my worm bin setup tour",
+        "kompo kasa mia vidu", "my compost pile temperature log", "my worm bin setup tour",
     ]
     assert plan.queries_by_state == {"missing": 2, "partly": 0, "untagged": 0, "held": 1}
     assert plan.unserved_gaps == () and plan.held_while_gaps == 0
@@ -460,7 +463,7 @@ def test_a_missing_listed_thing_gets_its_own_item() -> None:
 def test_a_reply_over_budget_loses_its_held_queries_first() -> None:
     territory, _ = _covered(count=2)
     assert [q.text for q in territory.queries] == [
-        "my compost pile temperature log", "kompo kasa mia vidu",
+        "kompo kasa mia vidu", "my compost pile temperature log",
     ]
     assert territory.plan.over_budget == 1
     assert territory.plan.items[0].queries == ()
@@ -491,9 +494,11 @@ def test_a_fresh_topic_plans_as_before() -> None:
 
     assert "nothing is held for this topic yet" in client.prompts[0]
     assert {item.state for item in territory.plan.items} == {"missing"}
+    # Every PART's first query before any PART's second (rule 4's order); the
+    # set is the reply's, unchanged.
     assert [q.text for q in territory.queries] == [
-        "my hot compost pile results", "why is my compost not heating up",
-        "how often should you turn compost", "my worm bin setup tour", "kompo kasa mia vidu",
+        "my hot compost pile results", "how often should you turn compost",
+        "my worm bin setup tour", "kompo kasa mia vidu", "why is my compost not heating up",
     ]
     assert territory.plan.queries_by_state["missing"] == 5
     assert territory.plan.coverage == "fresh"
@@ -587,3 +592,192 @@ def test_the_prompt_states_the_language_rules() -> None:
     assert "or at the BROAD ITEM when there is no LANGUAGE ITEM" in text
     assert "Every part-specific query is written in it" in text
     assert "gets a query only after every MISSING and PARTLY line has one" in text
+
+
+
+# -- the core before the nice-to-haves; never into the exclusions ---------------
+
+from marginalia.brain.search_plan import TIERS, coverage_kinds  # noqa: E402
+
+# The brief's PARTS with one gap each of every tier, an ALSO WANTED gap, and a
+# thing ("odour control") listed under two lines.
+TIERED = [
+    CoverageItem("Hot composting", False, partly=True,
+                 held=("carbon-to-nitrogen ratio", "turning schedule"),
+                 missing=("pile temperature", "odour control")),
+    CoverageItem("Worm bins", True, held=("bedding", "feeding", "harvesting castings")),
+    CoverageItem("Videos in a second language", False, missing=("second-language compost videos",)),
+    CoverageItem("costs of the equipment", False, missing=("equipment costs", "odour control")),
+]
+
+TIERED_PLAN = """
+RECENCY: ANY — stable
+LANGUAGE: Examplish | code=xx | script=romanised | Latin letters
+MAIN LANGUAGE: en
+LANGUAGE ITEMS: P3
+BROAD ITEM: P1
+
+ITEM: MISSING ALSO WANTED: costs of the equipment — equipment costs
+COVERS: costs of the equipment — equipment costs
+INTENT: A gardener lists what their compost setup cost.
+TITLED: what my compost setup cost
+QUERY: what my compost setup cost
+FILTERS: none
+
+ITEM: P2
+COVERS: Worm bins
+INTENT: A keeper tours their worm bin.
+TITLED: my worm bin setup
+QUERY: my worm bin setup tour
+FILTERS: none
+
+ITEM: Hot composting — pile temperature
+COVERS: Hot composting — pile temperature
+INTENT: Someone logs the temperature of their pile.
+TITLED: compost temperature log
+QUERY: my compost pile temperature log
+FILTERS: none
+
+ITEM: Videos in a second language — second-language compost videos
+COVERS: Videos in a second language — second-language compost videos
+INTENT: A creator in that market shows their compost.
+TITLED: kompo da kasa mia
+QUERY: kompo kasa mia vidu
+FILTERS: relevanceLanguage=xx (the brief asks for a second language)
+
+ITEM: Hot composting — odour control
+COVERS: Hot composting — odour control
+INTENT: Someone fixes a smelly pile.
+TITLED: why my compost smells
+QUERY: why does my compost smell
+FILTERS: none
+"""
+
+
+def _tiered(reply=TIERED_PLAN, coverage=TIERED, **kwargs):
+    client = FakeClient(FakeReply(reply))
+    territory = SearchPlanner(client).plan(
+        BRIEF, recency_samples=1, coverage=coverage, coverage_source="baseline", **kwargs
+    )
+    return territory, client
+
+
+def test_coverage_lines_are_placed_as_part_or_also_wanted() -> None:
+    assert coverage_kinds(TIERED, BRIEF_TEXT) == [("part", 1), ("part", 2), ("part", 3), ("also", 1)]
+
+
+def test_the_coverage_block_labels_each_line_and_marks_a_repeated_gap() -> None:
+    block = render_coverage(TIERED, brief_text=BRIEF_TEXT)
+    assert "- MISSING ALSO WANTED: costs of the equipment — equipment costs" in block
+    assert "- MISSING PART: Hot composting — odour control" in block
+    assert ("- MISSING ALSO WANTED: costs of the equipment — odour control "
+            "(the same gap as a line above: one query serves both)") in block
+
+
+def test_the_budget_is_spent_part_gaps_then_also_wanted_then_held() -> None:
+    territory, _ = _tiered()
+    plan = territory.plan
+
+    assert [q.text for q in territory.queries] == [
+        "kompo kasa mia vidu",              # missing part
+        "my compost pile temperature log",  # partly part
+        "why does my compost smell",        # partly part
+        "what my compost setup cost",       # also wanted
+        "my worm bin setup tour",           # held
+    ]
+    assert list(plan.queries_by_tier) == list(TIERS)
+    assert plan.queries_by_tier == {
+        "missing part": 1, "partly part": 2, "also wanted": 1, "untagged": 0, "held": 1,
+    }
+
+
+def test_a_reply_over_budget_cuts_held_then_also_wanted() -> None:
+    territory, _ = _tiered(count=3)
+    assert [q.text for q in territory.queries] == [
+        "kompo kasa mia vidu", "my compost pile temperature log", "why does my compost smell",
+    ]
+    assert territory.plan.over_budget == 2
+
+
+def test_an_item_may_name_an_also_wanted_line_directly() -> None:
+    item = _tiered()[0].plan.items[0]
+    assert (item.part, item.item, item.tier, item.state) == (
+        0, "costs of the equipment — equipment costs", "also wanted", "missing",
+    )
+
+
+def test_an_also_wanted_gap_hung_under_a_part_is_that_lines_item() -> None:
+    reply = TIERED_PLAN.replace(
+        "ITEM: MISSING ALSO WANTED: costs of the equipment — equipment costs\n"
+        "COVERS: costs of the equipment — equipment costs\n",
+        "ITEM: P1 — equipment costs\nCOVERS: none\n",
+    )
+    plan = _tiered(reply)[0].plan
+    assert plan.things_unmatched == 0
+    assert (plan.items[0].item, plan.items[0].tier) == (
+        "costs of the equipment — equipment costs", "also wanted",
+    )
+
+
+def test_an_item_naming_nothing_in_the_coverage_or_the_brief_is_dropped() -> None:
+    reply = TIERED_PLAN + "\nITEM: rocket engines\nQUERY: rocket engine compost\nFILTERS: none\n"
+    plan = _tiered(reply)[0].plan
+    assert plan.unknown_items == ("rocket engines",) and plan.queries_dropped == 1
+
+
+def test_a_gap_skipped_as_excluded_is_named_counted_and_not_open() -> None:
+    head, rest = TIERED_PLAN.split("ITEM: MISSING ALSO WANTED", 1)
+    reply = head.replace(
+        "BROAD ITEM: P1\n",
+        "BROAD ITEM: P1\nSKIP: MISSING ALSO WANTED: costs of the equipment — equipment costs"
+        " | adverts for compost bins\n",
+    ) + "ITEM: P2" + rest.split("ITEM: P2", 1)[1]
+    territory = _tiered(reply)[0]
+    plan = territory.plan
+    assert plan.excluded_gaps == (
+        "costs of the equipment — equipment costs | adverts for compost bins",
+    )
+    assert "what my compost setup cost" not in [q.text for q in territory.queries]
+    assert plan.unserved_gaps == ()
+
+
+def test_a_thing_under_two_lines_is_one_gap() -> None:
+    plan = _tiered()[0].plan
+    # Five gap lines (pile temperature, odour control twice, second language,
+    # equipment costs) are four distinct gaps.
+    assert plan.distinct_gaps == 4
+    assert plan.unserved_gaps == ()
+
+
+def test_a_second_query_for_a_gap_waits_until_every_gap_has_one() -> None:
+    second_odour = (
+        "\nITEM: costs of the equipment — odour control\n"
+        "COVERS: costs of the equipment — odour control\n"
+        "INTENT: x\nTITLED: compost smell fix\nQUERY: compost smell fix cheap\nFILTERS: none\n"
+    )
+    # With every gap served, the second query for odour runs after the firsts.
+    territory, _ = _tiered(TIERED_PLAN + second_odour)
+    assert territory.queries[-2].text == "compost smell fix cheap"
+    assert territory.plan.duplicates_avoided == 0
+
+    # With the language gap left open, it does not run, and is counted.
+    without_language = TIERED_PLAN.replace(
+        "ITEM: Videos in a second language — second-language compost videos\n", "ITEM: P9\n"
+    )
+    territory, _ = _tiered(without_language + second_odour)
+    assert "compost smell fix cheap" not in [q.text for q in territory.queries]
+    assert territory.plan.duplicates_avoided == 1
+    assert territory.plan.unserved_gaps == (
+        "Videos in a second language — second-language compost videos",
+    )
+
+
+def test_the_prompt_states_the_tiers_and_the_exclusion_rule() -> None:
+    prompt = load_prompt(SEARCH_PROMPT)
+    text = " ".join(prompt.text.split())
+    assert prompt.version == "4"
+    assert "1. MISSING PART lines" in text and "3. ALSO WANTED gaps" in text
+    assert "4. HELD lines, only when budget is left" in text
+    assert "Never aim a query at anything EXCLUDED names" in text
+    assert "SKIP: <the COVERAGE line, as written there> | <the EXCLUDED item" in text
+    assert "a thing listed under two lines is one gap" in text

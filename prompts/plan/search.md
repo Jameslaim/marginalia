@@ -1,8 +1,20 @@
 ---
 name: plan/search
-version: "3"
+version: "4"
 stage: plan
-note: "v3 aims a language query at the item a video in that language serves.
+note: "v4 spends the core before the nice-to-haves and never searches into the
+  brief's exclusions. v3 ranked a missing ALSO WANTED line level with a missing
+  PART line, and on one topic spent 4 of 8 queries on an ALSO WANTED item few
+  creators report, against 3 on the partly held PART the brief requires; two of
+  those 4 aimed at categories EXCLUDED names. The order is now missing PART
+  lines, partly held PART lines, ALSO WANTED gaps, then held lines with budget
+  left. A gap that can only be searched through excluded material is skipped
+  and named (SKIP). An item may name a coverage line directly, ALSO WANTED
+  included: v3 hung those gaps under the nearest PART, which counted 8 and 6
+  listed things no PART lists. One query per distinct gap before any second,
+  and a thing listed under two coverage lines is one gap: v3 gave one such
+  thing two near-identical queries.
+  v3 aims a language query at the item a video in that language serves.
   v2 gave each named language a query before any had a second, and with a small
   budget each landed on whichever part came next: on one topic one language
   only on sponsorships, another only on per-view breakdowns, though the first
@@ -63,25 +75,39 @@ THE BRIEF'S PARTS TO COVER, numbered:
 ---
 
 The brief is the authority on what counts. You are not re-deciding it, and you
-plan only for what it lists: every item below is one of its PARTS TO COVER, or
-one thing a PART lists. Never plan for something the brief does not ask for.
+plan only for what it lists: every item below is one of its PARTS TO COVER, one
+thing a PART lists, or a line of COVERAGE above. Never plan for something the
+brief does not ask for.
+
+**Never aim a query at anything EXCLUDED names.** A query for a category the
+brief excludes spends a search on results every later step will decline. If a
+gap can only be searched through excluded material — the only videos that
+would show it are the kind EXCLUDED rules out — do not write a query for it.
+Write a SKIP line instead, naming the gap and the EXCLUDED item:
+
+```
+SKIP: <the COVERAGE line, as written there> | <the EXCLUDED item it would search into>
+```
 
 ## For each item
 
-Write ITEM blocks for what the library lacks, using COVERAGE above. A PART that
-is MISSING or PARTLY held gets an item; a listed thing marked MISSING may get its
-own item, aimed at that thing, so a gap inside a mostly held PART is searched for
-itself rather than under the PART's general wording. A PART that is HELD gets an
-item only when there is budget left after every gap has one. Where nothing is
-held yet, write one ITEM block per PART, in order, and give a listed thing its
-own block only where its videos would be titled differently from the rest.
+Write ITEM blocks for what the library lacks, using COVERAGE above. Each gap —
+a MISSING or PARTLY line — gets an item aimed at it, so a gap inside a mostly
+held PART is searched for itself rather than under the PART's general wording.
+An ALSO WANTED gap is an item of its own, named by its COVERAGE line, never hung
+under the nearest PART. A line marked as the same gap as a line above is one
+gap: give it one item. A HELD line gets an item only when there is budget left
+after every gap has one. Where nothing is held yet, write one ITEM block per
+PART, in order, and give a listed thing its own block only where its videos
+would be titled differently from the rest.
 
-**ITEM** — `P<number>` for a whole PART, or `P<number> — <the thing, in the
-brief's words>` for one thing it lists.
+**ITEM** — the COVERAGE line it serves, copied as written there after its label
+(`<part> — <thing>`, or the part alone). Where nothing has been assessed,
+`P<number>` for a whole PART or `P<number> — <the thing, in the brief's words>`
+for one thing it lists.
 
-**COVERS** — the COVERAGE line this item serves, copied as it is written there
-after its state (`<part> — <thing>`, or the part alone). `none` when nothing has
-been assessed.
+**COVERS** — the same COVERAGE line again, or `none` when nothing has been
+assessed.
 
 **INTENT** — one sentence: what a video that satisfies this item is like. Not
 the item restated; the kind of video — who makes it, what it shows, what a
@@ -139,11 +165,17 @@ before any gets a second, in the brief's order.
 
 ## How many
 
-{{ count }} queries in all, spent in coverage order: every MISSING line first,
-then every PARTLY held one, and a HELD line only when budget is left after both.
+{{ count }} queries in all, spent in this order:
+
+1. MISSING PART lines — a PART the library holds nothing of;
+2. PARTLY PART lines — the missing things of a PART held in part;
+3. ALSO WANTED gaps, MISSING or PARTLY — wanted, not required, so after every
+   PART;
+4. HELD lines, only when budget is left after all three.
+
 A query for something the library already holds mostly returns the popular
-videos it already has. Among lines of the same state, spread before repeating:
-one query each before any gets a second. Where nothing is held yet, every PART
+videos it already has. One query for each distinct gap before any gap gets a
+second; a thing listed under two lines is one gap. Where nothing is held yet, every PART
 gets one before any PART gets a second, then spend the rest where the right
 videos are hardest to reach — a listed thing titled unlike its PART, a
 language, a part whose subject's own words mostly find the wrong kind of video. Each query: two to seven words, no boolean
@@ -219,6 +251,8 @@ FILTERS: none
 ```
 
 - `RECENCY` — first, alone on its line.
+- `SKIP` — one line per gap skipped as excluded, before the items; none when
+  no gap is.
 - `LANGUAGE` — one line per language, fields separated by `|`; then
   `MAIN LANGUAGE`, `LANGUAGE ITEMS` and `BROAD ITEM`, one line each.
 - `ITEM`, then `COVERS`, then `INTENT`, then `TITLED`, then that item's `QUERY` and `FILTERS`
