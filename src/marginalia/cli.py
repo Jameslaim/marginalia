@@ -53,8 +53,11 @@ from .contracts import (
     KNOWN,
     NEW,
     NOTED,
+    ORIGIN_PLAN,
     ORIGIN_TERRITORY,
     REJECTED,
+    SEARCH_SOURCES,
+    SOURCE_PLAN,
     SKIPPED,
     STATUS_HAS_TRANSCRIPT,
     CHECK_NOTE_INVALID,
@@ -379,6 +382,7 @@ def _cmd_discover(args: argparse.Namespace) -> int:
             max_videos=args.max_videos,
             max_requests=args.max_requests,
             dry_run=args.dry_run,
+            search_source=args.search_source,
         )
 
     if args.json:
@@ -652,7 +656,14 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
         return []
 
     lines = []
-    if territory:
+    if territory.fallback:
+        # A plan was asked for and the map ran instead. Its own line, before
+        # the map's: a run that reads as an ordinary map run would hide that
+        # the source it was configured to compare never searched.
+        lines.append(f"plan:     not used — {territory.fallback}; the map wrote round one")
+    if territory.source == SOURCE_PLAN:
+        lines.extend(_search_plan_lines(territory))
+    elif territory:
         lines.append(
             f"map:      {len(territory.concepts)} concepts, "
             f"{len(territory.vocabulary)} vocabulary terms, "
@@ -664,7 +675,8 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
         # Printed whenever there was a problem, not only when the map was lost:
         # a usable map can still have dropped a query or a recency vote.
         state = "problems" if territory else "unusable"
-        lines.append(f"map:      {state} ({territory.problem})")
+        label = "plan" if territory.source == SOURCE_PLAN else "map"
+        lines.append(f"{label + ':':<10}{state} ({territory.problem})")
 
     # Printed even at zero, like the unparsed count, so the number is
     # trustworthy on the day it is not zero.
@@ -711,10 +723,14 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
             f"dupes:    {len(duplicates)} quer(ies) skipped as already run this round"
         )
 
+    origin, label = (
+        (ORIGIN_PLAN, "plan-only:") if territory.source == SOURCE_PLAN
+        else (ORIGIN_TERRITORY, "map-only:")
+    )
     exclusive = [
         video_id
         for report in run.rounds
-        for video_id in report.only_from(ORIGIN_TERRITORY)
+        for video_id in report.only_from(origin)
     ]
     if run.rounds:
         # The phase's value in one number: candidates the map's own queries
@@ -722,8 +738,47 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
         # never returns is invisible to every stage after it, so this is the
         # whole difference the map makes.
         lines.append(
-            f"map-only: {len(exclusive)} candidate(s) no brief query surfaced"
+            f"{label:<10}{len(exclusive)} candidate(s) no brief query surfaced"
         )
+    return lines
+
+
+def _search_plan_lines(territory) -> list[str]:
+    """The search plan's line: items, queries per item, languages, and the
+    brief's PARTS no query reaches — each counter printed at zero too, so it
+    can be trusted on the day it is not zero (rule 14)."""
+    plan = territory.plan
+    if plan is None:
+        return []
+    per_item = "/".join(str(len(item.queries)) for item in plan.items) or "none"
+    lines = [
+        f"plan:     {len(plan.items)} items, {len(territory.queries)} queries "
+        f"(per item {per_item}), prompt {territory.version}",
+        f"recency:  {territory.recency.label} — {territory.recency.reason or 'no reason given'}",
+    ]
+    languages = "; ".join(
+        f"{language.name} ({language.code or 'no code'}, {language.script or 'script not given'})"
+        for language in plan.languages
+    )
+    lines.append(f"          languages: {languages or 'none named'}")
+    missing = ", ".join(plan.parts_without_query)
+    lines.append(
+        f"          no query: {len(plan.parts_without_query)} part(s)"
+        + (f" — {missing}" if missing else "")
+    )
+    for count, what in (
+        (len(plan.unknown_items), "item(s) naming no PART of the brief, not planned"),
+        (plan.queries_dropped, "quer(ies) under those items, not run"),
+        (plan.things_unmatched, "listed thing(s) the brief does not list, tagged by PART"),
+        (plan.script_mismatches, "quer(ies) not in the script their language's titles use"),
+        (len(plan.languages_without_query), "language(s) with no query"),
+    ):
+        if count:
+            lines.append(f"          {count} {what}")
+    context = (
+        f"{plan.context_lines} untrusted line(s)" if plan.context == "supplied" else plan.context
+    )
+    lines.append(f"          context: {context}")
     return lines
 
 
@@ -838,6 +893,10 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         # brief: when results look wrong the first question is what the run
         # thought this topic covered, and a list of queries is the conclusion
         # rather than the reasoning.
+        # Which source wrote round one's planned queries, and why the map ran
+        # when a plan was asked for. The plan itself is under `territory.plan`.
+        "search_source": run.territory.source,
+        "search_fallback": run.territory.fallback,
         "territory_version": run.territory.label,
         "territory_revision": run.territory.revision,
         "territory": json.loads(run.territory.as_json()),
@@ -926,6 +985,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                     for video_id, origins in report.surfaced_by.items()
                 },
                 "territory_only": sorted(report.only_from(ORIGIN_TERRITORY)),
+                "plan_only": sorted(report.only_from(ORIGIN_PLAN)),
                 # What stage 2 found unexplained in this round's videos. These
                 # are what the *next* round is supposed to have searched for,
                 # so they are the only way to check the loop-back really fed
@@ -2025,6 +2085,13 @@ def _build_parser() -> argparse.ArgumentParser:
         "--dry-run",
         action="store_true",
         help="brief, queries, search and stage-1 judging only; writes nothing",
+    )
+    disco.add_argument(
+        "--search-source",
+        choices=SEARCH_SOURCES,
+        default=None,
+        help="what writes round one's planned queries: the search plan or the map "
+        "(default: [discover] search_source)",
     )
     disco.add_argument("--json", action="store_true", help="emit structured output")
     disco.set_defaults(handler=_cmd_discover)

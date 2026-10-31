@@ -120,6 +120,7 @@ def render_report(
         f"| model | {run.model or MISSING} |",
         f"| brief prompt | v{run.brief_version or MISSING} |",
         f"| territory map | {run.territory_version or 'none built'} |",
+        f"| round-one queries from | {_round_one_source(run)} |",
         f"| candidates seen | {run.candidates_seen} |",
         f"| videos stored | {run.videos_stored} |",
         f"| model requests | {run.requests_made} |",
@@ -567,6 +568,12 @@ def render_map(run: RunRow, territory: dict[str, Any] | None) -> str:
         return "\n".join(lines)
 
     revision = territory.get("revision", 1)
+    plan = territory.get("plan") if territory.get("source") == "plan" else None
+    if territory.get("fallback"):
+        lines.extend([f"**A search plan was asked for and not used**: {territory['fallback']}. "
+                      "The map below wrote round one's queries.", ""])
+    if plan is not None:
+        lines.extend(_render_plan(plan))
     lines.extend(
         [
             f"Prompt v{territory.get('version') or MISSING}, revision {revision}.",
@@ -591,7 +598,7 @@ def render_map(run: RunRow, territory: dict[str, Any] | None) -> str:
             + (f"{months} months" if months else "any time")
             + f" — {recency.get('reason') or 'no reason given'}",
             "",
-            "## Queries the map proposed",
+            "## Queries the " + ("plan" if plan is not None else "map") + " proposed",
             "",
         ]
     )
@@ -637,6 +644,61 @@ def render_map(run: RunRow, territory: dict[str, Any] | None) -> str:
             previous = snapshot
     lines.append("")
     return "\n".join(lines)
+
+
+def _round_one_source(run: RunRow) -> str:
+    """Which source wrote round one's planned queries, from the stored map."""
+    territory = _territory(run)
+    if not territory:
+        return "none"
+    if territory.get("source") == "plan":
+        return f"search plan ({territory.get('version') or MISSING})"
+    if territory.get("fallback"):
+        return f"territory map — {territory['fallback']}"
+    return "territory map"
+
+
+def _render_plan(plan: dict[str, Any]) -> list[str]:
+    """The search plan's items, languages and counters, as `plan/search` wrote them."""
+    lines = ["## Search plan", "", "Round one's planned queries came from this plan, not from a map.", ""]
+    for item in plan.get("items") or []:
+        lines.append(f"### P{item.get('part')}: {item.get('item')}")
+        lines.append("")
+        lines.append(f"- intent: {item.get('intent') or MISSING}")
+        lines.append(f"- titled: {', '.join(item.get('titled') or []) or MISSING}")
+        lines.append(f"- languages: {', '.join(item.get('languages') or []) or 'none set'}")
+        lines.append("- queries:")
+        lines.extend(f"  - {query}" for query in item.get("queries") or [])
+        if not item.get("queries"):
+            lines.append("  - none")
+        lines.append("")
+    lines.extend(["### Languages", ""])
+    languages = plan.get("languages") or []
+    lines.extend(
+        f"- {language.get('name')} ({language.get('code') or 'no code'}, "
+        f"{language.get('script') or 'script not given'}): {language.get('how') or MISSING}"
+        for language in languages
+    )
+    if not languages:
+        lines.append("- none named")
+    lines.extend(
+        [
+            "",
+            "### Counted",
+            "",
+            f"- PARTS with no query: {len(plan.get('parts_without_query') or [])}",
+            *(f"  - {name}" for name in plan.get("parts_without_query") or []),
+            f"- items naming no PART of the brief: {len(plan.get('unknown_items') or [])}",
+            f"- queries under those items, not run: {plan.get('queries_dropped', 0)}",
+            f"- listed things the brief does not list: {plan.get('things_unmatched', 0)}",
+            f"- queries not in their language's title script: {plan.get('script_mismatches', 0)}",
+            f"- languages with no query: {len(plan.get('languages_without_query') or [])}",
+            f"- current context: {plan.get('context') or 'absent'}"
+            + (f", {plan.get('context_lines')} untrusted line(s)" if plan.get("context") == "supplied" else ""),
+            "",
+        ]
+    )
+    return lines
 
 
 def _diff(before: dict[str, Any], after: dict[str, Any]) -> list[str]:

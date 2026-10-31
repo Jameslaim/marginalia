@@ -156,6 +156,13 @@ DEFAULT_PLANNER_MAX_TOKENS = 16384
 # provider reports auto-captions honestly, or if ASR lands and being wrong stops
 # being terminal.
 DEFAULT_TRUST_CAPTION_HINT = False
+# Which source writes round one's planned queries: the search plan, written from
+# the brief's coverage items (`plan/search`), or the territory map
+# (`territory/map`). `map` until a live run on the same day has compared the two:
+# the plan has been read, not searched, and rule 35's lesson is that a prompt is
+# credited only with what a measurement shows. A failed plan falls back to the map.
+DEFAULT_SEARCH_SOURCE = "map"
+SEARCH_SOURCE_VALUES = ("plan", "map")
 DEFAULT_MAX_COST_USD = 2.0
 DEFAULT_FETCH_DELAY_S = 3.0
 
@@ -318,6 +325,9 @@ class DiscoverConfig:
     # Refuse to run a topic with no approved brief rather than write a fresh
     # one. Off by default, so an unattended run never blocks on a person.
     require_approved_brief: bool = False
+    # `plan` or `map`: what writes round one's planned queries. See
+    # DEFAULT_SEARCH_SOURCE.
+    search_source: str = DEFAULT_SEARCH_SOURCE
     baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
@@ -626,6 +636,10 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         require_approved_brief=_flag(
             section, "require_approved_brief", False, config_path, "discover"
         ),
+        search_source=_choice(
+            section, "search_source", DEFAULT_SEARCH_SOURCE, SEARCH_SOURCE_VALUES,
+            config_path, "discover",
+        ),
         baseline_max_tokens=_positive(
             section, "baseline_max_tokens", DEFAULT_BASELINE_MAX_TOKENS,
             config_path, "discover",
@@ -753,6 +767,17 @@ def _string(section: dict, key: str, default: str, config_path: Path, where: str
     if not isinstance(raw, str) or not raw.strip():
         raise ConfigError(f"{where}.{key} must be a non-empty string in {config_path}")
     return raw.strip()
+
+
+def _choice(
+    section: dict, key: str, default: str, values: tuple[str, ...], config_path: Path, where: str
+) -> str:
+    value = _string(section, key, default, config_path, where).lower()
+    if value not in values:
+        raise ConfigError(
+            f"{where}.{key} must be one of {', '.join(values)} in {config_path}, not {value!r}"
+        )
+    return value
 
 
 def _positive(section: dict, key: str, default: int, config_path: Path, where: str) -> int:

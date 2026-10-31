@@ -40,6 +40,7 @@ prompt is a rule enforced by a model:
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 import re
 from typing import Iterable, Sequence
 
@@ -546,19 +547,13 @@ def apply_revisions(
         lowered = revision.term.lower()
         target[:] = [term for term in target if term.lower() != lowered]
 
-    return TerritoryMap(
-        topic=territory.topic,
-        version=territory.version,
+    # `replace`, so what the map does not know about — a search plan's items,
+    # its source, a fallback — survives the revision rather than being dropped
+    # by a constructor that names every field it remembers (rule 25).
+    return replace(
+        territory,
         concepts=concepts,
         vocabulary=vocabulary,
-        recency=territory.recency,
-        queries=territory.queries,
-        rejected=territory.rejected,
-        parsed=territory.parsed,
-        problem=territory.problem,
-        input_tokens=territory.input_tokens,
-        output_tokens=territory.output_tokens,
-        latency_s=territory.latency_s,
         revision=territory.revision + 1,
         revisions=[*territory.revisions, *revisions],
         history=[*territory.history, territory.snapshot()],
@@ -842,14 +837,24 @@ def render_territory(territory: TerritoryMap) -> str:
     """The map, labelled by half — the planner may revise either one."""
     if not territory:
         return "TERRITORY MAP: none was built for this topic."
-    return "\n".join(
-        [
-            f"TERRITORY MAP (revision {territory.revision}):",
-            "CONCEPTS: " + (", ".join(territory.concepts) or "none"),
-            "VOCABULARY: " + (", ".join(territory.vocabulary) or "none"),
-            f"RECENCY: {territory.recency.label} — {territory.recency.reason or 'no reason given'}",
-        ]
-    )
+    lines = [
+        f"TERRITORY MAP (revision {territory.revision}):",
+        "CONCEPTS: " + (", ".join(territory.concepts) or "none"),
+        "VOCABULARY: " + (", ".join(territory.vocabulary) or "none"),
+        f"RECENCY: {territory.recency.label} — {territory.recency.reason or 'no reason given'}",
+    ]
+    if territory.plan is not None and territory.plan.items:
+        # A search plan wrote round one. Its vocabulary is the title phrasing
+        # its items named, which is what a revision adds to or removes from;
+        # the items are shown so the planner can see what round one aimed at.
+        # Their queries are not revised: they ran in round one, and every
+        # later round's queries are the planner's own.
+        lines[0] = f"TERRITORY MAP (revision {territory.revision}, written as a search plan):"
+        lines.append("SEARCH PLAN ITEMS (what round one aimed at):")
+        lines.extend(
+            f"- {item.item}: {item.intent or 'no intent given'}" for item in territory.plan.items
+        )
+    return "\n".join(lines)
 
 
 # -- the planner ---------------------------------------------------------------

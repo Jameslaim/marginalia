@@ -5,6 +5,8 @@
     once:
       write brief -> review brief              (M2b)
       map the territory -> concepts, vocabulary, recency, queries   (B4)
+        or the search plan -> items, title phrasing, languages, queries
+        ([discover] search_source; a plan that cannot be used runs the map)
 
     round:
       expand brief -> queries, plus the map's own queries in round 1
@@ -64,6 +66,7 @@ from ..brain.judge import (
     match_item,
 )
 from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
+from ..brain.search_plan import SearchPlanner
 from ..brain.territory import Mapper, validate, waiver_applies
 from ..config import Config
 from ..contracts import (
@@ -79,6 +82,7 @@ from ..contracts import (
     NEW,
     ORIGIN_BRIEF,
     ORIGIN_THREAD,
+    SOURCE_PLAN,
     ACQUIRE_NO_CAPTIONS,
     OUTCOME_JUDGED,
     OUTCOME_TOO_LARGE,
@@ -103,6 +107,8 @@ from ..contracts import (
     SearchResult,
     TranscriptResult,
     Acquisition,
+    Brief,
+    TerritoryMap,
 )
 from ..core.ids import extract_video_id
 from ..core.ledger import (
@@ -193,6 +199,8 @@ def discover(
     mapper: Mapper | None = None,
     planner: Planner | None = None,
     provider: TranscriptProvider | None = None,
+    search_planner: SearchPlanner | None = None,
+    search_source: str | None = None,
 ) -> DiscoverRun:
     """Run the loop.
 
@@ -214,6 +222,7 @@ def discover(
     providers = [provider] if provider is not None else transcript_providers(config)
     judge = judge or Judge(client)
     mapper = mapper or Mapper(client)
+    search_planner = search_planner or SearchPlanner(client)
     planner = planner or Planner(client)
     run_id = _new_run_id()
 
@@ -257,10 +266,9 @@ def discover(
         # follows, applied to the second thing that costs a request. Inside the
         # `try`, so a refusal here is recorded as one rather than leaving the
         # run unfinished as though the process had died.
-        run.territory = mapper.map(
-            brief,
-            count=config.discover.territory_queries,
-            max_tokens=config.discover.territory_max_tokens,
+        run.territory = round_one_source(
+            config, mapper, search_planner, brief,
+            source=search_source or config.discover.search_source,
         )
         ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
 
@@ -310,6 +318,53 @@ def discover(
             stopped_because=run.stopped_because or "incomplete",
         )
     return run
+
+
+def round_one_source(
+    config: Config,
+    mapper: Mapper,
+    search_planner: SearchPlanner,
+    brief: Brief,
+    *,
+    source: str,
+    context: Sequence[str] | None = None,
+) -> TerritoryMap:
+    """What writes round one's planned queries: the search plan or the map.
+
+    Either way the result is the run's territory, and everything that reads it
+    — the recency window, round one, the judges' word list, the planner and its
+    revisions, the report, the export — reads whichever ran (rule 25).
+
+    **A failed plan falls back to the map, never to nothing** (rule 30). A
+    plan with no query left after its checks — the call failed, the reply was
+    cut at the ceiling, or no item named a PART of the brief — is replaced by
+    the map, and the plan's problem travels on the map as `fallback`, so the
+    run row, the plan line and the export say the plan was asked for and why
+    it did not run. `context` is step 4's slot and is absent today.
+    """
+    limits = config.discover
+    if source == SOURCE_PLAN:
+        plan = search_planner.plan(
+            brief,
+            count=limits.territory_queries,
+            max_tokens=limits.territory_max_tokens,
+            context=context,
+        )
+        if plan.queries:
+            return plan
+        reason = plan.problem or "no queries"
+        log.warning("discover: the search plan was unusable (%s); running the map", reason)
+        territory = mapper.map(
+            brief, count=limits.territory_queries, max_tokens=limits.territory_max_tokens
+        )
+        return replace(
+            territory,
+            fallback=f"search plan {plan.version} unusable: {reason}",
+            # What the failed plan cost, so the export can name both calls.
+            input_tokens=territory.input_tokens + plan.input_tokens,
+            output_tokens=territory.output_tokens + plan.output_tokens,
+        )
+    return mapper.map(brief, count=limits.territory_queries, max_tokens=limits.territory_max_tokens)
 
 
 def _loop(
