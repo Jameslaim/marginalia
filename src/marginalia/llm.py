@@ -30,6 +30,7 @@ import random
 import re
 import threading
 import time
+import traceback
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -624,7 +625,7 @@ class LlmClient:
         # one path where the body reached the log: `_safe` formats this error,
         # so the retry line carried whatever an unrecognised exception held.
         status_part = f" (HTTP {status})" if isinstance(status, int) else ""
-        return LlmError(f"{name}{status_part}{_code_part(exc)}")
+        return LlmError(f"{name}{status_part}{_code_part(exc)}{_raised_at(exc)}")
 
 
 # A rate limit is the one failure where the provider states the answer, so
@@ -804,6 +805,23 @@ def safe_reason(exc: BaseException) -> str:
     if isinstance(exc, LlmError):
         return " ".join(str(exc).split())
     return type(exc).__name__
+
+
+def _raised_at(exc: BaseException) -> str:
+    """`` at openai/_base_client.py:1047`` — where an unrecognised exception
+    was raised, the last two parts of the file's path and the line, or `""`.
+
+    Measured: a plan call failed twice as "model call failed after 4
+    attempts: AssertionError", nothing billed, and the class alone could not
+    say whether the assertion was the SDK's, the HTTP stack's or this
+    project's. A file and a line can, and carry nothing the provider sent.
+    """
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    if not frames:
+        return ""
+    last = frames[-1]
+    parts = Path(last.filename).parts[-2:]
+    return f" at {'/'.join(parts)}:{last.lineno}"
 
 
 def _safe(error: Exception, exc: Exception) -> str:

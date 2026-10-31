@@ -1553,3 +1553,25 @@ def test_what_the_provider_does_not_report_is_said_so(caplog) -> None:
     assert reply.served_model is None and reply.fingerprint is None
     assert reply.model == "configured-alias", "the alias still names the call"
     assert "served not reported, fingerprint not reported" in caplog.text
+
+
+# -- an unrecognised failure names where it was raised -------------------------
+
+
+def test_an_unrecognised_exception_names_the_file_and_line_that_raised_it() -> None:
+    """Measured: a plan call failed twice as "AssertionError" and nothing more;
+    the class could not say whose assertion it was. The file and the line can,
+    and carry nothing the provider sent."""
+    from marginalia.llm import LlmError
+
+    def broken(**request):
+        assert request["model"] == "never this", "a message that must not reach the log"
+
+    instance = LlmClient(make_llm_config(), transport=broken, sleep=lambda s: None,
+                         limiter=RateLimiter(40, now=FakeClock().now, sleep=FakeClock().sleep))
+    with pytest.raises(LlmError) as raised:
+        instance.complete("s", "u")
+
+    message = str(raised.value)
+    assert "AssertionError at tests/test_llm.py:" in message.replace("\\", "/")
+    assert "must not reach the log" not in message
