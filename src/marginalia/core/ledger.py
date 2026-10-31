@@ -68,6 +68,7 @@ __all__ = [
     "RunRow",
     "QueryRow",
     "PlanRow",
+    "BriefRow",
     "skip_reason",
     "normalise_topic",
     "in_library",
@@ -244,6 +245,16 @@ CREATE TABLE IF NOT EXISTS plans (
   planned_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_plans_run ON plans(run_id, round);
+
+CREATE TABLE IF NOT EXISTS briefs (
+  topic          TEXT NOT NULL,     -- normalised, as `runs.topic` and `decisions.topic`
+  version        INTEGER NOT NULL,  -- 1, 2, ...: one per approval that changed the text
+  sha256         TEXT NOT NULL,     -- of the approved text, as stored
+  brief          TEXT NOT NULL,
+  prompt_version TEXT,              -- the write/review prompts the pending brief came from
+  approved_at    TEXT NOT NULL,
+  PRIMARY KEY (topic, version)
+);
 """
 
 # Columns added after a table shipped, which can be introduced in place.
@@ -547,6 +558,29 @@ class QueryRow:
 
 
 @dataclass(frozen=True)
+class BriefRow:
+    """One approved version of a topic's brief.
+
+    The owner confirms a topic's brief once and every later run reuses it, so
+    coverage across runs of one topic is measured against one target rather
+    than against whichever brief each run happened to draw. A new approval of
+    a changed text is a new version; the earlier ones are kept, and each run
+    records the version it used in `runs.brief_outcome` (rule 23).
+    """
+
+    topic: str
+    version: int
+    sha256: str
+    brief: str
+    prompt_version: str | None
+    approved_at: str
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> BriefRow:
+        return cls(**_values(cls, row))
+
+
+@dataclass(frozen=True)
 class PlanRow:
     """One round's plan, as the planner returned it.
 
@@ -583,6 +617,7 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     # type for a table nothing read would have been inventing its shape twice.
     "queries": frozenset(field.name for field in fields(QueryRow)),
     "plans": frozenset(field.name for field in fields(PlanRow)),
+    "briefs": frozenset(field.name for field in fields(BriefRow)),
 }
 
 
@@ -1643,6 +1678,53 @@ class Ledger:
             prompt_version=prompt_version,
             planned_at=planned_at,
         )
+
+    # -- approved briefs ----------------------------------------------------
+
+    def approved_brief(self, topic: str) -> BriefRow | None:
+        """The latest approved brief for this topic, or ``None``.
+
+        ``topic`` is normalised here, as everywhere a topic is a key, so
+        "Prompt  Caching" finds the brief approved for "prompt caching".
+        """
+        if "briefs" in self._absent:
+            # A read-only open of a ledger older than the table: nothing approved.
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM briefs WHERE topic = ? ORDER BY version DESC LIMIT 1",
+            (normalise_topic(topic),),
+        ).fetchone()
+        return BriefRow.from_sqlite(row) if row is not None else None
+
+    def approved_briefs(self, topic: str) -> list[BriefRow]:
+        if "briefs" in self._absent:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM briefs WHERE topic = ? ORDER BY version",
+            (normalise_topic(topic),),
+        ).fetchall()
+        return [BriefRow.from_sqlite(row) for row in rows]
+
+    def approve_brief(
+        self, topic: str, brief: str, sha256: str, *, prompt_version: str | None = None
+    ) -> BriefRow:
+        """Store a new approved version: one more than the latest.
+
+        Checking the text is the caller's job and is done before this is
+        reached (`flow/brief.approve`); this only numbers and stores it.
+        """
+        key = normalise_topic(topic)
+        latest = self.approved_brief(key)
+        version = 1 if latest is None else latest.version + 1
+        approved_at = _utcnow()
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO briefs (topic, version, sha256, brief, prompt_version, approved_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (key, version, sha256, brief, prompt_version, approved_at),
+            )
+        log.info("brief v%d approved for %r", version, key)
+        return BriefRow(key, version, sha256, brief, prompt_version, approved_at)
 
     def plans_for_run(self, run_id: str) -> list[PlanRow]:
         rows = self._conn.execute(

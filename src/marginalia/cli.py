@@ -77,12 +77,13 @@ from .contracts import (
 )
 from .core.ids import extract_video_id, is_video_id
 from .flow.acquire import acquire, transcript_providers
+from .flow.brief import BriefPendingExists, approve, brief_status, write_pending
 from .flow.discover import discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
 from .flow.store import reconcile_stored, store_transcript, unreconciled
-from .brain.judge import BriefUnusable
+from .brain.judge import BriefUnusable, Judge
 from .llm import LlmClient, LlmConfigError, LlmError
 from .core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger, skip_reason
 from .core.library import Library, format_duration
@@ -382,6 +383,69 @@ def _cmd_discover(args: argparse.Namespace) -> int:
 
     for line in _discover_report(run):
         print(line)
+    return EXIT_OK
+
+
+def _cmd_brief(args: argparse.Namespace) -> int:
+    """Write a topic's brief to review, approve it, or show where it stands.
+
+    Writing costs one write and one review call and never searches; approving
+    and the status make no model call at all.
+    """
+    config = _load(args)
+    library = Library(config.library_path)
+    library.ensure()
+    quoted = json.dumps(args.topic, ensure_ascii=False)
+
+    if args.approve or args.status:
+        with Ledger(library.ledger_path) as ledger:
+            if args.status:
+                status = brief_status(ledger, library, args.topic)
+                print(f"topic:    {status.topic}")
+                state = (
+                    "none" if not status.pending
+                    else "differs from the latest approval" if status.pending_differs
+                    else "same as the latest approval"
+                )
+                print(f"pending:  {status.pending_path} ({state})")
+                for version, sha256, approved_at in status.versions:
+                    print(f"approved: v{version} {sha256[:12]} at {approved_at}")
+                if not status.versions:
+                    print("approved: none — every run writes a fresh brief")
+                return EXIT_OK
+            result = approve(ledger, library, args.topic)
+        if result.problem:
+            return _error(
+                f"brief not approved: {result.problem}. Nothing was stored; the pending "
+                f"file is kept at {result.path}",
+                EXIT_FAILED,
+            )
+        if result.unchanged:
+            print(f"unchanged: the pending brief is approved brief v{result.version} already")
+            return EXIT_OK
+        print(f"approved: brief v{result.version} for {quoted} (sha256 {result.sha256[:12]})")
+        print(f"copy:     {result.approved_path}")
+        print("every marg discover on this topic now reuses it")
+        return EXIT_OK
+
+    try:
+        pending = write_pending(
+            config, library, Judge(LlmClient(config.llm)), args.topic, force=args.force
+        )
+    except BriefPendingExists as exc:
+        return _error(str(exc), EXIT_FAILED)
+    print(f"pending:  brief written for {quoted} (prompts v{pending.version})")
+    for number, problem in enumerate(pending.draft_problems, start=1):
+        print(f"          draft {number} unusable ({problem}); drawn again")
+    if pending.review_problem:
+        print(f"          review unusable ({pending.review_problem}); this is the unreviewed draft")
+    print(f"file:     {pending.path}")
+    print(f"parts:    {len(pending.parts)}")
+    for name, things in pending.parts:
+        print(f"  - {name}")
+        for thing in things:
+            print(f"      . {thing}")
+    print(f"next:     edit the file, then run: marg brief {quoted} --approve")
     return EXIT_OK
 
 
@@ -1947,6 +2011,21 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     disco.add_argument("--json", action="store_true", help="emit structured output")
     disco.set_defaults(handler=_cmd_discover)
+
+    brief = subparsers.add_parser(
+        "brief", help="write a topic's brief to review, approve it, or show its status"
+    )
+    brief.add_argument("topic", help="the topic, as marg discover is given it")
+    action = brief.add_mutually_exclusive_group()
+    action.add_argument(
+        "--approve", action="store_true",
+        help="check the edited pending brief and store it as the next approved version",
+    )
+    action.add_argument("--status", action="store_true", help="show the pending and approved briefs")
+    brief.add_argument(
+        "--force", action="store_true", help="write a new pending brief over an existing one"
+    )
+    brief.set_defaults(handler=_cmd_brief)
 
     again = subparsers.add_parser(
         "refetch", help="retry transcript fetches that failed transiently"

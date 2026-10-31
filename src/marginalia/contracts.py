@@ -79,6 +79,9 @@ __all__ = [
     "CoverageItem",
     "LibraryCoverage",
     "RoundPlan",
+    "PendingBrief",
+    "BriefApproval",
+    "BriefStatus",
     # verdict vocabulary
     "VERDICT_YES",
     "VERDICT_NO",
@@ -1222,6 +1225,53 @@ class SearchResult:
 
 
 # -- judgement --------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PendingBrief:
+    """A brief written for a topic and saved for its owner to edit and approve.
+
+    ``parts`` are the PARTS TO COVER and the things each lists, for the
+    command to print; ``path`` is where the editable file is.
+    """
+
+    topic: str
+    path: str
+    text: str
+    version: str
+    parts: list[tuple[str, list[str]]] = field(default_factory=list)
+    draft_problems: tuple[str, ...] = ()
+    review_problem: str = ""
+
+
+@dataclass(frozen=True)
+class BriefApproval:
+    """What `marg brief --approve` did.
+
+    ``problem`` is the check the edited text failed — then nothing is stored
+    and the pending file is kept. ``unchanged`` means the text is the latest
+    approved version already, so no new version was made.
+    """
+
+    topic: str
+    path: str
+    version: int | None = None
+    sha256: str = ""
+    approved_path: str = ""
+    problem: str = ""
+    unchanged: bool = False
+
+
+@dataclass(frozen=True)
+class BriefStatus:
+    """A topic's briefs: whether a pending file exists and differs from the
+    latest approval, and every approved version."""
+
+    topic: str
+    pending_path: str
+    pending: bool
+    pending_differs: bool
+    versions: list[tuple[int, str, str]] = field(default_factory=list)  # version, sha256, approved_at
 
 
 @dataclass(frozen=True)

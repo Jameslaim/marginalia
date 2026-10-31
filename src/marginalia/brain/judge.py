@@ -19,6 +19,7 @@ and shows up in the logs. Only one of those is recoverable.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from typing import Sequence
@@ -87,6 +88,11 @@ __all__ = [
     "resolve_stage1_no",
     "rests_on_absence",
     "territory_lines",
+    "brief_check",
+    "brief_items",
+    "brief_parts",
+    "brief_sha256",
+    "normalise_brief",
 ]
 
 # Words the judge is told to use. Anything else on a line is not a verdict.
@@ -1461,7 +1467,11 @@ def _brief_problem(reply: Reply) -> str:
     """
     if reply.finish_reason == "length":
         return "cut off at the token ceiling"
-    sections = _brief_sections(reply.text)
+    return _sections_problem(reply.text)
+
+
+def _sections_problem(text: str) -> str:
+    sections = _brief_sections(text)
     missing = [heading for heading in _BRIEF_HEADINGS if heading not in sections]
     if missing:
         return "no " + ", ".join(missing) + " section"
@@ -1469,6 +1479,94 @@ def _brief_problem(reply: Reply) -> str:
     if empty:
         return "empty " + ", ".join(empty) + " section"
     return ""
+
+
+# Rule 27's two definitional limits: a relevant video meets every REQUIRED item,
+# so there must be at least one and few enough to meet together; a PART is one of
+# several the library covers between its videos.
+_ITEM_LIMITS = (("REQUIRED OF EVERY VIDEO", 1, 4), ("PARTS TO COVER", 2, 8))
+_ITEM_RE = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s+(?P<item>\S.*)$")
+
+
+def brief_items(text: str, section: str) -> list[str]:
+    """One section's items: its bullet or numbered lines, each with any
+    unmarked lines that follow it joined on; a section with no markers at all
+    is one item per non-empty line."""
+    body = _brief_sections(text).get(section, "")
+    lines = [line for line in body.splitlines() if line.strip()]
+    if not any(_ITEM_RE.match(line) for line in lines):
+        return [" ".join(line.split()) for line in lines]
+    items: list[str] = []
+    for line in lines:
+        match = _ITEM_RE.match(line)
+        if match:
+            items.append(" ".join(match.group("item").split()))
+        elif items:
+            items[-1] += " " + " ".join(line.split())
+    return items
+
+
+def brief_check(text: str) -> str:
+    """Why this text cannot be a brief, or ``""`` if it can.
+
+    The checks a written brief gets — INTENT, REQUIRED OF EVERY VIDEO, PARTS
+    TO COVER and EXCLUDED present and not empty — and rule 27's item limits
+    for the two sections that define relevance. Applied to an approved brief
+    before it is stored, because every verdict of every later run on the
+    topic is measured against it (rule 30).
+    """
+    problem = _sections_problem(text)
+    if problem:
+        return problem
+    for section, low, high in _ITEM_LIMITS:
+        count = len(brief_items(text, section))
+        if not low <= count <= high:
+            return f"{section} has {count} item(s); a brief needs {low} to {high}"
+    return ""
+
+
+def normalise_brief(text: str) -> str:
+    """A brief as it is stored: line endings normalised and trailing and outer
+    whitespace removed, so an editor's choice of line ending is not a new
+    version."""
+    return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").split("\n")).strip()
+
+
+def brief_sha256(text: str) -> str:
+    """The digest a brief is stored and recorded under, of `normalise_brief`."""
+    return hashlib.sha256(normalise_brief(text).encode("utf-8")).hexdigest()
+
+
+def brief_parts(text: str) -> list[tuple[str, list[str]]]:
+    """Each PART TO COVER and the things it lists, for a person to read.
+
+    A PART is usually written `name: thing, thing and thing`; the name is what
+    precedes the first colon or dash, and the things are its comma- or
+    semicolon-separated pieces outside parentheses. Display only: nothing
+    decides on this split.
+    """
+    out = []
+    for item in brief_items(text, "PARTS TO COVER"):
+        match = _PART_NAME_RE.match(item)
+        if match is None:
+            out.append((item, []))
+            continue
+        things, depth, current = [], 0, ""
+        for char in match.group("rest"):
+            depth += char == "("
+            depth -= char == ")" and depth > 0
+            if char in ",;" and depth == 0:
+                things.append(current)
+                current = ""
+            else:
+                current += char
+        things.append(current)
+        cleaned = [re.sub(r"^(?:and|or|including)\s+", "", t.strip().rstrip(".")) for t in things]
+        out.append((match.group("name").strip(), [t for t in cleaned if t]))
+    return out
+
+
+_PART_NAME_RE = re.compile(r"^(?P<name>.+?)(?::| — | – | - )\s*(?P<rest>.+)$")
 
 
 # Two draws of the draft: the first, and one fresh sample when it is unusable.

@@ -155,6 +155,39 @@ class Library:
     def logs_dir(self) -> Path:
         return self.root / "logs"
 
+    @property
+    def briefs_dir(self) -> Path:
+        return self.root / "briefs"
+
+    def brief_dir(self, topic: str) -> Path:
+        """One topic's briefs: a readable slug and a hash of the normalised
+        topic, because a topic can run to hundreds of characters and a path
+        must stay well under the platform's limit. ``topic`` must already be
+        normalised (`ledger.normalise_topic`), as the ledger keys it."""
+        digest = hashlib.sha256(topic.encode("utf-8")).hexdigest()[:12]
+        return self.briefs_dir / f"{slugify(topic, 40)}-{digest}"
+
+    def pending_brief_path(self, topic: str) -> Path:
+        """The editable brief: written by `marg brief`, edited by the owner,
+        read back by `marg brief --approve`."""
+        return self.brief_dir(topic) / "pending.txt"
+
+    def pending_brief_meta_path(self, topic: str) -> Path:
+        return self.brief_dir(topic) / "pending.json"
+
+    def approved_brief_path(self, topic: str, version: int) -> Path:
+        """A copy of one approved version, for reading. The ledger holds the
+        text every run uses; this file is never read back."""
+        return self.brief_dir(topic) / f"approved-v{int(version)}.txt"
+
+    def write_brief_file(self, path: Path, text: str) -> Path:
+        """Write one file under ``briefs/``. Overwrites; callers decide when."""
+        if self.briefs_dir not in path.parents:
+            raise ValueError(f"not a brief path: {path}")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(path, text if text.endswith("\n") else text + "\n")
+        return path
+
     def export_dir(self, run_id: str) -> Path:
         """One run's folder. ``run_id`` is checked because it arrives from the
         command line and is about to become a directory name."""

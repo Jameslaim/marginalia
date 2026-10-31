@@ -384,6 +384,10 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "JudgedVideo",
         "CoverageItem",
         "LibraryCoverage",
+        # a topic's brief, written to review and approved by its owner
+        "PendingBrief",
+        "BriefApproval",
+        "BriefStatus",
         "RoundPlan",
         # verdict vocabulary
         "VERDICT_YES",
