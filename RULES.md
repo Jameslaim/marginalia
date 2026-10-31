@@ -974,6 +974,16 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     leans stage 1 slightly (gap-tagged NO → MAYBE, held-tagged YES → MAYBE, about 4% of
     verdicts), which is the cheap direction.
 
+38. **A topic's brief is approved once and reused.** `marg brief` writes a brief to
+    review; `--approve` checks the owner's edit before storing it (sections, rule 27's
+    limits; rule 30) as a numbered version with its digest (rule 23). Every later run on
+    the topic uses the latest version with no write or review call, records the version
+    and digest on its run row, and says so on the brief line. With none, a run writes a
+    fresh brief and names the command, unless `require_approved_brief` is on. Measured:
+    two fresh briefs for one topic listed different things under the same PART, so
+    coverage across runs was judged against a moving target, and the planner and
+    gap-first fetching chased listed things the owner had never asked for.
+
 ## Structure
 
 ```
