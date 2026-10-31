@@ -1298,9 +1298,9 @@ def test_the_stage_one_prompt_judges_a_part_video_on_its_part() -> None:
 
 
 def test_the_stage_one_judge_reads_a_compound_part_as_covered_by_any_one_thing() -> None:
-    """judge_metadata v10 stays (unmeasured: its replay was confounded)."""
+    """judge_metadata v10's wording stays in v11, which adds only the item tag."""
     metadata = " ".join(load_prompt("judge_metadata").text.split())
-    assert load_prompt("judge_metadata").version == "10"
+    assert load_prompt("judge_metadata").version == "11"
     assert "A candidate on any one thing a PART lists is on that part" in metadata
     assert "A PART that names a single thing is the same rule with a list of one" in metadata
     assert "counts like any other listed thing" in metadata

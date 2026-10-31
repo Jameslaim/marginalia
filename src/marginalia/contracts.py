@@ -83,6 +83,12 @@ __all__ = [
     "VERDICT_YES",
     "VERDICT_NO",
     "VERDICT_MAYBE",
+    # what a candidate would add to the coverage
+    "ITEM_MISSING",
+    "ITEM_PARTLY",
+    "ITEM_HELD",
+    "ITEM_UNTAGGED",
+    "ITEM_STATES",
     "UNJUDGED_CALL_FAILED",
     "UNJUDGED_TOO_LARGE",
     "UNJUDGED_TRUNCATED",
@@ -1045,6 +1051,17 @@ VERDICT_YES = "yes"
 VERDICT_NO = "no"
 VERDICT_MAYBE = "maybe"
 
+# The state of the coverage item a stage-1 candidate says it would serve, as
+# the round's coverage lines put it: a listed thing nothing holds, a part held
+# only in part (named without one of its things), a thing or part already
+# held, or no item — none named, or one named that matches no line. Fetching
+# reads them in this order (`flow/discover.fetch_order`).
+ITEM_MISSING = "missing"
+ITEM_PARTLY = "partly"
+ITEM_HELD = "held"
+ITEM_UNTAGGED = "untagged"
+ITEM_STATES = (ITEM_MISSING, ITEM_PARTLY, ITEM_HELD, ITEM_UNTAGGED)
+
 # The reasons stage 2 records when it produced no verdict at all — a call that
 # failed, a transcript over the model's window, a reply cut off before its
 # verdict. Named here because two sides read them: the judge writes them, and
@@ -1273,6 +1290,15 @@ class MetadataVerdict:
     # a setup tutorial") or `unshown` (absence of evidence — "59-second short,
     # no mechanism evidence in metadata"). Two grounds, two counters (rule 14).
     resolved: str = ""
+    # The coverage item the judge said this video would add to, as written
+    # (empty for none), and what it matched in the coverage lines the judge
+    # was shown: the line and its state. A tag that matches no line is
+    # untagged, with `serves` kept and `unmatched` set, so it is counted.
+    # Bookkeeping for the fetch order only; the verdict never depends on it.
+    serves: str = ""
+    item: str = ""
+    item_state: str = ITEM_UNTAGGED
+    unmatched: bool = False
 
 
 @dataclass(frozen=True)
@@ -1431,6 +1457,11 @@ class UnreadCandidate:
     # The query's origin (brief, territory, planner, thread), so fetches can
     # alternate between the ways a round searched rather than exhaust one.
     origin: str = ""
+    # The coverage item it would serve and that item's state, matched again
+    # each round against that round's coverage from the judge's own tag, so a
+    # candidate queued for a gap a later round filled waits as held.
+    item: str = ""
+    item_state: str = ITEM_UNTAGGED
 
     @property
     def video_id(self) -> str:
@@ -1598,6 +1629,22 @@ class RoundReport:
     # never dropped. A string check — it cannot see a query that names a real
     # gap as its aim and searches for something else.
     expansion_unmatched: int = 0
+    # Gap-first fetching, each outcome on its own counter. `tagged`: this
+    # round's stage-1 verdicts by the state of the item each was tagged with
+    # (`ITEM_STATES`), NO included. `tags_unmatched`: of the untagged, those
+    # whose tag named something no coverage line matched. `fetched_by_state`:
+    # fetches this round made, by the state the candidate had when it was
+    # fetched. `held_cap`: how many of the round's keepers candidates on held
+    # or no item could take (0: no cap, because the round had no coverage).
+    # `held_capped`: such candidates left unread because the cap was reached,
+    # carried forward. `released`: such keepers stored past the cap because no
+    # later round could spend the slots (the safeguard).
+    tagged: dict[str, int] = field(default_factory=dict)
+    tags_unmatched: int = 0
+    fetched_by_state: dict[str, int] = field(default_factory=dict)
+    held_cap: int = 0
+    held_capped: int = 0
+    released: int = 0
     # B4. The queries as planned, with their origins and filters. `queries`
     # above stays a list of strings: it is what the report prints and what
     # `--json` has always carried, and a reader of either should not have to

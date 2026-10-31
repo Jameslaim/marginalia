@@ -389,6 +389,12 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "VERDICT_YES",
         "VERDICT_NO",
         "VERDICT_MAYBE",
+        # the state of the coverage item a stage-1 candidate would serve
+        "ITEM_MISSING",
+        "ITEM_PARTLY",
+        "ITEM_HELD",
+        "ITEM_UNTAGGED",
+        "ITEM_STATES",
         # what stage 2 records when it produced no verdict
         "UNJUDGED_CALL_FAILED",
         "UNJUDGED_TOO_LARGE",

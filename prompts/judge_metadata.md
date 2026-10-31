@@ -1,8 +1,16 @@
 ---
 name: judge_metadata
-version: "10"
+version: "11"
 stage: metadata
-note: "v10 says a candidate on any one thing a PART lists is on that part, as
+note: "v11 asks, after each verdict and reason, for the coverage item the
+  video would add to, copied from a COVERAGE list the round supplies (or
+  NONE), on the same line as | ITEM: ... . Discovery fetched stage-1 YES first
+  and kept without regard to coverage, so on run 71cc2c8f5c57 16 to 22 of 25
+  keepers fell on parts the library already held while 166 MAYBEs waited. The
+  tag orders fetching and nothing else: the verdict and its reason are
+  decided first and as if the list had not been shown, the list sits after
+  the rules, and the reason is cut from the tag before it is stored.
+  v10 says a candidate on any one thing a PART lists is on that part, as
   judge/full v14 says for stage 2. Briefs write a PART as a list, and stage 1
   refused 10 videos on a constraint one PART names, as being about that
   constraint rather than the mechanism. A listed limit, risk or failure mode
@@ -254,6 +262,13 @@ Output format. One line per candidate, nothing else in the reply:
 2: NO - product promo, brief excludes vendor marketing
 3: MAYBE - title is ambiguous, could be conceptual only
 
+Every line then ends with the coverage item the video would add to — see
+"Which item a candidate would serve" below:
+
+1: YES - covers cache expiry and shows configuration | ITEM: Caching — expiry and TTL
+2: NO - product promo, brief excludes vendor marketing | ITEM: NONE
+3: MAYBE - title is ambiguous, could be conceptual only | ITEM: NONE
+
 Rules for the output, which matter as much as the judgement:
 - Begin each line with the candidate's number exactly as given, then a colon.
 - Then one of YES, NO or MAYBE in capitals.
@@ -263,3 +278,25 @@ Rules for the output, which matter as much as the judgement:
 - No preamble, no summary, no headings, no blank lines between entries.
 - The reason is for a human reading the decision log months later. Say what
   about this candidate decided it, not a restatement of the verdict.
+- After the reason, ` | ITEM: ` and one item copied from the COVERAGE list
+  without its label, or NONE.
+
+## Which item a candidate would serve
+
+{{ coverage }}
+
+Decide the verdict and write its reason first, exactly as the rules above say
+and as if this list had not been shown to you. Then name the one item the video
+would add to, copied as written after its label (MISSING, PARTLY or HELD), or
+NONE when it would add to none of them or you cannot tell.
+
+The item is recorded to decide the order videos are fetched in, and for
+nothing else. **It is never a ground for a verdict.** An item the library
+already holds is not a reason for NO or for MAYBE: a video on a held item that
+meets the brief is a YES. An item that is missing is not a reason for YES: a
+missing item with metadata that cannot show the brief is met is a MAYBE. And
+the reason never mentions the list.
+
+Name the item the metadata shows the video is about, not the one you would
+like it to be about. When a video spans several, name the one it is mainly
+about.

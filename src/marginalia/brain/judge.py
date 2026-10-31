@@ -26,6 +26,10 @@ from typing import Sequence
 from ..contracts import (
     EVIDENCE_CLEAR,
     EVIDENCE_DEGRADED,
+    ITEM_HELD,
+    ITEM_MISSING,
+    ITEM_PARTLY,
+    ITEM_UNTAGGED,
     RELEVANT_NONE,
     RELEVANT_UNAVAILABLE,
     OUTCOME_CALL_FAILED,
@@ -69,10 +73,16 @@ __all__ = [
     "Judge",
     "guesses",
     "parse_batch",
+    "parse_batch_items",
     "parse_full",
     "parse_queries",
     "parse_aimed_queries",
     "coverage_block",
+    "aim_words",
+    "item_block",
+    "item_lines",
+    "match_item",
+    "split_item",
     "resolve_guess",
     "resolve_stage1_no",
     "rests_on_absence",
@@ -128,7 +138,17 @@ def parse_batch(text: str, count: int) -> list[tuple[str, str, bool]]:
 
     Anything not confidently read comes back MAYBE.
     """
-    found: dict[int, tuple[str, str]] = {}
+    return [(verdict, reason, parsed) for verdict, reason, parsed, _ in parse_batch_items(text, count)]
+
+
+def parse_batch_items(text: str, count: int) -> list[tuple[str, str, bool, str]]:
+    """`parse_batch`, with each line's ``| ITEM:`` tag as a fourth field.
+
+    The tag is cut off before the reason is tidied, so the reason — what the
+    decision row stores and the planner reads — is the same text it would have
+    been without one. An absent tag is empty.
+    """
+    found: dict[int, tuple[str, str, str]] = {}
     extra: list[int] = []
 
     for line in text.splitlines():
@@ -137,26 +157,27 @@ def parse_batch(text: str, count: int) -> list[tuple[str, str, bool]]:
             continue
         number = int(match.group("number"))
         verdict = _VERDICT_WORDS[match.group("verdict").upper()]
-        reason = _tidy_reason(match.group("reason"))
+        raw, tag = split_item(match.group("reason"))
+        reason = _tidy_reason(raw)
         if not 1 <= number <= count:
             extra.append(number)
             continue
         # First mention wins: a model that restates a verdict in a summary
         # must not be able to overturn its own answer.
-        found.setdefault(number, (verdict, reason))
+        found.setdefault(number, (verdict, reason, tag))
 
     if extra:
         log.warning("judge: reply named %d candidate(s) outside 1..%d: %s", len(extra), count, extra)
 
-    results: list[tuple[str, str, bool]] = []
+    results: list[tuple[str, str, bool, str]] = []
     missing: list[int] = []
     for position in range(1, count + 1):
         if position in found:
-            verdict, reason = found[position]
-            results.append((verdict, reason or "no reason given", True))
+            verdict, reason, tag = found[position]
+            results.append((verdict, reason or "no reason given", True, tag))
         else:
             missing.append(position)
-            results.append((VERDICT_MAYBE, "verdict could not be parsed", False))
+            results.append((VERDICT_MAYBE, "verdict could not be parsed", False, ""))
 
     if missing:
         log.warning(
@@ -833,6 +854,135 @@ def coverage_block(coverage: Sequence[CoverageItem]) -> str:
     return "\n".join(lines)
 
 
+# -- coverage items: what a candidate would add to --------------------------
+#
+# One matcher for an expansion query's aim and a stage-1 candidate's tag: a
+# text matches a coverage line when every content word of it appears in that
+# line's part, held, missing or detail text. A tag then names a state, so it
+# is resolved one step further, to the thing within the part it names.
+
+_AIM_WORD_RE = re.compile(r"[^\W_]{3,}", re.UNICODE)
+_AIM_STOP = frozenset({"and", "the", "for", "with", "from", "into", "its", "how", "what", "why"})
+# The labels the item block writes, which a tag copied with its label repeats.
+# Not words of any item, so they are dropped rather than left to fail a match.
+_STATE_WORDS = frozenset({"missing", "held", "partly"})
+_NO_ITEM = frozenset({"none", "n/a", "na", "-", "nothing", "no item"})
+_ITEM_TAG_RE = re.compile(r"\s*\|\s*\**\s*ITEM\s*\**\s*[:\-–—]\s*(?P<tag>.*)$", re.IGNORECASE)
+# A long held list is cut on the line the judge sees; the matcher uses it whole.
+_MAX_ITEM_LINE = 200
+
+
+def aim_words(text: str) -> set[str]:
+    """The content words a coverage match compares."""
+    return {word for word in _AIM_WORD_RE.findall(text.lower()) if word not in _AIM_STOP}
+
+
+def _item_words(item: CoverageItem) -> set[str]:
+    return aim_words(" ".join([item.part, item.detail, *item.held, *item.missing]))
+
+
+def item_lines(coverage: Sequence[CoverageItem]) -> list[tuple[str, str, str]]:
+    """``(state, part, thing)`` per line a candidate can be tagged with.
+
+    A part held whole is one HELD line. A part held in part is a MISSING line
+    per missing thing and one HELD line for its held things — or one PARTLY
+    line when it names no missing thing. A part with nothing held is a MISSING
+    line per thing it lists, or one for the part.
+    """
+    lines: list[tuple[str, str, str]] = []
+    for item in coverage:
+        if item.satisfied:
+            lines.append((ITEM_HELD, item.part, "; ".join(item.held)))
+        elif item.partly:
+            lines.extend((ITEM_MISSING, item.part, thing) for thing in item.missing)
+            if item.held:
+                lines.append((ITEM_HELD, item.part, "; ".join(item.held)))
+            if not item.missing:
+                lines.append((ITEM_PARTLY, item.part, ""))
+        else:
+            lines.extend((ITEM_MISSING, item.part, thing) for thing in item.missing)
+            if not item.missing:
+                lines.append((ITEM_MISSING, item.part, ""))
+    return lines
+
+
+def item_block(coverage: Sequence[CoverageItem]) -> str:
+    """The coverage lines stage 1 tags candidates against, each with its state."""
+    if not coverage:
+        return (
+            "COVERAGE: nothing has been assessed yet, so there are no items. "
+            "End every line with | ITEM: NONE."
+        )
+    lines = ["COVERAGE — what the library already holds, one item per line:"]
+    for state, part, thing in item_lines(coverage):
+        label = f"{part} — {thing}" if thing else part
+        lines.append(f"- {state.upper()}: {label[:_MAX_ITEM_LINE]}")
+    return "\n".join(lines)
+
+
+def split_item(reason: str) -> tuple[str, str]:
+    """``(reason, tag)``: a stage-1 reason with its ``| ITEM:`` tag cut off.
+
+    The tag is empty when the line has none, or names none.
+    """
+    match = _ITEM_TAG_RE.search(reason)
+    if match is None:
+        return reason, ""
+    tag = " ".join(match.group("tag").strip().strip("*\"'").split())
+    if tag.lower().rstrip(".") in _NO_ITEM:
+        tag = ""
+    return reason[: match.start()], tag
+
+
+def match_item(tag: str, coverage: Sequence[CoverageItem]) -> tuple[str, str, bool]:
+    """``(state, line, matched)`` for a stage-1 tag against the coverage lines.
+
+    The part is chosen by the aim matcher: every content word of the tag must
+    appear in the part's line. Of several, the one whose own name the tag
+    shares most words with, then the one with a listed thing the tag names,
+    then the first. Within it, the rest of the tag's words decide the state: a
+    missing thing they name, a held thing they name, else the part's own
+    state (a part held in part, named alone, is PARTLY).
+
+    An empty tag is untagged and not unmatched; a tag no line matches is
+    untagged and unmatched, so it is counted rather than trusted (rule 30).
+    """
+    words = aim_words(tag) - _STATE_WORDS
+    # With no coverage there is nothing to match, and nothing is counted — as
+    # for an expansion aim.
+    if not words or not coverage:
+        return ITEM_UNTAGGED, "", False
+    best: tuple[tuple[int, int, int], int] | None = None
+    for index, item in enumerate(coverage):
+        if not words <= _item_words(item):
+            continue
+        part = aim_words(item.part)
+        rest = words - part
+        names_thing = bool(rest) and any(
+            rest <= aim_words(thing) for thing in (*item.missing, *item.held)
+        )
+        score = (len(words & part), int(names_thing), -len(part))
+        if best is None or score > best[0]:
+            best = (score, index)
+    if best is None:
+        return ITEM_UNTAGGED, "", True
+    item = coverage[best[1]]
+    rest = words - aim_words(item.part)
+    if rest and not item.satisfied:
+        for thing in item.missing:
+            if rest <= aim_words(thing):
+                return ITEM_MISSING, f"{item.part} — {thing}", False
+    if item.satisfied:
+        return ITEM_HELD, item.part, False
+    if rest:
+        for thing in item.held:
+            if rest <= aim_words(thing):
+                return ITEM_HELD, f"{item.part} — {thing}", False
+    if item.partly:
+        return ITEM_PARTLY, item.part, False
+    return ITEM_MISSING, item.part, False
+
+
 def _parse_concepts(body: str) -> list[str]:
     if not body or body.strip().upper() in {"NONE", "N/A", "-"}:
         return []
@@ -1057,10 +1207,14 @@ class Judge:
         *,
         batch_size: int,
         territory: TerritoryMap | None = None,
+        coverage: Sequence[CoverageItem] = (),
     ) -> list[MetadataVerdict]:
+        """Stage 1, in batches. ``coverage`` is the round's coverage lines:
+        each verdict also carries the item the judge said the video would add
+        to, matched against them (`match_item`), for the fetch order alone."""
         verdicts: list[MetadataVerdict] = []
         for chunk in batched(list(candidates), batch_size):
-            verdicts.extend(self._judge_chunk(brief, chunk, territory))
+            verdicts.extend(self._judge_chunk(brief, chunk, territory, coverage))
         return verdicts
 
     def _judge_chunk(
@@ -1068,6 +1222,7 @@ class Judge:
         brief: Brief,
         chunk: Sequence[SearchResult],
         territory: TerritoryMap | None = None,
+        coverage: Sequence[CoverageItem] = (),
     ) -> list[MetadataVerdict]:
         prompt = self.prompt(METADATA_PROMPT)
         listing = "\n".join(
@@ -1080,6 +1235,7 @@ class Judge:
                     brief=brief.text,
                     candidates=listing,
                     territory=territory_lines(territory),
+                    coverage=item_block(coverage),
                 ),
                 task="judge_metadata",
             )
@@ -1112,13 +1268,16 @@ class Judge:
                 for c in chunk
             ]
 
-        parsed = parse_batch(reply.text, len(chunk))
+        parsed = parse_batch_items(reply.text, len(chunk))
         verdicts = []
-        for candidate, (word, reason, was_parsed) in zip(chunk, parsed):
+        for candidate, (word, reason, was_parsed, tag) in zip(chunk, parsed):
             # The prompt says a guessed NO, or one resting on what the metadata
             # does not show, is MAYBE; this is the half that does not depend on
             # the model having listened.
             verdict, said, resolved = resolve_stage1_no(word, reason)
+            # Checked before it is used (rule 30): a tag counts only as the
+            # coverage line it matches, and one matching none is untagged.
+            state, item, unmatched = match_item(tag, coverage)
             verdicts.append(
                 MetadataVerdict(
                     candidate.video_id,
@@ -1130,7 +1289,17 @@ class Judge:
                     outcome=OUTCOME_JUDGED if was_parsed else OUTCOME_NO_VERDICT,
                     said=said,
                     resolved=resolved,
+                    serves=tag,
+                    item=item,
+                    item_state=state,
+                    unmatched=unmatched,
                 )
+            )
+        unmatched_tags = sum(1 for verdict in verdicts if verdict.unmatched)
+        if unmatched_tags:
+            log.info(
+                "judge: %d stage-1 item tag(s) matched no coverage line — counted as untagged",
+                unmatched_tags,
             )
         guessed = sum(1 for verdict in verdicts if verdict.resolved == RESOLVED_GUESS)
         if guessed:
