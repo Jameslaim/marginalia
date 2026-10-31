@@ -32,8 +32,10 @@ from ..config import Config
 from ..contracts import (
     ACQUIRE_FAILED_PERMANENT,
     ACQUIRE_NO_CAPTIONS,
+    ACQUIRE_TRANSLATED_ONLY,
     GONE,
     NO_CAPTIONS,
+    TRANSLATED_ONLY,
     RECOVERED,
     STILL_FAILING,
     STOP_DONE,
@@ -156,4 +158,6 @@ def _outcome(acquisition) -> tuple[str, str]:
         return GONE, acquisition.detail[:120]
     if acquisition.outcome == ACQUIRE_NO_CAPTIONS:
         return NO_CAPTIONS, "no caption track"
+    if acquisition.outcome == ACQUIRE_TRANSLATED_ONLY:
+        return TRANSLATED_ONLY, acquisition.detail[:120]
     return STILL_FAILING, acquisition.detail[:120]

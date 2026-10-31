@@ -21,6 +21,7 @@ from .base import (
     TranscriptLine,
     TranscriptResult,
     TransientError,
+    TranslatedOnly,
 )
 
 log = logging.getLogger(__name__)
@@ -165,7 +166,9 @@ class YtDlpProvider:
 
         return TranscriptResult(
             lines=lines,
-            language=language,
+            # A clean language code; the track as YouTube named it beside it.
+            language=clean_language(language),
+            caption_track=language,
             source="captions",
             caption_kind=kind,
             title=str(info.get("title") or ""),
@@ -224,12 +227,44 @@ class YtDlpProvider:
         return candidates[0] if candidates else None
 
     def _candidate_tracks(self, info: dict[str, Any]) -> list[tuple[str, str, dict[str, Any]]]:
-        """Every track worth trying, best first: the chosen manual track, then
-        the chosen automatic one. The preference order is unchanged; what is
-        new is that a second choice exists when the first parses to nothing."""
+        """Every track worth trying, best first, in the language the video is
+        spoken in: a manual track in it, then its original automatic track.
+
+        **The spoken language decides, not the reported one.** Measured on 17
+        stored videos: yt-dlp reported the video's language as `ar` while its
+        only audio track was English marked "original", and the automatic
+        table — which lists machine translations into about 180 languages —
+        had an `ar` entry, so the reported language picked an Arabic machine
+        translation of English speech. The spoken language is read from the
+        audio, and only tracks in it qualify. Tracks that exist only in other
+        languages are translations, and the video is not stored from them
+        (`TranslatedOnly`): a translation read as the speaker's words is an
+        error no later step can see.
+
+        When the spoken language cannot be read, the earlier preferences apply
+        unchanged: the reported language, then the configured defaults.
+        """
         hint = info.get("language")
         manual = _languages_only(info.get("subtitles") or {})
         automatic = _languages_only(info.get("automatic_captions") or {})
+
+        spoken = spoken_language(info, automatic)
+        if spoken:
+            found: list[tuple[str, str, dict[str, Any]]] = []
+            for kind, key in (
+                ("manual", _track_in(manual, spoken)),
+                ("auto", _original_track(automatic, spoken)),
+            ):
+                entry = _pick_format(manual.get(key) or []) if kind == "manual" and key else None
+                if kind == "auto" and key:
+                    entry = _pick_format(automatic.get(key) or [])
+                if entry is not None:
+                    found.append((key, kind, entry))
+            if not found and (manual or automatic):
+                raise TranslatedOnly(
+                    spoken, [*sorted(manual), *sorted(k for k in automatic if k.endswith("-orig"))]
+                )
+            return found
 
         found: list[tuple[str, str, dict[str, Any]]] = []
         for kind, table, allow_any in (
@@ -277,6 +312,90 @@ class YtDlpProvider:
 
 
 # -- parsing ---------------------------------------------------------------
+
+
+# A language subtag after the primary one: a script (`Hans`), a region (`US`,
+# `419`). Anything else after a hyphen is not part of a language code — YouTube
+# appends a track id to a named manual track (`en-eEY6OEpapPo`) — and is cut.
+_SUBTAG_RE = re.compile(r"\A(?:[A-Za-z]{4}|[A-Za-z]{2}|\d{3})\Z")
+
+
+def clean_language(key: str) -> str:
+    """A caption track's key as a clean language code: `en-orig` -> `en`,
+    `en-eEY6OEpapPo` -> `en`, `de-DE-orig` -> `de-DE`, `es-419` -> `es-419`."""
+    parts = [part for part in (key or "").split("-") if part]
+    if parts and parts[-1].lower() == "orig":
+        parts = parts[:-1]
+    if not parts:
+        return ""
+    code = [parts[0].lower()]
+    for part in parts[1:]:
+        if not _SUBTAG_RE.match(part):
+            break
+        code.append(part.upper() if len(part) == 2 else part)
+    return "-".join(code)
+
+
+def _base(code: str) -> str:
+    return clean_language(code).split("-")[0]
+
+
+def spoken_language(info: dict[str, Any], automatic: dict[str, Any] | None = None) -> str:
+    """The language the video is spoken in, or `""` when it cannot be read.
+
+    From the audio first: the track YouTube marks "original", then the one
+    language every audio format shares. Then the one original-speech
+    automatic track (`<lang>-orig`) when there is exactly one. Never the
+    video's reported `language` alone: measured, it said `ar` for English
+    speech, and the audio said English.
+    """
+    audio = [
+        f for f in info.get("formats") or []
+        if f.get("acodec") not in (None, "none") and f.get("vcodec") in (None, "none")
+    ]
+    for entry in audio:
+        if entry.get("language") and "original" in str(entry.get("format_note") or "").lower():
+            return clean_language(str(entry["language"]))
+    languages = {clean_language(str(f["language"])) for f in audio if f.get("language")}
+    if len(languages) == 1:
+        return languages.pop()
+    originals = [key for key in (automatic or {}) if key.endswith("-orig")]
+    if len(originals) == 1:
+        return clean_language(originals[0])
+    return ""
+
+
+def _track_in(table: dict[str, Any], spoken: str) -> str | None:
+    """The table's track in the spoken language: the exact code, then any
+    track whose primary language is the spoken one."""
+    keys = [key for key in sorted(table) if not key.endswith("-orig")]
+    for key in keys:
+        if clean_language(key) == spoken:
+            return key
+    for key in keys:
+        if _base(key) == _base(spoken):
+            return key
+    return None
+
+
+def _original_track(automatic: dict[str, Any], spoken: str) -> str | None:
+    """The automatic track of the original speech in the spoken language.
+
+    `<lang>-orig` when the table marks originals. A table that marks none
+    lists its one recognition track plainly, so the spoken language's own
+    entry is that track; with originals marked, a plain entry is a
+    translation and never qualifies.
+    """
+    originals = sorted(key for key in automatic if key.endswith("-orig"))
+    for key in originals:
+        if clean_language(key) == spoken:
+            return key
+    for key in originals:
+        if _base(key) == _base(spoken):
+            return key
+    if originals:
+        return None
+    return _track_in(automatic, spoken)
 
 
 # Keys yt-dlp lists beside the caption languages that are not captions. A

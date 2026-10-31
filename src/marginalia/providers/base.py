@@ -30,7 +30,7 @@ Contract for ``SearchProvider.search``:
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, Sequence, runtime_checkable
 
 from ..contracts import SearchFilters, SearchResult, TranscriptLine, TranscriptResult
 
@@ -40,6 +40,7 @@ __all__ = [
     "TransientError",
     "QuotaExhausted",
     "ProviderUnavailable",
+    "TranslatedOnly",
     "TranscriptLine",
     "TranscriptResult",
     "TranscriptProvider",
@@ -89,6 +90,20 @@ class ProviderUnavailable(ProviderError):
     reason and the report prints it on every single run. If that reporting is
     ever dropped, this distinction stops being safe and should be revisited.
     """
+
+
+class TranslatedOnly(ProviderError):
+    """Caption tracks exist, and none is in the language the video is spoken in.
+
+    Neither permanent nor transient: the video is fine and a retry returns the
+    same tracks. The caller routes it where a captionless video goes and counts
+    it apart. ``original`` is the spoken language, ``offered`` what was listed.
+    """
+
+    def __init__(self, original: str, offered: Sequence[str] = ()) -> None:
+        self.original = original
+        self.offered = tuple(offered)
+        super().__init__(f"only translated captions (spoken language {original})")
 
 
 @runtime_checkable

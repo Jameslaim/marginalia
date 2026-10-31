@@ -70,6 +70,7 @@ def store_transcript(
             "upload_date": result.upload_date,
             "source": result.source,
             "caption_kind": result.caption_kind,
+            "caption_track": result.caption_track or None,
             "provider": provider,
             "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "chapters": result.chapters,

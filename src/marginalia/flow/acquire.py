@@ -37,12 +37,13 @@ from ..contracts import (
     ACQUIRE_FAILED_PERMANENT,
     ACQUIRE_FAILED_TRANSIENT,
     ACQUIRE_NO_CAPTIONS,
+    ACQUIRE_TRANSLATED_ONLY,
     ACQUIRED,
     Acquisition,
 )
 from ..core.ledger import FAIL_PERMANENT, FAIL_TRANSIENT, Ledger
 from ..providers import PermanentError, TransientError, get_provider
-from ..providers.base import TranscriptProvider
+from ..providers.base import TranscriptProvider, TranslatedOnly
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,7 @@ def acquire(
 
     transient: tuple[str, str] | None = None
     no_captions_from: str | None = None
+    translated: tuple[str, str] | None = None
 
     for provider in providers:
         try:
@@ -98,6 +100,12 @@ def acquire(
             log.info("acquire: %s permanently unavailable via %s (%s)", video_id, provider.name, detail)
             ledger.mark_failed(video_id, FAIL_PERMANENT, provider=provider.name)
             return Acquisition(ACQUIRE_FAILED_PERMANENT, provider=provider.name, detail=detail)
+        except TranslatedOnly as exc:
+            # Another provider may have the spoken language's own track.
+            translated = (provider.name, _bounded(exc))
+            log.info("acquire: %s has only translated captions via %s (%s)",
+                     video_id, provider.name, translated[1])
+            continue
         except TransientError as exc:
             transient = (provider.name, _bounded(exc))
             log.info("acquire: %s failed transiently via %s (%s)", video_id, provider.name, transient[1])
@@ -118,6 +126,12 @@ def acquire(
         name, detail = transient
         ledger.mark_failed(video_id, FAIL_TRANSIENT, provider=name)
         return Acquisition(ACQUIRE_FAILED_TRANSIENT, provider=name, detail=detail)
+
+    if translated is not None:
+        # Routed as a video with no captions is, and named apart from one.
+        name, detail = translated
+        ledger.mark_needs_asr(video_id, provider=name)
+        return Acquisition(ACQUIRE_TRANSLATED_ONLY, provider=name, detail=detail)
 
     # No captions is a route, not a failure: M4's ASR queue.
     ledger.mark_needs_asr(video_id, provider=no_captions_from)

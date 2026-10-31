@@ -113,6 +113,7 @@ __all__ = [
     # acquisition
     "ACQUIRED",
     "ACQUIRE_NO_CAPTIONS",
+    "ACQUIRE_TRANSLATED_ONLY",
     "ACQUIRE_FAILED_PERMANENT",
     "ACQUIRE_FAILED_TRANSIENT",
     "Acquisition",
@@ -151,6 +152,7 @@ __all__ = [
     "RECOVERED",
     "STILL_FAILING",
     "NO_CAPTIONS",
+    "TRANSLATED_ONLY",
     "GONE",
     "STOP_THROTTLED",
     "RefetchResult",
@@ -1313,6 +1315,12 @@ DECISION_OUTCOMES = frozenset(
 # it a route — one fact, two counters, depending on which command found it.
 ACQUIRED = "acquired"
 ACQUIRE_NO_CAPTIONS = "no_captions"
+# Caption tracks exist, but none is in the language the video is spoken in:
+# only machine or human translations of it. Not stored, and routed where a
+# video with no captions goes (ASR of the original audio is the one way to a
+# true transcript), but counted apart from it (rule 14). Measured: 17 of 177
+# stored transcripts were auto-translations of English speech into Arabic.
+ACQUIRE_TRANSLATED_ONLY = "translated_only"
 ACQUIRE_FAILED_PERMANENT = "failed_permanent"
 ACQUIRE_FAILED_TRANSIENT = "failed_transient"
 
@@ -1346,6 +1354,10 @@ class TranscriptResult:
     # carried because it arrives free with the fetch, and backfilling it later
     # would mean one network call per video already in the library.
     channel_id: str = ""
+    # The caption track as the provider named it — `en-orig`, `en-eEY6OEpapPo`
+    # — kept beside `language`, which is only ever a clean language code. A
+    # track id stored as the language counted as a language of its own.
+    caption_track: str = ""
 
 
 @dataclass(frozen=True)
@@ -1778,6 +1790,8 @@ class RoundReport:
     # The provider said there is no caption track, so no fetch was attempted.
     # Nothing failed; the video was routed to ASR without being tried.
     no_captions: int = 0
+    # Caption tracks existed, but only in languages the video is not spoken in.
+    translated_only: int = 0
     # Kept, and past the note ceiling, so it will never be noted. Counted apart
     # from `degraded`: the transcript was fine and the length was not.
     too_long_to_note: int = 0
@@ -2237,6 +2251,7 @@ class NoteRun:
 RECOVERED = "recovered"
 STILL_FAILING = "still_failing"
 NO_CAPTIONS = "no_captions"
+TRANSLATED_ONLY = "translated_only"
 GONE = "gone"
 
 # Why a refetch run stopped. `throttled` is its own reason and not a failure

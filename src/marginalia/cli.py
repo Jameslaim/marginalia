@@ -42,8 +42,10 @@ from .contracts import (
     ACQUIRE_FAILED_PERMANENT,
     ACQUIRE_FAILED_TRANSIENT,
     ACQUIRE_NO_CAPTIONS,
+    ACQUIRE_TRANSLATED_ONLY,
     GONE,
     NO_CAPTIONS,
+    TRANSLATED_ONLY,
     RECOVERED,
     STILL_FAILING,
     STOP_REFUSED,
@@ -263,6 +265,14 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             )
             title = _title_of(_metadata(answering, video_id))
             _report("needs-asr", video_id, _quoted(title), "no captions available")
+            return EXIT_OK
+
+        if acquisition.outcome == ACQUIRE_TRANSLATED_ONLY:
+            answering = next(
+                (p for p in providers if p.name == acquisition.provider), providers[0]
+            )
+            title = _title_of(_metadata(answering, video_id))
+            _report("needs-asr", video_id, _quoted(title), acquisition.detail)
             return EXIT_OK
 
         result = acquisition.result
@@ -545,6 +555,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         notes = [
             (report.failed, "fetch failed"),
             (report.no_captions, "no captions, sent to ASR"),
+            (report.translated_only, "only translated captions, sent to ASR"),
             (report.unavailable, "already recorded as unavailable, skipped"),
             (report.not_noteable, "kept, but the note worker will refuse it"),
             (report.stored_unreadable, "never noteable, stored off the video budget"),
@@ -1041,6 +1052,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "unjudged": report.unjudged,
                 "uncertain": report.uncertain,
                 "no_captions": report.no_captions,
+                "translated_only": report.translated_only,
                 "unavailable": report.unavailable,
                 "not_noteable": report.not_noteable,
                 "degraded": report.degraded,
@@ -1088,6 +1100,7 @@ def _cmd_refetch(args: argparse.Namespace) -> int:
         (run.count(RECOVERED), "recovered"),
         (run.count(STILL_FAILING), "failed again"),
         (run.count(NO_CAPTIONS), "no captions, routed to ASR"),
+        (run.count(TRANSLATED_ONLY), "only translated captions, routed to ASR"),
         (run.count(GONE), "gone (the provider says permanently)"),
     ]
     detail = ", ".join(f"{n} {label}" for n, label in parts if n)

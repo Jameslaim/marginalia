@@ -748,6 +748,7 @@ def render_round(
         )
     lines.append(
         f"- {report.failed} fetches failed, {report.no_captions} had no captions, "
+        f"{report.translated_only} had only translated captions, "
         f"{report.already_held} were already on disk "
         f"({report.judged_from_disk} of them judged for this topic from disk, and "
         f"listed above like any other)"

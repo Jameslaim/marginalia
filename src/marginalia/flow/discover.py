@@ -85,6 +85,7 @@ from ..contracts import (
     ORIGIN_THREAD,
     SOURCE_PLAN,
     ACQUIRE_NO_CAPTIONS,
+    ACQUIRE_TRANSLATED_ONLY,
     OUTCOME_JUDGED,
     OUTCOME_TOO_LARGE,
     RECOMMEND_STOP,
@@ -1722,6 +1723,11 @@ def _judge_round(
                 # A route, not a failure — counted as one in discovery alone,
                 # so a round with captionless videos reported fetch failures.
                 report.no_captions += 1
+                continue
+            if acquisition.outcome == ACQUIRE_TRANSLATED_ONLY:
+                # Routed as a captionless video is, and counted on its own: the
+                # tracks existed, only not in the language the video is spoken in.
+                report.translated_only += 1
                 continue
             if not acquisition.acquired:
                 report.failed += 1

@@ -423,6 +423,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         # acquisition: one path, four outcomes
         "ACQUIRED",
         "ACQUIRE_NO_CAPTIONS",
+        "ACQUIRE_TRANSLATED_ONLY",
         "ACQUIRE_FAILED_PERMANENT",
         "ACQUIRE_FAILED_TRANSIENT",
         "Acquisition",
@@ -462,6 +463,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         "RECOVERED",
         "STILL_FAILING",
         "NO_CAPTIONS",
+        "TRANSLATED_ONLY",
         "GONE",
         "STOP_THROTTLED",
         # M7. The selector's vocabulary: `all` fit, `selected` was chosen,
