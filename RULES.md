@@ -984,13 +984,31 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     coverage across runs was judged against a moving target, and the planner and
     gap-first fetching chased listed things the owner had never asked for.
 
+39. **Round one's queries can come from a search plan written from the brief.** With
+    `search_source = "plan"` (or `--search-source plan`), a plan replaces the territory
+    map as round one's source. Each of its items states what a satisfying video is like,
+    how such videos are really titled, the languages and scripts to search in, and
+    queries tagged with the coverage line they serve, matched as in rule 37. The baseline
+    runs first, and queries are spent missing PART lines first, then partly held PART
+    lines, then ALSO WANTED gaps, then held lines only with budget left. Every distinct
+    gap gets one query before any gets a second, and an item serves every gap its line
+    names. A gap reachable only through EXCLUDED material is skipped and named. Language
+    queries aim at the brief's language or market item, or else the broadest one. The
+    reply is checked (rule 30), and a failed plan falls back to the map, never to
+    nothing. A "current context" block may be passed in. It is untrusted data, marked and
+    counted. `map` stays the default until a live run has compared the two on the same
+    day. Measured, without searching: a plan made before the baseline spent all 8 queries
+    on parts the library already held. Once it saw coverage, 5 and 7 of 8 aimed at gaps.
+    Two bugs in counting which gaps a query served left 3 of 8 slots unused until they
+    were fixed.
+
 ## Structure
 
 ```
 src/marginalia/  cli.py  config.py  contracts.py  llm.py  ask.py  quotes.py
   core/     ids.py  ledger.py  library.py        identity, state, file layout
   providers/                                     the part guaranteed to break
-  brain/    judge.py  territory.py  planner.py  selector.py   reasoning; no I/O
+  brain/    judge.py  territory.py  search_plan.py  planner.py  selector.py   reasoning; no I/O
   flow/     search.py  discover.py  acquire.py  store.py  refetch.py  doctor.py  export.py
                                                  execution
   enrich/   note.py  timestamps.py               what happens after storage
