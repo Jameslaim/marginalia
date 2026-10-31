@@ -287,6 +287,7 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
             _quoted(result.title),
             f"{count} lines",
             f"{result.source}/{result.language}",
+            *([f"audio labelled {result.audio_label}"] if result.audio_label else []),
         )
         return EXIT_OK
 
@@ -556,6 +557,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.failed, "fetch failed"),
             (report.no_captions, "no captions, sent to ASR"),
             (report.translated_only, "only translated captions, sent to ASR"),
+            (report.audio_label_disagreed, "stored from an original-speech track the audio label disagreed with"),
             (report.unavailable, "already recorded as unavailable, skipped"),
             (report.not_noteable, "kept, but the note worker will refuse it"),
             (report.stored_unreadable, "never noteable, stored off the video budget"),
@@ -1053,6 +1055,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "uncertain": report.uncertain,
                 "no_captions": report.no_captions,
                 "translated_only": report.translated_only,
+                "audio_label_disagreed": report.audio_label_disagreed,
                 "unavailable": report.unavailable,
                 "not_noteable": report.not_noteable,
                 "degraded": report.degraded,

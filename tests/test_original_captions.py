@@ -125,8 +125,11 @@ def test_a_translated_manual_track_never_beats_the_original_speech(monkeypatch) 
 def test_translated_tracks_only_is_unavailable_not_stored(monkeypatch) -> None:
     info = {
         "formats": [_audio("en", "English original (default)")],
+        # A manual track in another language and no original-speech track at
+        # all: every track is a translation (rule 40). An `-orig` track in any
+        # language would be used instead — see the label-disagreement tests.
         "subtitles": _tracks("fr"),
-        "automatic_captions": _tracks("fr-orig", "de", "es"),
+        "automatic_captions": _tracks("de", "es"),
         "title": "t", "duration": 60,
     }
     monkeypatch.setitem(sys.modules, "yt_dlp", _fake_yt_dlp(info, BODIES))
@@ -134,6 +137,58 @@ def test_translated_tracks_only_is_unavailable_not_stored(monkeypatch) -> None:
         YtDlpProvider().fetch("aaaaaaaaaaa")
     assert raised.value.original == "en"
     assert "fr" in raised.value.offered
+
+
+def test_one_original_track_in_another_language_beats_the_audio_label(monkeypatch) -> None:
+    """Measured: audio labelled English, one original-speech track, in Hindi.
+    The track is YouTube's recognition of the speech, so it is used, and the
+    disagreement is counted on the result."""
+    info = {
+        "language": "hi",
+        "formats": [_audio("en-US", "English (US) original (default)")],
+        "subtitles": {},
+        "automatic_captions": _tracks("hi-orig", "hi", "en", "ar"),
+        "title": "t", "duration": 60,
+    }
+    result, fake = _fetch(info, monkeypatch)
+    assert fake.opened == ["hi-orig"]
+    assert (result.language, result.caption_track, result.audio_label) == ("hi", "hi-orig", "en-US")
+
+
+def test_an_agreeing_label_records_no_disagreement(monkeypatch) -> None:
+    result, _ = _fetch(OLD_FAILURE, monkeypatch)
+    assert result.audio_label == ""
+
+
+def test_several_original_tracks_none_in_the_audio_language_take_the_reported_one(monkeypatch) -> None:
+    info = {
+        "language": "hi",
+        "formats": [_audio("en-US", "English (US) original (default)")],
+        "subtitles": {},
+        "automatic_captions": _tracks("hi-orig", "fr-orig", "en"),
+        "title": "t", "duration": 60,
+    }
+    result, fake = _fetch(info, monkeypatch)
+    assert fake.opened == ["hi-orig"] and result.audio_label == "en-US"
+
+
+def test_the_saved_listing_for_the_measured_disagreement_is_now_stored() -> None:
+    """eyxRPNOMabo's listing as saved by the dry run, re-selected offline."""
+    import json
+    from pathlib import Path
+
+    saved = Path(r"C:\youtube-agent\agent-walkthrough\redesign3\evidence\captions\repair_dryrun.json")
+    if not saved.exists():
+        pytest.skip("the dry-run evidence is not on this machine")
+    row = next(r for r in json.loads(saved.read_text(encoding="utf-8")) if r["video_id"] == "eyxRPNOMabo")
+    info = {
+        "language": row["reported_language"],
+        "formats": [_audio(lang, note) for lang, note in row["audio"]],
+        "subtitles": _tracks(*row["manual"]),
+        "automatic_captions": _tracks(*row["auto_orig"], "en", "ar"),
+    }
+    picked = YtDlpProvider()._candidate_tracks(info)
+    assert [(key, kind) for key, kind, _ in picked] == [("hi-orig", "auto")]
 
 
 def test_a_named_manual_track_stores_a_clean_language_and_keeps_its_track(monkeypatch) -> None:

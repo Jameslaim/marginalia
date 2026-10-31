@@ -1734,6 +1734,8 @@ def _judge_round(
                 continue
             fetched = acquisition.result
             assert fetched is not None
+            if fetched.audio_label:
+                report.audio_label_disagreed += 1
 
             # **Stored before it is judged.** Rule 12 stores the transcript
             # whatever stage 2 says, so nothing about storing waits on the

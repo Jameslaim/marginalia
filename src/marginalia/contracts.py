@@ -1358,6 +1358,9 @@ class TranscriptResult:
     # — kept beside `language`, which is only ever a clean language code. A
     # track id stored as the language counted as a language of its own.
     caption_track: str = ""
+    # The audio's labelled language when it disagreed with the original-speech
+    # track used; empty when they agreed or the label was not read (rule 40).
+    audio_label: str = ""
 
 
 @dataclass(frozen=True)
@@ -1792,6 +1795,9 @@ class RoundReport:
     no_captions: int = 0
     # Caption tracks existed, but only in languages the video is not spoken in.
     translated_only: int = 0
+    # Stored from an original-speech track whose language the audio's label
+    # did not match. Not a failure; a disagreement worth seeing (rule 40).
+    audio_label_disagreed: int = 0
     # Kept, and past the note ceiling, so it will never be noted. Counted apart
     # from `degraded`: the transcript was fine and the length was not.
     too_long_to_note: int = 0

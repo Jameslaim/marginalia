@@ -71,6 +71,7 @@ def store_transcript(
             "source": result.source,
             "caption_kind": result.caption_kind,
             "caption_track": result.caption_track or None,
+            "audio_label": result.audio_label or None,
             "provider": provider,
             "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "chapters": result.chapters,

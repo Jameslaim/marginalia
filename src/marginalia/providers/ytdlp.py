@@ -130,6 +130,9 @@ class YtDlpProvider:
         self._languages = tuple(languages)
         self._cached_id: str | None = None
         self._cached_info: dict[str, Any] | None = None
+        # The audio's language when the track used was an original-speech
+        # track in another language — the label and the speech disagreed.
+        self._label_disagreement = ""
 
     # -- public API --------------------------------------------------------
 
@@ -169,6 +172,7 @@ class YtDlpProvider:
             # A clean language code; the track as YouTube named it beside it.
             language=clean_language(language),
             caption_track=language,
+            audio_label=self._label_disagreement,
             source="captions",
             caption_kind=kind,
             title=str(info.get("title") or ""),
@@ -248,6 +252,7 @@ class YtDlpProvider:
         manual = _languages_only(info.get("subtitles") or {})
         automatic = _languages_only(info.get("automatic_captions") or {})
 
+        self._label_disagreement = ""
         spoken = spoken_language(info, automatic)
         if spoken:
             found: list[tuple[str, str, dict[str, Any]]] = []
@@ -260,10 +265,28 @@ class YtDlpProvider:
                     entry = _pick_format(automatic.get(key) or [])
                 if entry is not None:
                     found.append((key, kind, entry))
-            if not found and (manual or automatic):
-                raise TranslatedOnly(
-                    spoken, [*sorted(manual), *sorted(k for k in automatic if k.endswith("-orig"))]
+            originals = sorted(key for key in automatic if key.endswith("-orig"))
+            if not found and originals:
+                # The audio's label has no track, but an original-speech track
+                # exists: YouTube's own recognition of what was said, so the
+                # speaker's words whatever the label says. Measured: a video
+                # labelled English whose one original track was Hindi. With one
+                # such track it is the track; with several, the reported
+                # language chooses among them, as it did before. Counted either
+                # way, and the language is the track's.
+                key = originals[0] if len(originals) == 1 else self._pick_language(
+                    {k: automatic[k] for k in originals}, hint, allow_any=True
                 )
+                entry = _pick_format(automatic.get(key) or []) if key else None
+                if entry is not None:
+                    log.info("captions: the audio says %s; using the original-speech track %s",
+                             spoken, key)
+                    self._label_disagreement = spoken
+                    found.append((key, "auto", entry))
+            if not found and (manual or automatic):
+                # No manual track in the spoken language and no original-speech
+                # track at all: every track is a translation.
+                raise TranslatedOnly(spoken, sorted(manual))
             return found
 
         found: list[tuple[str, str, dict[str, Any]]] = []
