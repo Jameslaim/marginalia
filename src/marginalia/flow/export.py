@@ -667,6 +667,8 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
         lines.append(f"- intent: {item.get('intent') or MISSING}")
         lines.append(f"- titled: {', '.join(item.get('titled') or []) or MISSING}")
         lines.append(f"- languages: {', '.join(item.get('languages') or []) or 'none set'}")
+        lines.append(f"- coverage: {item.get('state') or MISSING}"
+                     + (f" (covers: {item['covers']})" if item.get("covers") else ""))
         lines.append("- queries:")
         lines.extend(f"  - {query}" for query in item.get("queries") or [])
         if not item.get("queries"):
@@ -693,6 +695,15 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
             f"- listed things the brief does not list: {plan.get('things_unmatched', 0)}",
             f"- queries not in their language's title script: {plan.get('script_mismatches', 0)}",
             f"- languages with no query: {len(plan.get('languages_without_query') or [])}",
+            f"- coverage: {plan.get('coverage') or MISSING} — {plan.get('coverage_note') or 'no note'}",
+            "- queries by state: " + (", ".join(
+                f"{state} {count}" for state, count in (plan.get("queries_by_state") or {}).items()
+            ) or "none"),
+            f"- coverage gaps with no query: {len(plan.get('unserved_gaps') or [])}",
+            *(f"  - {gap}" for gap in plan.get("unserved_gaps") or []),
+            f"- queries on held items while a gap had none: {plan.get('held_while_gaps', 0)}",
+            f"- queries over the budget, not run: {plan.get('over_budget', 0)}",
+            f"- items matching no coverage line: {plan.get('coverage_unmatched', 0)}",
             f"- current context: {plan.get('context') or 'absent'}"
             + (f", {plan.get('context_lines')} untrusted line(s)" if plan.get("context") == "supplied" else ""),
             "",

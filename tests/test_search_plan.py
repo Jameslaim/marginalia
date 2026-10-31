@@ -366,3 +366,128 @@ def test_the_prompts_examples_are_far_from_every_measured_topic() -> None:
     for word in ("token", "language model", "context window", "facebook", "earn",
                  "payout", "monetiz", "harness", "caching"):
         assert not re.search(r"\b" + word, text), word
+
+
+# -- coverage: the plan spends what the library lacks first --------------------
+
+from marginalia.brain.search_plan import render_coverage  # noqa: E402
+from marginalia.contracts import CoverageItem  # noqa: E402
+
+COVERAGE = [
+    CoverageItem("Hot composting", False, partly=True,
+                 held=("carbon-to-nitrogen ratio", "turning schedule"), missing=("pile temperature",)),
+    CoverageItem("Worm bins", True, held=("bedding", "feeding", "harvesting castings")),
+    CoverageItem("Videos in a second language", False, missing=("second-language compost videos",)),
+]
+
+COVERED_PLAN = """
+RECENCY: ANY — stable
+LANGUAGE: Examplish | code=xx | script=romanised | Latin letters
+
+ITEM: P2
+COVERS: Worm bins
+INTENT: A keeper tours their worm bin.
+TITLED: my worm bin setup
+QUERY: my worm bin setup tour
+FILTERS: none
+
+ITEM: P1 — pile temperature
+COVERS: Hot composting — pile temperature
+INTENT: Someone logs their pile's temperature over weeks.
+TITLED: compost temperature log
+QUERY: my compost pile temperature log
+FILTERS: none
+
+ITEM: P3
+COVERS: Videos in a second language — second-language compost videos
+INTENT: A creator in that market shows their compost.
+TITLED: kompo da kasa mia
+QUERY: kompo kasa mia vidu
+FILTERS: relevanceLanguage=xx (the brief asks for a second language)
+"""
+
+
+def test_coverage_is_rendered_by_state_for_the_plan() -> None:
+    block = render_coverage(COVERAGE)
+    assert "- PARTLY: Hot composting" not in block, "a partly part lists its missing things"
+    assert "- MISSING: Hot composting — pile temperature" in block
+    assert "- HELD: Worm bins — bedding; feeding; harvesting castings" in block
+    assert "- MISSING: Videos in a second language — second-language compost videos" in block
+
+
+def test_with_no_coverage_every_item_is_missing_and_the_note_is_said() -> None:
+    block = render_coverage([], "the library baseline failed (boom); planned as a fresh topic")
+    assert "nothing is held for this topic yet" in block and "failed (boom)" in block
+    assert "Every item counts as missing" in block
+
+
+def _covered(reply=COVERED_PLAN, coverage=COVERAGE, **kwargs):
+    client = FakeClient(FakeReply(reply))
+    territory = SearchPlanner(client).plan(
+        BRIEF, recency_samples=1, coverage=coverage, coverage_source="baseline",
+        coverage_note="the library baseline: 1 of 3 item(s) held", **kwargs,
+    )
+    return territory, client
+
+
+def test_queries_are_spent_missing_first_and_held_last() -> None:
+    territory, client = _covered()
+    plan = territory.plan
+
+    assert "- MISSING: Hot composting — pile temperature" in client.prompts[0]
+    assert [item.state for item in plan.items] == ["held", "missing", "missing"]
+    assert [q.text for q in territory.queries] == [
+        "my compost pile temperature log", "kompo kasa mia vidu", "my worm bin setup tour",
+    ]
+    assert plan.queries_by_state == {"missing": 2, "partly": 0, "untagged": 0, "held": 1}
+    assert plan.unserved_gaps == () and plan.held_while_gaps == 0
+    assert (plan.coverage, plan.coverage_lines) == ("baseline", 4)
+
+
+def test_a_missing_listed_thing_gets_its_own_item() -> None:
+    territory, _ = _covered()
+    item = territory.plan.items[1]
+    assert (item.item, item.state) == ("Hot composting: pile temperature", "missing")
+    assert item.queries == ("my compost pile temperature log",)
+
+
+def test_a_reply_over_budget_loses_its_held_queries_first() -> None:
+    territory, _ = _covered(count=2)
+    assert [q.text for q in territory.queries] == [
+        "my compost pile temperature log", "kompo kasa mia vidu",
+    ]
+    assert territory.plan.over_budget == 1
+    assert territory.plan.items[0].queries == ()
+    assert territory.plan.queries_by_state["held"] == 0
+
+
+def test_held_queries_while_a_gap_has_none_are_counted() -> None:
+    reply = COVERED_PLAN.split("ITEM: P3")[0]
+    plan = _covered(reply)[0].plan
+    assert plan.unserved_gaps == ("Videos in a second language — second-language compost videos",)
+    assert plan.held_while_gaps == 1
+
+
+def test_an_item_matching_no_coverage_line_is_untagged_and_counted() -> None:
+    reply = COVERED_PLAN.replace("COVERS: Worm bins", "COVERS: something nobody assessed").replace(
+        "ITEM: P2\n", "ITEM: P3\n", 1)
+    reply = reply.replace("COVERS: Videos in a second language — second-language compost videos",
+                          "COVERS: nothing like it")
+    plan = _covered(reply, coverage=COVERAGE[:2])[0].plan
+    assert plan.coverage_unmatched == 2
+    assert [item.state for item in plan.items] == ["untagged", "missing", "untagged"]
+
+
+def test_a_fresh_topic_plans_as_before() -> None:
+    """No coverage: every item missing, every query kept in the reply's order."""
+    client = FakeClient(FakeReply(GOOD_PLAN))
+    territory = SearchPlanner(client).plan(BRIEF, recency_samples=1, count=8)
+
+    assert "nothing is held for this topic yet" in client.prompts[0]
+    assert {item.state for item in territory.plan.items} == {"missing"}
+    assert [q.text for q in territory.queries] == [
+        "my hot compost pile results", "why is my compost not heating up",
+        "how often should you turn compost", "my worm bin setup tour", "kompo kasa mia vidu",
+    ]
+    assert territory.plan.queries_by_state["missing"] == 5
+    assert territory.plan.coverage == "fresh"

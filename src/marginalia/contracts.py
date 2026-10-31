@@ -658,6 +658,12 @@ class PlanItem:
     titled: tuple[str, ...] = ()
     queries: tuple[str, ...] = ()
     languages: tuple[str, ...] = ()
+    # The coverage line the item serves, as the reply named it (COVERS), and
+    # the state the matcher resolved it to against the run's coverage:
+    # `missing`, `partly`, `held`, or `untagged` when no line matched. With no
+    # coverage — a fresh topic — every item is `missing`.
+    covers: str = ""
+    state: str = ""
 
     def as_dict(self) -> dict:
         return {
@@ -667,6 +673,8 @@ class PlanItem:
             "titled": list(self.titled),
             "queries": list(self.queries),
             "languages": list(self.languages),
+            "covers": self.covers,
+            "state": self.state,
         }
 
 
@@ -698,6 +706,23 @@ class SearchPlan:
     context: str = "absent"
     context_lines: int = 0
     context_dropped: int = 0
+    # What the plan was told the library holds. `coverage` is `baseline` (the
+    # run's baseline was used), `fresh` (nothing is held: an empty library or a
+    # dry run) or `unusable` (the baseline failed or was degraded, so the plan
+    # proceeded as on a fresh topic); `coverage_note` says which and why.
+    coverage: str = "fresh"
+    coverage_note: str = ""
+    coverage_lines: int = 0
+    # Queries per item state and per language, after the budget (rule 14).
+    queries_by_state: dict = field(default_factory=dict)
+    queries_by_language: dict = field(default_factory=dict)
+    # Coverage lines MISSING or PARTLY that no item serves while queries went
+    # to held items; queries cut because the reply wrote more than the budget,
+    # lowest state first; items whose COVERS matched no coverage line.
+    unserved_gaps: tuple[str, ...] = ()
+    held_while_gaps: int = 0
+    over_budget: int = 0
+    coverage_unmatched: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -712,6 +737,15 @@ class SearchPlan:
             "context": self.context,
             "context_lines": self.context_lines,
             "context_dropped": self.context_dropped,
+            "coverage": self.coverage,
+            "coverage_note": self.coverage_note,
+            "coverage_lines": self.coverage_lines,
+            "queries_by_state": dict(self.queries_by_state),
+            "queries_by_language": dict(self.queries_by_language),
+            "unserved_gaps": list(self.unserved_gaps),
+            "held_while_gaps": self.held_while_gaps,
+            "over_budget": self.over_budget,
+            "coverage_unmatched": self.coverage_unmatched,
         }
 
 

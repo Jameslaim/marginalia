@@ -30,10 +30,14 @@ from dataclasses import replace
 from typing import Sequence
 
 from ..contracts import (
-    FILTER_RELEVANCE_LANGUAGE,
+    ITEM_HELD,
+    ITEM_MISSING,
+    ITEM_PARTLY,
+    ITEM_UNTAGGED,
     ORIGIN_PLAN,
     SOURCE_PLAN,
     Brief,
+    CoverageItem,
     FilterRejection,
     PlanItem,
     PlanLanguage,
@@ -44,7 +48,7 @@ from ..contracts import (
     Usage,
 )
 from ..llm import LlmClient, LlmConfigError, Prompt, load_prompt, safe_reason
-from .judge import aim_words, brief_items, brief_parts
+from .judge import aim_words, brief_items, brief_parts, item_lines, match_item
 from .territory import (
     RECENCY_SAMPLES,
     parse_filters,
@@ -64,6 +68,7 @@ __all__ = [
     "parse_plan",
     "plan_parts",
     "render_context",
+    "render_coverage",
     "render_parts",
 ]
 
@@ -78,7 +83,7 @@ SEARCH_TASK = "search_plan"
 _FALLBACK_TASK = "map_territory"
 
 _LABEL_RE = re.compile(
-    r"^\s*\**\s*(RECENCY|LANGUAGE|ITEM|INTENT|TITLED|QUERY|FILTERS|VARIANT[- ]OF)"
+    r"^\s*\**\s*(RECENCY|LANGUAGE|ITEM|INTENT|TITLED|COVERS|QUERY|FILTERS|VARIANT[- ]OF)"
     r"\s*\**\s*[:\-]\s*(.*)$",
     re.IGNORECASE,
 )
@@ -119,6 +124,27 @@ def render_parts(parts: Sequence[tuple[str, str, list[str]]]) -> str:
     if not parts:
         return "(the brief lists no PARTS TO COVER)"
     return "\n".join(f"P{number}. {text}" for number, (_, text, _) in enumerate(parts, start=1))
+
+
+def render_coverage(coverage: Sequence[CoverageItem], note: str = "") -> str:
+    """What the library already holds, one line per coverage item, by state.
+
+    The lines stage 1 tags candidates against (`item_lines`), so a COVERS line
+    copied from here resolves with the same matcher. With none, every item of
+    the brief is missing — a fresh topic, or a baseline that could not be used,
+    which `note` says.
+    """
+    lines = item_lines(coverage)
+    if not lines:
+        head = "COVERAGE: nothing is held for this topic yet"
+        return (
+            f"{head}{f' ({note})' if note else ''}. Every item counts as missing: "
+            "spread the queries across every PART before any PART gets a second."
+        )
+    out = ["COVERAGE — what the library already holds, one item per line:"]
+    for state, part, thing in lines:
+        out.append(f"- {state.upper()}: {f'{part} — {thing}' if thing else part}")
+    return "\n".join(out)
 
 
 def render_context(lines: Sequence[str] | None) -> tuple[str, SearchPlan]:
@@ -301,6 +327,7 @@ def parse_plan(
                 "item": tag,
                 "intent": "",
                 "titled": [],
+                "covers": "",
             }
             items.append(current)
         elif label == "QUERY":
@@ -323,6 +350,9 @@ def parse_plan(
             current["intent"] = tidy(body, limit=_MAX_INTENT)
         elif label == "TITLED" and current is not None and not current["titled"]:
             current["titled"] = terms(body, _MAX_TITLED)
+        elif label == "COVERS" and current is not None and not current["covers"]:
+            covers = tidy(body, limit=_MAX_REASON).strip("\"'")
+            current["covers"] = "" if covers.lower().rstrip(".") in {"none", "n/a", "-"} else covers
         elif label == "LANGUAGE":
             language = _parse_language(body)
             if language is not None and len(languages) < _MAX_LANGUAGES:
@@ -362,7 +392,7 @@ def parse_plan(
     plan = SearchPlan(
         items=tuple(
             PlanItem(part=item["part"], item=item["item"], intent=item["intent"],
-                     titled=tuple(item["titled"]))
+                     titled=tuple(item["titled"]), covers=item["covers"])
             for item in items
         ),
         languages=tuple(languages),
@@ -389,17 +419,51 @@ def parse_plan(
     )
 
 
+# The order a round-one budget is spent in: what the library lacks first,
+# then what it holds in part, then an item no coverage line matched, and only
+# then what it already holds.
+_STATE_ORDER = (ITEM_MISSING, ITEM_PARTLY, ITEM_UNTAGGED, ITEM_HELD)
+
+
+def _item_state(item: PlanItem, coverage: Sequence[CoverageItem]) -> tuple[str, bool]:
+    """``(state, unmatched)`` for one plan item against the run's coverage.
+
+    The stage-1 matcher, on the COVERS line the reply copied from the coverage
+    block, then on the item's own tag. With no coverage every item is missing:
+    a fresh topic plans exactly as it did before coverage existed.
+    """
+    if not coverage:
+        return ITEM_MISSING, False
+    for tag in (item.covers, item.item):
+        if not tag:
+            continue
+        state, _, unmatched = match_item(tag, coverage)
+        if state != ITEM_UNTAGGED:
+            return state, False
+    return ITEM_UNTAGGED, True
+
+
 def _settle(
     plan: TerritoryMap,
     owners: Sequence[int],
     kept: Sequence[PlannedQuery],
     parts: Sequence[tuple[str, str, list[str]]],
-) -> SearchPlan:
-    """The plan's own account, after validation decided which queries run."""
+    coverage: Sequence[CoverageItem] = (),
+    count: int | None = None,
+) -> tuple[SearchPlan, list[PlannedQuery]]:
+    """The plan's own account, and the queries that run, in the order they run.
+
+    Validation decided which queries may execute; this decides which the
+    budget buys. Each item gets its coverage state, and the queries are spent
+    missing first, then partly held, then untagged, then held — so a reply that
+    wrote more than `count` loses its held queries first, counted. A held query
+    kept while a gap no item serves is still open is counted too: the reply
+    did not follow the order, and the run should say so (rule 30).
+    """
     assert plan.plan is not None
     # `validate` keeps order and only drops, so the kept queries are walked
     # against the proposed ones to find each one's item.
-    per_item: dict[int, list[PlannedQuery]] = {}
+    owned: list[tuple[int, PlannedQuery]] = []
     position = 0
     for query in kept:
         while position < len(plan.queries) and (
@@ -408,13 +472,30 @@ def _settle(
         ):
             position += 1
         if position < len(plan.queries):
-            per_item.setdefault(owners[position], []).append(query)
+            owned.append((owners[position], query))
             position += 1
+
+    states, unmatched = [], 0
+    for item in plan.plan.items:
+        state, missed = _item_state(item, coverage)
+        states.append(state)
+        unmatched += missed
+    rank = {state: number for number, state in enumerate(_STATE_ORDER)}
+    ordered = sorted(owned, key=lambda pair: rank[states[pair[0]]])
+    over = max(0, len(ordered) - count) if count else 0
+    if over:
+        log.info("search plan: %d quer(ies) over the budget of %d not run, held first", over, count)
+        ordered = ordered[: len(ordered) - over]
+    run = [query for _, query in ordered]
+
+    per_item: dict[int, list[PlannedQuery]] = {}
+    for index, query in ordered:
+        per_item.setdefault(index, []).append(query)
 
     scripts = {language.code: language.script for language in plan.plan.languages if language.code}
     mismatches = sum(
         1
-        for query in kept
+        for query in run
         if scripts.get(query.filters.relevance_language or "") == "romanised"
         and not _is_latin(query.text)
     )
@@ -425,12 +506,29 @@ def _settle(
             languages=tuple(
                 sorted({q.filters.relevance_language or "" for q in per_item.get(index, [])} - {""})
             ),
+            state=states[index],
         )
         for index, item in enumerate(plan.plan.items)
     )
+    by_state: dict[str, int] = {state: 0 for state in _STATE_ORDER}
+    for index, _ in ordered:
+        by_state[states[index]] += 1
+    # The coverage lines still open that no item with a query serves.
+    served = {
+        match_item(tag, coverage)[1]
+        for item in items if item.queries
+        for tag in (item.covers, item.item) if tag
+    }
+    gaps = tuple(
+        f"{part} — {thing}" if thing else part
+        for state, part, thing in item_lines(coverage)
+        if state in (ITEM_MISSING, ITEM_PARTLY)
+        and (f"{part} — {thing}" if thing else part) not in served
+        and part not in served
+    )
     reached = {item.part for item in items if item.queries}
-    used = {query.filters.relevance_language for query in kept}
-    return replace(
+    used = {query.filters.relevance_language for query in run}
+    settled = replace(
         plan.plan,
         items=items,
         parts_without_query=tuple(
@@ -441,7 +539,14 @@ def _settle(
             language.name for language in plan.plan.languages
             if language.code and language.code not in used
         ),
+        coverage_lines=len(item_lines(coverage)),
+        queries_by_state=by_state,
+        unserved_gaps=gaps,
+        held_while_gaps=by_state[ITEM_HELD] if gaps else 0,
+        over_budget=over,
+        coverage_unmatched=unmatched if coverage else 0,
     )
+    return settled, run
 
 
 # -- the planner of searches --------------------------------------------------
@@ -468,8 +573,17 @@ class SearchPlanner:
         max_tokens: int | None = None,
         recency_samples: int = RECENCY_SAMPLES,
         context: Sequence[str] | None = None,
+        coverage: Sequence[CoverageItem] = (),
+        coverage_source: str = "fresh",
+        coverage_note: str = "",
     ) -> TerritoryMap:
         """Sample the plan `recency_samples` times; keep the first, widen the window.
+
+        ``coverage`` is what the library already holds — the run's baseline,
+        when it could be used. The plan is shown it, and its budget is spent
+        in coverage order (`_settle`). Empty, every item is missing, as on a
+        fresh topic; ``coverage_source`` and ``coverage_note`` say which and
+        why, and travel on the plan.
 
         The map's arrangement exactly, so a comparison of the two differs in
         the queries and nothing else: the first usable reply is the plan, and
@@ -482,13 +596,21 @@ class SearchPlanner:
         """
         parts = plan_parts(brief.text)
         context_block, context_record = render_context(context)
+        coverage_block = render_coverage(coverage, coverage_note)
+        record = {
+            "context": context_record.context,
+            "context_lines": context_record.context_lines,
+            "context_dropped": context_record.context_dropped,
+            "coverage": coverage_source,
+            "coverage_note": coverage_note,
+        }
         samples: list[tuple[TerritoryMap, list[int]]] = []
         recencies: list[Recency] = []
         spent = Usage()
 
         for attempt in range(max(1, recency_samples)):
             sample, owners = self._sample(
-                brief, parts, context_block, count=count, max_tokens=max_tokens
+                brief, parts, context_block, coverage_block, count=count, max_tokens=max_tokens
             )
             spent.add(
                 Usage(requests=1, input_tokens=sample.input_tokens, output_tokens=sample.output_tokens)
@@ -508,22 +630,15 @@ class SearchPlanner:
             last = samples[-1][0]
             return replace(
                 last,
-                plan=replace(last.plan or SearchPlan(), context=context_record.context,
-                             context_lines=context_record.context_lines,
-                             context_dropped=context_record.context_dropped),
+                plan=replace(last.plan or SearchPlan(), **record),
                 input_tokens=spent.input_tokens,
                 output_tokens=spent.output_tokens,
             )
         plan, owners = first
         recency = widest_recency(recencies)
         kept, rejections = validate(plan.queries, recency=recency, topic=brief.topic)
-        settled = _settle(plan, owners, kept, parts)
-        settled = replace(
-            settled,
-            context=context_record.context,
-            context_lines=context_record.context_lines,
-            context_dropped=context_record.context_dropped,
-        )
+        settled, kept = _settle(plan, owners, kept, parts, coverage, count)
+        settled = replace(settled, **record)
         others = [
             f"sample {number}: {sample.problem if sample.queries else 'unusable'}"
             for number, (sample, _) in enumerate(samples, start=1)
@@ -549,6 +664,7 @@ class SearchPlanner:
         brief: Brief,
         parts: Sequence[tuple[str, str, list[str]]],
         context_block: str,
+        coverage_block: str,
         *,
         count: int,
         max_tokens: int | None,
@@ -565,6 +681,7 @@ class SearchPlanner:
                     parts=render_parts(parts),
                     count=count,
                     context=context_block,
+                    coverage=coverage_block,
                 ),
                 task=self._task(),
                 max_tokens=max_tokens,

@@ -261,17 +261,6 @@ def discover(
     )
 
     try:
-        # After the run row exists, so a crash mid-mapping leaves a run on the
-        # ledger rather than nothing at all — the same ordering rule the brief
-        # follows, applied to the second thing that costs a request. Inside the
-        # `try`, so a refusal here is recorded as one rather than leaving the
-        # run unfinished as though the process had died.
-        run.territory = round_one_source(
-            config, mapper, search_planner, brief,
-            source=search_source or config.discover.search_source,
-        )
-        ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
-
         # What the library *already* answers, before a single search runs.
         #
         # The planner cannot see this any other way. Gate 1 drops videos that
@@ -285,7 +274,26 @@ def discover(
         #
         # Skipped on a dry run and on an empty library — the first plans
         # nothing, and the second has nothing to assess.
+        #
+        # **Before round one's source, for both sources.** The search plan is
+        # written from it: made first, the plan spent its queries one per PART
+        # whatever the library held — on one topic all 8 went to parts the
+        # baseline held, while no listed thing got a query. The map reads no
+        # coverage, so for it the order changes nothing but the order; one
+        # ordering for both keeps the two arms of a comparison alike.
         run.baseline = _assess_library(config, ledger, library, planner, run)
+
+        # After the run row exists, so a crash mid-mapping leaves a run on the
+        # ledger rather than nothing at all — the same ordering rule the brief
+        # follows, applied to the next thing that costs a request. Inside the
+        # `try`, so a refusal here is recorded as one rather than leaving the
+        # run unfinished as though the process had died.
+        run.territory = round_one_source(
+            config, mapper, search_planner, brief,
+            source=search_source or config.discover.search_source,
+            baseline=run.baseline,
+        )
+        ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
         if run.territory.rejected:
             log.info(
                 "discover: %d proposed filter(s) rejected before any search ran",
@@ -320,6 +328,37 @@ def discover(
     return run
 
 
+def plan_coverage(
+    baseline: LibraryCoverage | None,
+) -> tuple[list[CoverageItem], str, str]:
+    """``(coverage, source, note)``: what the search plan is told the library holds.
+
+    The baseline's items when it could be used. Otherwise none, so the plan
+    proceeds exactly as on a fresh topic — every item missing — and says why:
+    nothing held (an empty library, a dry run), or a baseline that failed or
+    was degraded. A degraded baseline saw cut evidence, and a plan that spent
+    its budget on its word would skip gaps it merely could not see; a fresh
+    plan's cost is some queries on held items, which is the cheap direction.
+    """
+    if baseline is None or (not baseline.items and baseline.parsed and not baseline.problem
+                            and not baseline.notes_read):
+        return [], "fresh", "nothing is held for this topic"
+    if not baseline.parsed or baseline.problem:
+        why = baseline.problem or "its reply could not be read"
+        return [], "unusable", f"the library baseline failed ({why}); planned as a fresh topic"
+    if baseline.degraded:
+        return [], "unusable", (
+            f"the library baseline was degraded ({baseline.evidence_mode}, "
+            f"{baseline.notes_cut} notes cut); planned as a fresh topic"
+        )
+    if not baseline.items:
+        return [], "unusable", "the library baseline assessed no items; planned as a fresh topic"
+    return list(baseline.items), "baseline", (
+        f"the library baseline: {len(baseline.satisfied)} of {len(baseline.items)} item(s) held, "
+        f"from {baseline.notes_read} note(s)"
+    )
+
+
 def round_one_source(
     config: Config,
     mapper: Mapper,
@@ -328,6 +367,7 @@ def round_one_source(
     *,
     source: str,
     context: Sequence[str] | None = None,
+    baseline: LibraryCoverage | None = None,
 ) -> TerritoryMap:
     """What writes round one's planned queries: the search plan or the map.
 
@@ -344,11 +384,15 @@ def round_one_source(
     """
     limits = config.discover
     if source == SOURCE_PLAN:
+        coverage, coverage_source, coverage_note = plan_coverage(baseline)
         plan = search_planner.plan(
             brief,
             count=limits.territory_queries,
             max_tokens=limits.territory_max_tokens,
             context=context,
+            coverage=coverage,
+            coverage_source=coverage_source,
+            coverage_note=coverage_note,
         )
         if plan.queries:
             return plan

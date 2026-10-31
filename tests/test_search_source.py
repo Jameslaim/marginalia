@@ -90,10 +90,12 @@ class FakeSearchPlanner:
         self.calls = 0
         self.context_seen = "unset"
 
-    def plan(self, brief, *, count=8, max_tokens=None, recency_samples=3, context=None):
+    def plan(self, brief, *, count=8, max_tokens=None, recency_samples=3, context=None,
+             coverage=(), coverage_source="fresh", coverage_note=""):
         self.calls += 1
         self.count_seen = count
         self.context_seen = context
+        self.coverage_seen = (list(coverage), coverage_source, coverage_note)
         return self.territory
 
 
@@ -368,3 +370,137 @@ def test_the_flag_reaches_discover(tmp_path, monkeypatch) -> None:
     assert seen["search_source"] == "plan"
     assert cli.main(["discover", "a topic", "--json"]) == cli.EXIT_OK
     assert seen["search_source"] is None, "the config decides"
+
+
+# -- the baseline runs first, and the plan is made with its coverage -------------
+
+from marginalia.contracts import CoverageItem, LibraryCoverage  # noqa: E402
+from marginalia.flow.discover import plan_coverage  # noqa: E402
+
+
+class OrderedPlanner(FakePlanner):
+    def __init__(self, log, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.log = log
+
+    def assess_library(self, brief, notes, **kwargs):
+        self.log.append("baseline")
+        return super().assess_library(brief, notes, **kwargs)
+
+
+class OrderedSearchPlanner(FakeSearchPlanner):
+    def __init__(self, log, territory) -> None:
+        super().__init__(territory)
+        self.log = log
+
+    def plan(self, brief, **kwargs):
+        self.log.append("plan")
+        return super().plan(brief, **kwargs)
+
+
+class OrderedMapper(FakeMapper):
+    def __init__(self, log, territory) -> None:
+        super().__init__(territory)
+        self.log = log
+
+    def map(self, brief, **kwargs):
+        self.log.append("map")
+        return super().map(brief, **kwargs)
+
+
+HELD = [CoverageItem("Part one", True, held=("the part",)),
+        CoverageItem("Part two", False, missing=("a thing",))]
+
+
+def test_the_baseline_runs_before_the_plan_and_the_plan_sees_it(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
+    log: list[str] = []
+    planner = OrderedSearchPlanner(log, a_plan("plan query"))
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1,
+        planner=OrderedPlanner(log, baseline=HELD), search_planner=planner,
+        search_source=SOURCE_PLAN)
+
+    assert log == ["baseline", "plan"]
+    coverage, source, note = planner.coverage_seen
+    assert [item.part for item in coverage] == ["Part one", "Part two"]
+    assert source == "baseline" and "1 of 2 item(s) held, from 1 note(s)" in note
+
+
+def test_the_map_gets_the_same_ordering_and_no_coverage(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
+    log: list[str] = []
+
+    outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1,
+                  planner=OrderedPlanner(log, baseline=HELD),
+                  mapper=OrderedMapper(log, mapped("map query")))
+
+    assert log == ["baseline", "map"]
+    assert [q.query for q in ledger.queries_for_run(outcome.run_id)
+            if q.origin == ORIGIN_TERRITORY] == ["map query"]
+
+
+def test_a_fresh_topic_tells_the_plan_nothing_is_held(
+    config, ledger, library, client, searches
+) -> None:
+    searches["*"] = [result("aaaaaaaaaaa")]
+    planner = FakeSearchPlanner(a_plan("plan query"))
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1,
+        search_planner=planner, search_source=SOURCE_PLAN)
+
+    assert planner.coverage_seen == ([], "fresh", "nothing is held for this topic")
+
+
+def test_a_failed_baseline_plans_as_a_fresh_topic_and_says_so(
+    config, ledger, library, client, searches
+) -> None:
+    class Failing(FakePlanner):
+        def assess_library(self, brief, notes, **kwargs):
+            return LibraryCoverage(notes_read=1, parsed=False, problem="reply hit the token ceiling")
+
+    searches["*"] = [result("aaaaaaaaaaa")]
+    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
+    planner = FakeSearchPlanner(a_plan("plan query"))
+
+    run(config, ledger, library, client, FakeJudge(), max_rounds=1, planner=Failing(),
+        search_planner=planner, search_source=SOURCE_PLAN)
+
+    coverage, source, note = planner.coverage_seen
+    assert (coverage, source) == ([], "unusable")
+    assert "failed (reply hit the token ceiling); planned as a fresh topic" in note
+
+
+def test_a_degraded_baseline_plans_as_a_fresh_topic() -> None:
+    degraded = LibraryCoverage(items=HELD, notes_read=600, evidence_mode="claims cut", notes_cut=600)
+    coverage, source, note = plan_coverage(degraded)
+    assert (coverage, source) == ([], "unusable")
+    assert "degraded (claims cut, 600 notes cut); planned as a fresh topic" in note
+
+
+def test_a_usable_baseline_is_the_plans_coverage() -> None:
+    coverage, source, _ = plan_coverage(LibraryCoverage(items=HELD, notes_read=3, evidence_mode="full"))
+    assert (coverage, source) == (HELD, "baseline")
+    assert plan_coverage(None)[1] == plan_coverage(LibraryCoverage())[1] == "fresh"
+
+
+def test_the_plan_line_shows_coverage_and_queries_by_state() -> None:
+    plan = a_plan("one")
+    plan = replace(plan, plan=replace(
+        plan.plan, coverage="baseline", coverage_note="the library baseline: 1 of 2 item(s) held",
+        queries_by_state={"missing": 1, "partly": 0, "untagged": 0, "held": 2},
+        unserved_gaps=("Part two — a thing",), held_while_gaps=2, over_budget=1,
+    ))
+    text = "\n".join(_territory_lines(_run_with(plan)))
+
+    assert "coverage: baseline — the library baseline: 1 of 2 item(s) held" in text
+    assert "by state: missing 1, partly 0, untagged 0, held 2" in text
+    assert "gaps with no query: 1 — Part two — a thing" in text
+    assert "2 quer(ies) on held items while a gap had none" in text
+    assert "1 quer(ies) over the budget, not run, held first" in text

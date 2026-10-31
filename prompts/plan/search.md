@@ -1,8 +1,17 @@
 ---
 name: plan/search
-version: "1"
+version: "2"
 stage: plan
-note: "v1 replaces the territory map as the source of round one's planned
+note: "v2 is shown what the library already holds and spends its queries in
+  coverage order: missing items first, then partly held, held only with budget
+  left over. v1 was made before the baseline ran and spent its 8 queries one per
+  PART: on one topic whose baseline held 10 of 13 items, all 8 went to beginner
+  questions about held parts, which return the popular explainers the library
+  already has, and with 8 PARTS no listed thing ever got its own query. Each
+  item now names the coverage line it serves (COVERS), resolved by the same
+  matcher stage 1 uses, so the code can count queries by state and cut held
+  ones first when the reply overspends.
+  v1 replaces the territory map as the source of round one's planned
   queries, behind `[discover] search_source`. It starts from the brief's own
   coverage items rather than from a list of related words, which the owner
   judged narrowed the thinking and which on one topic produced vocabulary
@@ -35,6 +44,8 @@ BRIEF:
 THE BRIEF'S PARTS TO COVER, numbered:
 {{ parts }}
 
+{{ coverage }}
+
 {{ context }}
 
 ---
@@ -45,12 +56,20 @@ one thing a PART lists. Never plan for something the brief does not ask for.
 
 ## For each item
 
-Write one ITEM block per PART, in order. Where a PART lists several things and
-the right videos for one of them would be titled differently from the rest, give
-that thing its own ITEM block as well. Do not split a PART for the sake of it.
+Write ITEM blocks for what the library lacks, using COVERAGE above. A PART that
+is MISSING or PARTLY held gets an item; a listed thing marked MISSING may get its
+own item, aimed at that thing, so a gap inside a mostly held PART is searched for
+itself rather than under the PART's general wording. A PART that is HELD gets an
+item only when there is budget left after every gap has one. Where nothing is
+held yet, write one ITEM block per PART, in order, and give a listed thing its
+own block only where its videos would be titled differently from the rest.
 
 **ITEM** — `P<number>` for a whole PART, or `P<number> — <the thing, in the
 brief's words>` for one thing it lists.
+
+**COVERS** — the COVERAGE line this item serves, copied as it is written there
+after its state (`<part> — <thing>`, or the part alone). `none` when nothing has
+been assessed.
 
 **INTENT** — one sentence: what a video that satisfies this item is like. Not
 the item restated; the kind of video — who makes it, what it shows, what a
@@ -92,10 +111,14 @@ at least one query before any language gets a second.
 
 ## How many
 
-{{ count }} queries in all. Every PART gets one before any PART gets a second;
-then spend the rest where the right videos are hardest to reach — a listed
-thing titled unlike its PART, a language, a part whose subject's own words
-mostly find the wrong kind of video. Each query: two to seven words, no boolean
+{{ count }} queries in all, spent in coverage order: every MISSING line first,
+then every PARTLY held one, and a HELD line only when budget is left after both.
+A query for something the library already holds mostly returns the popular
+videos it already has. Among lines of the same state, spread before repeating:
+one query each before any gets a second. Where nothing is held yet, every PART
+gets one before any PART gets a second, then spend the rest where the right
+videos are hardest to reach — a listed thing titled unlike its PART, a
+language, a part whose subject's own words mostly find the wrong kind of video. Each query: two to seven words, no boolean
 operators, no quotes, no `site:` tricks.
 
 ## Recency
@@ -133,6 +156,7 @@ RECENCY: ANY — how a hive is managed through the seasons has not changed in de
 LANGUAGE: <a language the brief names> | code=<its ISO 639-1 code> | script=romanised | <how titles in that market are written>
 
 ITEM: P1
+COVERS: none
 INTENT: A beekeeper shows their own first season with a hive and what went wrong, start to finish.
 TITLED: my first year beekeeping, what I got wrong, first hive inspection, honest beginner mistakes
 QUERY: my first year beekeeping mistakes
@@ -141,6 +165,7 @@ QUERY: <the same kind of title, written as that market writes it>
 FILTERS: relevanceLanguage=<its code> (the brief asks for videos in that language)
 
 ITEM: P2 — swarm prevention
+COVERS: none
 INTENT: An experienced keeper explains why colonies swarm and walks through what they do to stop it.
 TITLED: why bees swarm, how to stop swarming, swarm season explained
 QUERY: why do bees swarm explained
@@ -152,6 +177,7 @@ RECENCY: 24 months — component standards changed and older fitting advice no l
 LANGUAGE: none
 
 ITEM: P1
+COVERS: none
 INTENT: A home mechanic diagnoses a noise on their own bike and shows how they traced it and the fix.
 TITLED: fixed my creaking bike, finally found the noise, I tried everything
 QUERY: finally fixed creaking bike noise
@@ -160,5 +186,5 @@ FILTERS: none
 
 - `RECENCY` — first, alone on its line.
 - `LANGUAGE` — one line per language, fields separated by `|`.
-- `ITEM`, then `INTENT`, then `TITLED`, then that item's `QUERY` and `FILTERS`
+- `ITEM`, then `COVERS`, then `INTENT`, then `TITLED`, then that item's `QUERY` and `FILTERS`
   pairs. One blank line between items.

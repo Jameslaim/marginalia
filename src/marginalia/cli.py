@@ -761,6 +761,15 @@ def _search_plan_lines(territory) -> list[str]:
         for language in plan.languages
     )
     lines.append(f"          languages: {languages or 'none named'}")
+    # What the plan was told the library holds, and where the queries went.
+    lines.append(f"          coverage: {plan.coverage} — {plan.coverage_note or 'no note'}")
+    by_state = ", ".join(f"{state} {n}" for state, n in plan.queries_by_state.items()) or "none"
+    lines.append(f"          by state: {by_state}")
+    if plan.unserved_gaps:
+        lines.append(
+            f"          gaps with no query: {len(plan.unserved_gaps)} — "
+            + "; ".join(plan.unserved_gaps[:5])
+        )
     missing = ", ".join(plan.parts_without_query)
     lines.append(
         f"          no query: {len(plan.parts_without_query)} part(s)"
@@ -772,6 +781,9 @@ def _search_plan_lines(territory) -> list[str]:
         (plan.things_unmatched, "listed thing(s) the brief does not list, tagged by PART"),
         (plan.script_mismatches, "quer(ies) not in the script their language's titles use"),
         (len(plan.languages_without_query), "language(s) with no query"),
+        (plan.held_while_gaps, "quer(ies) on held items while a gap had none"),
+        (plan.over_budget, "quer(ies) over the budget, not run, held first"),
+        (plan.coverage_unmatched, "item(s) matching no coverage line"),
     ):
         if count:
             lines.append(f"          {count} {what}")
