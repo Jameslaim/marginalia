@@ -723,6 +723,13 @@ class SearchPlan:
     held_while_gaps: int = 0
     over_budget: int = 0
     coverage_unmatched: int = 0
+    # Languages: the topic's main language, the brief's own language or market
+    # items and its broadest item, as the reply named them; and the queries in
+    # another language aimed at neither.
+    main_language: str = ""
+    language_items: tuple[int, ...] = ()
+    broad_item: int = 0
+    language_misaimed: int = 0
 
     def as_dict(self) -> dict:
         return {
@@ -746,6 +753,10 @@ class SearchPlan:
             "held_while_gaps": self.held_while_gaps,
             "over_budget": self.over_budget,
             "coverage_unmatched": self.coverage_unmatched,
+            "main_language": self.main_language,
+            "language_items": list(self.language_items),
+            "broad_item": self.broad_item,
+            "language_misaimed": self.language_misaimed,
         }
 
 

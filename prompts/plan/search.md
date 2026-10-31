@@ -1,8 +1,20 @@
 ---
 name: plan/search
-version: "2"
+version: "3"
 stage: plan
-note: "v2 is shown what the library already holds and spends its queries in
+note: "v3 aims a language query at the item a video in that language serves.
+  v2 gave each named language a query before any had a second, and with a small
+  budget each landed on whichever part came next: on one topic one language
+  only on sponsorships, another only on per-view breakdowns, though the first
+  was that topic's richest non-English source and its query then found only one
+  kind of case. A language query now aims at the brief's own language or market
+  items, or at its broadest item when it has none, in that market's own title
+  phrasing; part-specific queries are in the topic's main language unless the
+  part is itself about a language or market. A language's line follows coverage
+  order like every other: held, it yields to missing items. The reply names the
+  main language, the language items and the broad item, so the code can count
+  queries per language and those aimed at neither.
+  v2 is shown what the library already holds and spends its queries in
   coverage order: missing items first, then partly held, held only with budget
   left over. v1 was made before the baseline ran and spent its 8 queries one per
   PART: on one topic whose baseline held 10 of 13 items, all 8 went to beginner
@@ -104,10 +116,26 @@ this from how the people who make these videos write, not from how the
 language is officially written: in some markets creators title almost entirely
 in Latin letters, and a query in the native script then finds nothing.
 
-Every query aimed at a language carries `relevanceLanguage` set to its ISO
-639-1 code, and is written the way that LANGUAGE line says titles are written
-— not the brief's phrasing translated word for word. Give each named language
-at least one query before any language gets a second.
+Then three lines that say where those languages go:
+
+- `MAIN LANGUAGE: <code>` — the language most of this topic's videos are made
+  in. Every part-specific query is written in it.
+- `LANGUAGE ITEMS: P<n>, …` — the PARTS that are themselves about a language or
+  a market (videos in other languages, cases from other countries), or `none`.
+- `BROAD ITEM: P<n>` — the PART a good video of any kind satisfies, the one any
+  case or explainer the brief wants would serve.
+
+**A query in another language aims at a LANGUAGE ITEM**, or at the BROAD ITEM
+when there is no LANGUAGE ITEM. Never at a narrow part: a video in that language
+is found by a query for the kind of video the brief wants, and tying the
+language to one narrow part finds only that part's cases in it. Word it as that
+market really titles such videos, following its LANGUAGE line — not the brief's
+phrasing translated word for word — and set `relevanceLanguage` to its code.
+
+**Coverage order still decides.** A language whose cases the library already
+holds (its COVERAGE line is HELD) gets a query only after every MISSING and
+PARTLY line has one. Among the languages still missing, give each one query
+before any gets a second, in the brief's order.
 
 ## How many
 
@@ -154,6 +182,9 @@ shape, and none of their words belong in your plan.
 ```
 RECENCY: ANY — how a hive is managed through the seasons has not changed in decades
 LANGUAGE: <a language the brief names> | code=<its ISO 639-1 code> | script=romanised | <how titles in that market are written>
+MAIN LANGUAGE: <the code most of these videos are made in>
+LANGUAGE ITEMS: none
+BROAD ITEM: P1
 
 ITEM: P1
 COVERS: none
@@ -175,6 +206,9 @@ FILTERS: none
 ```
 RECENCY: 24 months — component standards changed and older fitting advice no longer applies
 LANGUAGE: none
+MAIN LANGUAGE: <the code most of these videos are made in>
+LANGUAGE ITEMS: none
+BROAD ITEM: P1
 
 ITEM: P1
 COVERS: none
@@ -185,6 +219,7 @@ FILTERS: none
 ```
 
 - `RECENCY` — first, alone on its line.
-- `LANGUAGE` — one line per language, fields separated by `|`.
+- `LANGUAGE` — one line per language, fields separated by `|`; then
+  `MAIN LANGUAGE`, `LANGUAGE ITEMS` and `BROAD ITEM`, one line each.
 - `ITEM`, then `COVERS`, then `INTENT`, then `TITLED`, then that item's `QUERY` and `FILTERS`
   pairs. One blank line between items.

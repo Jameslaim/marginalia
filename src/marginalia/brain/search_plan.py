@@ -83,7 +83,8 @@ SEARCH_TASK = "search_plan"
 _FALLBACK_TASK = "map_territory"
 
 _LABEL_RE = re.compile(
-    r"^\s*\**\s*(RECENCY|LANGUAGE|ITEM|INTENT|TITLED|COVERS|QUERY|FILTERS|VARIANT[- ]OF)"
+    r"^\s*\**\s*(RECENCY|MAIN[- ]LANGUAGE|LANGUAGE[- ]ITEMS?|BROAD[- ]ITEM|LANGUAGE|ITEM|INTENT"
+    r"|TITLED|COVERS|QUERY|FILTERS|VARIANT[- ]OF)"
     r"\s*\**\s*[:\-]\s*(.*)$",
     re.IGNORECASE,
 )
@@ -222,6 +223,12 @@ def _resolve_item(
     return number, name, False
 
 
+def _part_numbers(body: str, parts: int) -> tuple[int, ...]:
+    """``P4, P5`` -> ``(4, 5)``: the PART numbers a line names, in range."""
+    numbers = [int(n) for n in re.findall(r"\bP?\s*(\d+)\b", body, re.IGNORECASE)]
+    return tuple(dict.fromkeys(n for n in numbers if 1 <= n <= parts))
+
+
 def _parse_language(body: str) -> PlanLanguage | None:
     """``name | code=xx | script=romanised | how titles there are written``."""
     pieces = [piece.strip() for piece in body.split("|")]
@@ -282,6 +289,9 @@ def parse_plan(
     dropped = unmatched = 0
     current: dict | None = None
     pending: dict[str, str] | None = None
+    main_language = ""
+    language_items: tuple[int, ...] = ()
+    broad = 0
 
     def close_query() -> None:
         nonlocal pending
@@ -312,7 +322,14 @@ def parse_plan(
         label = match.group(1).upper().replace(" ", "-")
         body = match.group(2).strip()
 
-        if label == "ITEM":
+        if label == "MAIN-LANGUAGE":
+            code = body.split()[0].strip(".,;()\"'").lower() if body.split() else ""
+            main_language = code if _LANGUAGE_CODE_RE.match(code) else main_language
+        elif label in ("LANGUAGE-ITEM", "LANGUAGE-ITEMS"):
+            language_items = _part_numbers(body, len(parts))
+        elif label == "BROAD-ITEM":
+            broad = (_part_numbers(body, len(parts)) or (0,))[0]
+        elif label == "ITEM":
             close_query()
             resolved = _resolve_item(body, parts)
             if resolved is None:
@@ -376,6 +393,8 @@ def parse_plan(
     if not seen_recency:
         problems.append("no recency line")
         recency_readable = False
+    if languages and not main_language:
+        problems.append("no MAIN LANGUAGE line")
     if not items:
         problems.append("no items")
     if not queries:
@@ -399,6 +418,9 @@ def parse_plan(
         unknown_items=tuple(unknown),
         queries_dropped=dropped,
         things_unmatched=unmatched,
+        main_language=main_language,
+        language_items=language_items,
+        broad_item=broad,
     )
     vocabulary = terms(", ".join(phrase for item in items for phrase in item["titled"]), _MAX_TITLED)
     return (
@@ -528,6 +550,23 @@ def _settle(
     )
     reached = {item.part for item in items if item.queries}
     used = {query.filters.relevance_language for query in run}
+    # Languages: one count per language a query runs in — a query with no
+    # relevanceLanguage runs in the topic's main language — and a query in
+    # another language counted when it aims at neither the brief's own
+    # language or market items nor, when there are none, its broadest item.
+    main = plan.plan.main_language
+    by_language: dict[str, int] = {}
+    misaimed = 0
+    for index, query in ordered:
+        code = (query.filters.relevance_language or main or "unset").lower()
+        by_language[code] = by_language.get(code, 0) + 1
+        # With no main language named there is nothing to aim against; the
+        # missing line is a problem on the plan instead.
+        if not main or code in (main, "unset") or code.split("-")[0] == main.split("-")[0]:
+            continue
+        part = plan.plan.items[index].part
+        allowed = plan.plan.language_items or ((plan.plan.broad_item,) if plan.plan.broad_item else ())
+        misaimed += part not in allowed
     settled = replace(
         plan.plan,
         items=items,
@@ -545,6 +584,8 @@ def _settle(
         held_while_gaps=by_state[ITEM_HELD] if gaps else 0,
         over_budget=over,
         coverage_unmatched=unmatched if coverage else 0,
+        queries_by_language=by_language,
+        language_misaimed=misaimed,
     )
     return settled, run
 

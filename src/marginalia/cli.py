@@ -765,6 +765,14 @@ def _search_plan_lines(territory) -> list[str]:
     lines.append(f"          coverage: {plan.coverage} — {plan.coverage_note or 'no note'}")
     by_state = ", ".join(f"{state} {n}" for state, n in plan.queries_by_state.items()) or "none"
     lines.append(f"          by state: {by_state}")
+    by_language = ", ".join(f"{code} {n}" for code, n in plan.queries_by_language.items()) or "none"
+    aimed = ", ".join(f"P{n}" for n in plan.language_items) or (
+        f"none, so the broad item P{plan.broad_item}" if plan.broad_item else "none named"
+    )
+    lines.append(
+        f"          by language: {by_language} (main {plan.main_language or 'not named'}; "
+        f"other languages aim at {aimed})"
+    )
     if plan.unserved_gaps:
         lines.append(
             f"          gaps with no query: {len(plan.unserved_gaps)} — "
@@ -782,6 +790,7 @@ def _search_plan_lines(territory) -> list[str]:
         (plan.script_mismatches, "quer(ies) not in the script their language's titles use"),
         (len(plan.languages_without_query), "language(s) with no query"),
         (plan.held_while_gaps, "quer(ies) on held items while a gap had none"),
+        (plan.language_misaimed, "quer(ies) in another language aimed at a narrow part"),
         (plan.over_budget, "quer(ies) over the budget, not run, held first"),
         (plan.coverage_unmatched, "item(s) matching no coverage line"),
     ):

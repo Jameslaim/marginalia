@@ -699,6 +699,12 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
             "- queries by state: " + (", ".join(
                 f"{state} {count}" for state, count in (plan.get("queries_by_state") or {}).items()
             ) or "none"),
+            "- queries by language: " + (", ".join(
+                f"{code} {count}" for code, count in (plan.get("queries_by_language") or {}).items()
+            ) or "none") + f" (main {plan.get('main_language') or 'not named'})",
+            "- language items: " + (", ".join(f"P{n}" for n in plan.get("language_items") or [])
+                                    or "none") + f"; broad item: P{plan.get('broad_item') or '?'}",
+            f"- queries in another language aimed at a narrow part: {plan.get('language_misaimed', 0)}",
             f"- coverage gaps with no query: {len(plan.get('unserved_gaps') or [])}",
             *(f"  - {gap}" for gap in plan.get("unserved_gaps") or []),
             f"- queries on held items while a gap had none: {plan.get('held_while_gaps', 0)}",

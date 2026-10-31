@@ -504,3 +504,15 @@ def test_the_plan_line_shows_coverage_and_queries_by_state() -> None:
     assert "gaps with no query: 1 — Part two — a thing" in text
     assert "2 quer(ies) on held items while a gap had none" in text
     assert "1 quer(ies) over the budget, not run, held first" in text
+
+
+def test_the_plan_line_shows_queries_by_language() -> None:
+    plan = a_plan("one", "two")
+    plan = replace(plan, plan=replace(
+        plan.plan, main_language="en", language_items=(4, 5), broad_item=1,
+        queries_by_language={"en": 1, "xx": 1}, language_misaimed=1,
+    ))
+    text = "\n".join(_territory_lines(_run_with(plan)))
+
+    assert "by language: en 1, xx 1 (main en; other languages aim at P4, P5)" in text
+    assert "1 quer(ies) in another language aimed at a narrow part" in text

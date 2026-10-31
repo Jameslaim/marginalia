@@ -48,6 +48,9 @@ BRIEF = Brief(topic=TOPIC, text=BRIEF_TEXT, version="5/5", approved_version=1)
 GOOD_PLAN = """
 RECENCY: ANY — composting methods have not changed in decades
 LANGUAGE: Examplish | code=xx | script=romanized | creators title in Latin letters with English words mixed in
+MAIN LANGUAGE: en
+LANGUAGE ITEMS: P3
+BROAD ITEM: P1
 
 ITEM: P1
 INTENT: A gardener builds a hot pile and shows its temperature rising over weeks.
@@ -383,6 +386,9 @@ COVERAGE = [
 COVERED_PLAN = """
 RECENCY: ANY — stable
 LANGUAGE: Examplish | code=xx | script=romanised | Latin letters
+MAIN LANGUAGE: en
+LANGUAGE ITEMS: P3
+BROAD ITEM: P1
 
 ITEM: P2
 COVERS: Worm bins
@@ -491,3 +497,93 @@ def test_a_fresh_topic_plans_as_before() -> None:
     ]
     assert territory.plan.queries_by_state["missing"] == 5
     assert territory.plan.coverage == "fresh"
+
+
+# -- languages aim at the items a video in that language serves ---------------
+
+
+def test_the_main_language_and_the_language_and_broad_items_are_read() -> None:
+    plan = _plan()[0].plan
+    assert (plan.main_language, plan.language_items, plan.broad_item) == ("en", (3,), 1)
+    reply = GOOD_PLAN.replace("LANGUAGE ITEMS: P3", "LANGUAGE ITEMS: none").replace(
+        "BROAD ITEM: P1", "BROAD ITEM: P9")
+    plan = _plan(reply)[0].plan
+    assert (plan.language_items, plan.broad_item) == ((), 0)
+
+
+def test_a_language_query_on_the_brief_language_part_is_aimed_well_and_counted() -> None:
+    plan = _planned(GOOD_PLAN).plan
+    assert plan.queries_by_language == {"en": 4, "xx": 1}
+    assert plan.language_misaimed == 0
+
+
+def test_a_language_query_on_a_narrow_part_is_counted() -> None:
+    reply = GOOD_PLAN.replace(
+        "QUERY: my worm bin setup tour\nFILTERS: none",
+        "QUERY: my worm bin setup tour\nFILTERS: relevanceLanguage=xx (a second language)",
+    )
+    plan = _planned(reply).plan
+    assert plan.language_misaimed == 1
+    assert plan.queries_by_language == {"en": 3, "xx": 2}
+
+
+BRIEF_NO_LANGUAGE = Brief(
+    topic=TOPIC,
+    text=BRIEF_TEXT.replace("- Videos in a second language as well as English\n", ""),
+    version="5/5",
+)
+
+
+def test_with_no_language_part_a_language_query_aims_at_the_broad_item() -> None:
+    reply = (
+        "RECENCY: ANY — stable\n"
+        "LANGUAGE: Examplish | code=xx | script=romanised | Latin letters\n"
+        "MAIN LANGUAGE: en\nLANGUAGE ITEMS: none\nBROAD ITEM: P1\n\n"
+        "ITEM: P1\nINTENT: a\nTITLED: my pile\n"
+        "QUERY: my hot compost pile results\nFILTERS: none\n"
+        "QUERY: kompo kasa mia vidu\nFILTERS: relevanceLanguage=xx (the market)\n\n"
+        "ITEM: P2\nINTENT: b\nTITLED: my bin\n"
+        "QUERY: my worm bin setup tour\nFILTERS: none\n"
+        "QUERY: kompo vermi kasa\nFILTERS: relevanceLanguage=xx (the market)\n"
+    )
+    territory = SearchPlanner(FakeClient(FakeReply(reply))).plan(BRIEF_NO_LANGUAGE, recency_samples=1)
+    plan = territory.plan
+    assert (plan.language_items, plan.broad_item) == ((), 1)
+    assert plan.language_misaimed == 1, "the broad item's is aimed well; the worm-bin one is not"
+
+
+def test_a_part_about_a_language_takes_its_language_and_main_queries_alike() -> None:
+    reply = GOOD_PLAN.replace(
+        "QUERY: kompo kasa mia vidu\n",
+        "QUERY: compost videos in other languages\nFILTERS: none\nQUERY: kompo kasa mia vidu\n",
+    )
+    plan = _planned(reply).plan
+    assert plan.items[3].queries == ("compost videos in other languages", "kompo kasa mia vidu")
+    assert plan.language_misaimed == 0
+
+
+def test_a_held_language_yields_to_missing_items() -> None:
+    held_language = [
+        COVERAGE[0], COVERAGE[1],
+        CoverageItem("Videos in a second language", True, held=("second-language compost videos",)),
+    ]
+    territory, _ = _covered(coverage=held_language, count=1)
+    assert [q.text for q in territory.queries] == ["my compost pile temperature log"]
+    assert territory.plan.items[2].state == "held"
+    assert territory.plan.over_budget == 2
+    assert territory.plan.queries_by_language == {"en": 1}
+
+
+def test_languages_without_a_main_language_line_are_a_problem() -> None:
+    reply = GOOD_PLAN.replace("MAIN LANGUAGE: en\n", "")
+    territory, _ = _plan(reply)
+    assert "no MAIN LANGUAGE line" in territory.problem
+    assert _planned(reply).plan.language_misaimed == 0, "nothing to aim against, nothing counted"
+
+
+def test_the_prompt_states_the_language_rules() -> None:
+    text = " ".join(load_prompt(SEARCH_PROMPT).text.split())
+    assert "A query in another language aims at a LANGUAGE ITEM" in text
+    assert "or at the BROAD ITEM when there is no LANGUAGE ITEM" in text
+    assert "Every part-specific query is written in it" in text
+    assert "gets a query only after every MISSING and PARTLY line has one" in text
