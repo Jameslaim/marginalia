@@ -768,7 +768,8 @@ def _search_plan_lines(territory) -> list[str]:
     by_tier = ", ".join(f"{tier} {n}" for tier, n in plan.queries_by_tier.items()) or "none"
     lines.append(
         f"          by tier: {by_tier} ({plan.distinct_gaps} distinct gap(s), "
-        f"{plan.duplicates_avoided} duplicate(s) avoided)"
+        f"{plan.duplicates_avoided} duplicate(s) avoided, "
+        f"{plan.second_gap_queries} second gap quer(ies))"
     )
     lines.append(f"          skipped as excluded: {len(plan.excluded_gaps)}")
     for skipped in plan.excluded_gaps[:5]:
@@ -799,6 +800,7 @@ def _search_plan_lines(territory) -> list[str]:
         (plan.script_mismatches, "quer(ies) not in the script their language's titles use"),
         (len(plan.languages_without_query), "language(s) with no query"),
         (plan.held_while_gaps, "quer(ies) on held items while a gap had none"),
+        (plan.held_while_thin, "quer(ies) on held items while a gap had only one"),
         (plan.language_misaimed, "quer(ies) in another language aimed at a narrow part"),
         (plan.over_budget, "quer(ies) over the budget, not run, held first"),
         (plan.coverage_unmatched, "item(s) matching no coverage line"),

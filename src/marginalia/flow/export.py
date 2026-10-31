@@ -717,6 +717,8 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
             f"- coverage gaps with no query: {len(plan.get('unserved_gaps') or [])}",
             *(f"  - {gap}" for gap in plan.get("unserved_gaps") or []),
             f"- queries on held items while a gap had none: {plan.get('held_while_gaps', 0)}",
+            f"- queries on held items while a gap had only one: {plan.get('held_while_thin', 0)}",
+            f"- second gap queries run: {plan.get('second_gap_queries', 0)}",
             f"- queries over the budget, not run: {plan.get('over_budget', 0)}",
             f"- items matching no coverage line: {plan.get('coverage_unmatched', 0)}",
             f"- current context: {plan.get('context') or 'absent'}"

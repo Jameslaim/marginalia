@@ -739,6 +739,11 @@ class SearchPlan:
     excluded_gaps: tuple[str, ...] = ()
     duplicates_avoided: int = 0
     distinct_gaps: int = 0
+    # Second queries for a gap that ran (they rank above every held line), and
+    # held queries that ran while some gap had only one query: the reply spent
+    # on held parts what could have gone to a gap (rule 14).
+    second_gap_queries: int = 0
+    held_while_thin: int = 0
     # Languages: the topic's main language, the brief's own language or market
     # items and its broadest item, as the reply named them; and the queries in
     # another language aimed at neither.
@@ -773,6 +778,8 @@ class SearchPlan:
             "excluded_gaps": list(self.excluded_gaps),
             "duplicates_avoided": self.duplicates_avoided,
             "distinct_gaps": self.distinct_gaps,
+            "second_gap_queries": self.second_gap_queries,
+            "held_while_thin": self.held_while_thin,
             "main_language": self.main_language,
             "language_items": list(self.language_items),
             "broad_item": self.broad_item,

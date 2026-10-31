@@ -801,6 +801,20 @@ def _settle(
         log.info("search plan: %d quer(ies) over the budget of %d not run, held first", over, count)
         ordered = ordered[: len(ordered) - over]
     run = [query for _, query in ordered]
+    # Measured: a reply wrote one query per gap and four on held lines, and
+    # the gap queries brought almost every keeper. Second gap queries rank
+    # above held ones (above); this counts what the reply gave the order to
+    # work with — the seconds that ran, and the held queries that ran while a
+    # gap had only one.
+    second_ids = {id(query) for _, query in second}
+    second_run = sum(1 for _, query in ordered if id(query) in second_ids)
+    per_gap: dict[frozenset[str], int] = {}
+    for index, _ in ordered:
+        if tiers[index] != TIER_HELD:
+            for key in keys[index]:
+                per_gap[key] = per_gap.get(key, 0) + 1
+    thin = any(per_gap.get(key) == 1 for key in by_key if key not in skipped_keys)
+    held_run = sum(1 for index, _ in ordered if tiers[index] == TIER_HELD)
 
     per_item: dict[int, list[PlannedQuery]] = {}
     for index, query in ordered:
@@ -876,6 +890,8 @@ def _settle(
         language_misaimed=misaimed,
         duplicates_avoided=avoided,
         distinct_gaps=len(by_key),
+        second_gap_queries=second_run,
+        held_while_thin=held_run if thin else 0,
     )
     return settled, run
 

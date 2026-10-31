@@ -775,9 +775,9 @@ def test_a_second_query_for_a_gap_waits_until_every_gap_has_one() -> None:
 def test_the_prompt_states_the_tiers_and_the_exclusion_rule() -> None:
     prompt = load_prompt(SEARCH_PROMPT)
     text = " ".join(prompt.text.split())
-    assert prompt.version == "4"
+    assert prompt.version in ("4", "5"), "v5 kept every v4 rule"
     assert "1. MISSING PART lines" in text and "3. ALSO WANTED gaps" in text
-    assert "4. HELD lines, only when budget is left" in text
+    assert "4. HELD lines, only when gap queries cannot fill the budget" in text
     assert "Never aim a query at anything EXCLUDED names" in text
     assert "SKIP: <the COVERAGE line, as written there> | <the EXCLUDED item" in text
     assert "a thing listed under two lines is one gap" in text
@@ -862,3 +862,67 @@ def test_covers_decides_the_line_over_the_item() -> None:
     item = _tiered(_costs_plan("costs of the equipment — thermometer costs"),
                    coverage=COSTS)[0].plan.items[0]
     assert item.line == "costs of the equipment — thermometer costs"
+
+
+# -- second gap queries before held lines -----------------------------------------
+
+_GAPS = (
+    ("Videos in a second language — second-language compost videos", "kompo kasa mia vidu", "kompo vidu kasa nova"),
+    ("Hot composting — pile temperature", "my compost pile temperature log", "how hot should compost get"),
+    ("Hot composting — odour control", "why does my compost smell", "fixing a smelly compost pile"),
+    ("costs of the equipment — equipment costs", "what my compost setup cost", "compost bin prices I paid"),
+)
+_HELD = (
+    ("Worm bins", "my worm bin setup tour"),
+    ("Worm bins", "worm bin feeding routine"),
+    ("Hot composting — turning schedule", "how often I turn my compost"),
+    ("Hot composting — carbon-to-nitrogen ratio", "browns and greens ratio explained"),
+)
+
+
+def _block(line: str, *queries: str) -> str:
+    return (f"ITEM: {line}\nCOVERS: {line}\nINTENT: x\nTITLED: y\n"
+            + "".join(f"QUERY: {q}\nFILTERS: none\n" for q in queries) + "\n")
+
+
+def _live_shaped(seconds: bool) -> str:
+    """The live reply's shape: one query per gap, then four on held lines —
+    and, when `seconds`, a second query for each gap written after them."""
+    head = ("RECENCY: ANY — stable\nLANGUAGE: Examplish | code=xx | script=romanised | Latin letters\n"
+            "MAIN LANGUAGE: en\nLANGUAGE ITEMS: P3\nBROAD ITEM: P1\n\n")
+    body = "".join(_block(line, first) for line, first, _ in _GAPS)
+    body += "".join(_block(line, query) for line, query in _HELD)
+    if seconds:
+        body += "".join(_block(line, second) for line, _, second in _GAPS)
+    return head + body
+
+
+def test_second_gap_queries_run_before_any_held_line() -> None:
+    territory, _ = _tiered(_live_shaped(seconds=True), count=8)
+    plan = territory.plan
+    run = [q.text for q in territory.queries]
+
+    assert set(run) == {q for _, first, second in _GAPS for q in (first, second)}
+    assert not {q for _, q in _HELD} & set(run), "every held query is cut"
+    assert plan.second_gap_queries == 4
+    assert plan.held_while_thin == 0
+    assert plan.over_budget == 4
+    assert plan.queries_by_tier["held"] == 0
+
+
+def test_held_lines_fill_only_what_gap_queries_cannot() -> None:
+    """The live reply: one query per gap and four held — held runs, and is counted."""
+    territory, _ = _tiered(_live_shaped(seconds=False), count=8)
+    plan = territory.plan
+
+    assert plan.queries_by_tier["held"] == 4
+    assert plan.second_gap_queries == 0
+    assert plan.held_while_thin == 4
+    assert [q.text for q in territory.queries][:4] == [first for _, first, _ in _GAPS]
+
+
+def test_the_prompt_ranks_second_gap_queries_above_held_lines() -> None:
+    text = " ".join(load_prompt(SEARCH_PROMPT).text.split())
+    assert load_prompt(SEARCH_PROMPT).version == "5"
+    assert "Once every gap has a query, spend what is left on second queries for the gaps" in text
+    assert "before any HELD line" in text

@@ -1,8 +1,15 @@
 ---
 name: plan/search
-version: "4"
+version: "5"
 stage: plan
-note: "v4 spends the core before the nice-to-haves and never searches into the
+note: "v5 spends a second query on each gap before any query on a held line.
+  v4 left that order to the reply: in a live round-one comparison its plan
+  wrote one query for each of 4 gaps and 4 on held lines, the 4 gap queries
+  brought 11 keepers and the 4 held ones brought 4 on parts the library
+  already covered; an earlier reply on the same coverage had written two per
+  gap. Held lines now get queries only when gap queries cannot fill the
+  budget.
+  v4 spends the core before the nice-to-haves and never searches into the
   brief's exclusions. v3 ranked a missing ALSO WANTED line level with a missing
   PART line, and on one topic spent 4 of 8 queries on an ALSO WANTED item few
   creators report, against 3 on the partly held PART the brief requires; two of
@@ -96,8 +103,8 @@ a MISSING or PARTLY line — gets an item aimed at it, so a gap inside a mostly
 held PART is searched for itself rather than under the PART's general wording.
 An ALSO WANTED gap is an item of its own, named by its COVERAGE line, never hung
 under the nearest PART. A line marked as the same gap as a line above is one
-gap: give it one item. A HELD line gets an item only when there is budget left
-after every gap has one. Where nothing is held yet, write one ITEM block per
+gap: give it one item. A HELD line gets an item only when every gap's item has
+two queries and budget is still left. Where nothing is held yet, write one ITEM block per
 PART, in order, and give a listed thing its own block only where its videos
 would be titled differently from the rest.
 
@@ -171,11 +178,15 @@ before any gets a second, in the brief's order.
 2. PARTLY PART lines — the missing things of a PART held in part;
 3. ALSO WANTED gaps, MISSING or PARTLY — wanted, not required, so after every
    PART;
-4. HELD lines, only when budget is left after all three.
+4. HELD lines, only when gap queries cannot fill the budget.
 
 A query for something the library already holds mostly returns the popular
 videos it already has. One query for each distinct gap before any gap gets a
-second; a thing listed under two lines is one gap. Where nothing is held yet, every PART
+second; a thing listed under two lines is one gap. **Once every gap has a
+query, spend what is left on second queries for the gaps** — a different
+wording, or the kind of video titled differently — before any HELD line. A
+HELD line gets a query only when there are too few gaps to fill the budget
+with two queries each. Where nothing is held yet, every PART
 gets one before any PART gets a second, then spend the rest where the right
 videos are hardest to reach — a listed thing titled unlike its PART, a
 language, a part whose subject's own words mostly find the wrong kind of video. Each query: two to seven words, no boolean
