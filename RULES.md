@@ -1041,6 +1041,21 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     term queries on the other topic did about as well as queries written from the brief.
     Unstable baselines and recency confounded the comparison, so it stays off.
 
+42. **The same state gives the same coverage, and recency belongs to the approved
+    brief.** A library baseline is stored under the digest of what it reads: the approved
+    brief's version and digest, the rendered evidence with every current note and its
+    judge reason, the prompt's version, and the settings. A run on the same state reuses
+    it with no call. Anything changed makes it fresh, and the line says which. A fresh
+    baseline makes two calls, resolved toward the cheap error: the less-held state per
+    item, and every thing any call lists as missing, with each disagreement counted.
+    Recency is decided once per approved version, as the widest of the first run's
+    samples, or set by the owner. Every run on that version uses it. Measured on
+    unchanged notes, three calls per topic: one item per topic changed state. A single
+    call named 3 to 6 of the 7 gaps that any call named, while any two named 5 to 7. Two
+    calls can still agree on a flip that a third would catch: in one measurement, an item
+    partly held in 2 of 3 calls was held in both calls of a fresh pair. Twin runs on one
+    day had sampled ANY/ANY/24 and 24/24.
+
 ## Structure
 
 ```
