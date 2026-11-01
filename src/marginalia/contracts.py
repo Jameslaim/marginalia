@@ -165,6 +165,11 @@ __all__ = [
     "RepairResult",
     "RepairRun",
     "WEB_CONTEXT_OFF",
+    "RECENCY_SAMPLED",
+    "RECENCY_DECIDED",
+    "RECENCY_OWNER",
+    "BASELINE_FRESH",
+    "BASELINE_REUSED",
     "WEB_CONTEXT_SUPPLIED",
     "WEB_CONTEXT_EMPTY",
     "WEB_CONTEXT_FAILED",
@@ -423,6 +428,13 @@ class Recency:
     # window was a consensus or a coin flip. Rule 23: the conclusion is the
     # half you cannot correct from. Empty on a map built from one sample.
     samples: tuple[int | None, ...] = ()
+    # Where the window came from. `sampled`: this run's own samples, as before
+    # recency belonged to the brief. `decided`: the widest of the samples the
+    # first run on this brief version made, stored with the version and reused.
+    # `owner`: set by the owner for the version. Empty on a map built in a test
+    # or before this existed. `stored_from` names the run that decided it.
+    source: str = ""
+    stored_from: str = ""
 
     @property
     def limited(self) -> bool:
@@ -462,6 +474,15 @@ FILTER_FIELD_RECENCY_WAIVER = "recency-waiver"
 # turns on it: whether a cutoff was the model's proposal or the window's
 # arithmetic is the difference between a judgement and a calculation.
 RECENCY_DERIVED_WHY = "derived from the reasoned recency window"
+
+# Where a run's recency window came from (`Recency.source`).
+RECENCY_SAMPLED = "sampled"
+RECENCY_DECIDED = "decided"
+RECENCY_OWNER = "owner"
+
+# Whether a run's baseline was made by it or reused (`LibraryCoverage.reuse`).
+BASELINE_FRESH = "fresh"
+BASELINE_REUSED = "reused"
 
 
 @dataclass(frozen=True)
@@ -930,6 +951,8 @@ class TerritoryMap:
                     "months": self.recency.months,
                     "reason": self.recency.reason,
                     "samples": list(self.recency.samples),
+                    "source": self.recency.source,
+                    "stored_from": self.recency.stored_from,
                 },
                 "queries": [
                     {
@@ -1146,6 +1169,21 @@ class LibraryCoverage:
     evidence_tokens: int = 0
     claims_chars: int = 0
     notes_cut: int = 0
+    # Whether this coverage was made by this run or reused from a stored one on
+    # the same state, and why a fresh one was made (rule 14). `reuse` is
+    # `fresh`, `reused` or empty (nothing assessed); `reused_from` names the
+    # run that made it; `calls` counts the model calls this run spent on it,
+    # and `flips` the disagreements between them that were resolved.
+    reuse: str = ""
+    reused_from: str = ""
+    fresh_reason: str = ""
+    key_sha256: str = ""
+    calls: int = 0
+    flips: tuple = ()
+
+    @property
+    def flips_resolved(self) -> int:
+        return len(self.flips)
 
     @property
     def satisfied(self) -> list[CoverageItem]:
@@ -1168,10 +1206,40 @@ class LibraryCoverage:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "seconds": round(self.latency_s, 2),
+            "reuse": self.reuse,
+            "reused_from": self.reused_from,
+            "fresh_reason": self.fresh_reason,
+            "key_sha256": self.key_sha256,
+            "calls": self.calls,
+            "flips_resolved": self.flips_resolved,
+            "flips": [dict(flip) for flip in self.flips],
         }
 
     def as_json(self) -> str:
         return json.dumps(self.as_dict(), ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, body: dict) -> "LibraryCoverage":
+        """A stored ``as_dict()`` read back: the items and how they were made."""
+        return cls(
+            items=[
+                CoverageItem(
+                    part=item.get("part", ""), satisfied=bool(item.get("satisfied")),
+                    detail=item.get("detail", ""), partly=bool(item.get("partly")),
+                    held=tuple(item.get("held") or ()), missing=tuple(item.get("missing") or ()),
+                )
+                for item in body.get("items") or []
+            ],
+            notes_read=int(body.get("notes_read") or 0),
+            parsed=bool(body.get("parsed", True)),
+            problem=body.get("problem") or "",
+            evidence_mode=body.get("evidence_mode") or "",
+            evidence_tokens=int(body.get("evidence_tokens") or 0),
+            claims_chars=int(body.get("claims_chars") or 0),
+            notes_cut=int(body.get("notes_cut") or 0),
+            calls=int(body.get("calls") or 0),
+            flips=tuple(body.get("flips") or ()),
+        )
 
 
 @dataclass(frozen=True)

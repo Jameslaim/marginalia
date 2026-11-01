@@ -253,6 +253,28 @@ def _baseline_section(run: RunRow) -> list[str]:
         ])
     if body.get("problem"):
         lines.extend([f"> {_flat(body['problem'])}", ""])
+    if body.get("reuse") == "reused":
+        lines.extend([f"Reused from run `{body.get('reused_from') or 'unknown'}`: the brief, the "
+                      "notes, the prompt and the settings were unchanged, so no call was made.", ""])
+    elif body.get("reuse") == "fresh":
+        lines.extend([
+            f"Fresh ({_flat(body.get('fresh_reason')) or 'no reason recorded'}): "
+            f"{body.get('calls', 0)} call(s), {body.get('flips_resolved', 0)} disagreement(s) "
+            "between them resolved toward missing.",
+            "",
+        ])
+        flips = body.get("flips") or []
+        if flips:
+            lines.extend(["| kind | item | listed thing | states by call | resolved |",
+                          "|---|---|---|---|---|"])
+            for flip in flips:
+                lines.append(
+                    f"| {_flat(flip.get('kind'))} | {_flat(flip.get('part'))} "
+                    f"| {_flat(flip.get('thing')) or '—'} "
+                    f"| {' / '.join(state or '—' for state in flip.get('states') or [])} "
+                    f"| {_flat(flip.get('resolved'))} |"
+                )
+            lines.append("")
     if items:
         lines.extend(["| | part of the brief | what already covers it |", "|---|---|---|"])
         for item in items:

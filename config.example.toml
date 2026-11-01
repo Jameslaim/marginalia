@@ -399,6 +399,14 @@ web_context = false
 web_context_queries = 6
 web_context_results = 10
 
+# The library baseline: how many calls a fresh one makes. Disagreements between
+# them resolve toward missing (a thing wrongly marked missing costs one query; one
+# wrongly marked held is never searched for), and are counted. A baseline is
+# stored and reused, with no call, while the approved brief, the notes and their
+# judge reasons, the prompt and these settings are unchanged. 1 is one call, as
+# before.
+baseline_calls = 2
+
 # B5. Queries the planner writes at the end of each round, for the next one.
 # They run *first* in that round — they were written against the gaps the last
 # round actually left open — and `queries_per_round` still runs alongside them,

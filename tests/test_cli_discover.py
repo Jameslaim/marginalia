@@ -122,7 +122,10 @@ def test_the_report_has_one_line_per_round_then_a_summary(stubbed, capsys) -> No
     main(["discover", "prompt caching"])
     lines = capsys.readouterr().out.strip().splitlines()
 
-    assert len(lines) == 6
+    assert len(lines) == 7
+    # A library with no notes says it is planned as a fresh topic.
+    assert lines[1].startswith("baseline: none — the library holds no notes")
+    lines = [lines[0], *lines[2:]]
     assert lines[1].startswith("round 1:  5 queries, 63 candidates, 8 known, 41 no, 14 maybe")
     assert lines[1].endswith("9 stored")
     assert lines[4] == "judge-full: 10 judged, 10 parsed, 0 unparsed"
@@ -139,7 +142,7 @@ def test_the_report_has_one_line_per_round_then_a_summary(stubbed, capsys) -> No
 def test_a_thread_driven_round_says_so(stubbed, capsys) -> None:
     """Round two coming from the loop's own findings is the interesting part."""
     main(["discover", "prompt caching"])
-    assert "queries from threads" in capsys.readouterr().out.splitlines()[2]
+    assert "queries from threads" in capsys.readouterr().out.splitlines()[3]
 
 
 def test_a_dry_run_says_would_store(configured, monkeypatch, capsys) -> None:

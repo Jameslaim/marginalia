@@ -49,6 +49,7 @@ after.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import replace
 import logging
@@ -66,7 +67,8 @@ from ..brain.judge import (
     item_lines,
     match_item,
 )
-from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
+from ..brain.coverage import resolve_coverage
+from ..brain.planner import BASELINE_PROMPT, PLAN_PROMPT, Planner, apply_revisions
 from ..brain.search_plan import SearchPlanner
 from .web_context import context_lines, gather_context
 from ..brain.territory import Mapper, validate, waiver_applies
@@ -87,6 +89,8 @@ from ..contracts import (
     SOURCE_PLAN,
     WEB_CONTEXT_OFF,
     ACQUIRE_NO_CAPTIONS,
+    BASELINE_FRESH,
+    BASELINE_REUSED,
     ACQUIRE_TRANSLATED_ONLY,
     OUTCOME_JUDGED,
     OUTCOME_TOO_LARGE,
@@ -119,6 +123,7 @@ from ..core.ledger import (
     FAIL_PERMANENT,
     STAGE_FULL,
     STAGE_METADATA,
+    BaselineRow,
     Ledger,
     judged_for_topic,
     normalise_topic,
@@ -127,7 +132,7 @@ from ..core.ledger import now as ledger_now
 from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
 from ..quotes import note_sections
 from ..core.library import Library, format_timestamp, render_transcript
-from ..llm import LlmClient, LlmConfigError
+from ..llm import LlmClient, LlmConfigError, load_prompt
 from ..providers import PermanentError, TransientError
 from ..providers.base import TranscriptProvider
 from .acquire import acquire, transcript_providers
@@ -733,27 +738,175 @@ def _assess_library(
             _BASELINE_BUDGET_TOKENS,
         )
 
-    baseline = planner.assess_library(
-        run.brief,
-        rendered,
-        notes_read=len(notes),
-        max_tokens=config.discover.baseline_max_tokens,
-    )
+    # **The same state gives the same coverage.** Measured: three calls on
+    # unchanged notes put one item at YES, NO and PARTLY, and named 3, 4 and 6
+    # of the 7 gaps any of them named, so every run chased a slightly
+    # different set of gaps whatever the library held. A usable baseline is
+    # stored under the digest of everything it reads, and a run on the same
+    # state reuses it with no call.
+    prompt = planner.prompt(BASELINE_PROMPT) if hasattr(planner, "prompt") else load_prompt(BASELINE_PROMPT)
+    state = baseline_state(config, run.brief, notes, rendered, prompt.version, model=run.model or "")
+    if state is not None:
+        stored = ledger.stored_baseline(state.key)
+        if stored is not None:
+            baseline = replace(
+                LibraryCoverage.from_dict(json.loads(stored.coverage_json)),
+                reuse=BASELINE_REUSED, reused_from=stored.run_id or "", key_sha256=state.key,
+                calls=0, flips=(), input_tokens=0, output_tokens=0, latency_s=0.0,
+            )
+            ledger.save_baseline(run.run_id, baseline.as_json())
+            log.info(
+                "discover: the library baseline is reused from run %s (unchanged state)",
+                stored.run_id,
+            )
+            return baseline
+        fresh_reason = _what_changed(ledger.latest_stored_baseline(run.topic), state)
+    else:
+        fresh_reason = "no approved brief, so a baseline is never reused"
+
+    # **A fresh baseline resolves flips toward the cheap error.** A thing wrongly
+    # marked missing costs one query; one wrongly marked held is never searched
+    # for. So `baseline_calls` calls are made and resolved by
+    # `brain.coverage.resolve_coverage`: the less-held state per item, every
+    # missing thing any call named, and each disagreement counted.
+    calls: list[LibraryCoverage] = []
+    for _ in range(max(1, config.discover.baseline_calls)):
+        calls.append(planner.assess_library(
+            run.brief,
+            rendered,
+            notes_read=len(notes),
+            max_tokens=config.discover.baseline_max_tokens,
+        ))
+    usable = [call for call in calls if call.parsed and not call.problem and call.items]
+    if usable:
+        baseline, flips = resolve_coverage(usable, run.brief.text)
+    else:
+        baseline, flips = calls[0], []
+    unusable = len(calls) - len(usable)
+    if unusable and usable:
+        fresh_reason += f"; {unusable} of {len(calls)} call(s) unusable and left out"
     baseline = replace(
         baseline,
+        notes_read=len(notes),
         evidence_mode=evidence.mode,
         evidence_tokens=estimate,
         claims_chars=evidence.claims_chars,
         notes_cut=evidence.notes_cut,
+        input_tokens=sum(call.input_tokens for call in calls),
+        output_tokens=sum(call.output_tokens for call in calls),
+        latency_s=sum(call.latency_s for call in calls),
+        reuse=BASELINE_FRESH,
+        fresh_reason=fresh_reason,
+        key_sha256=state.key if state is not None else "",
+        calls=len(calls),
+        flips=tuple(flips),
     )
     ledger.save_baseline(run.run_id, baseline.as_json())
+    # Stored for reuse only when every call was usable: a coverage resolved
+    # from fewer calls than asked, or a failed one, is made again next time
+    # rather than repeated.
+    if state is not None and usable and not unusable:
+        ledger.save_stored_baseline(BaselineRow(
+            key_sha256=state.key, topic=run.topic,
+            brief_version=run.brief.approved_version or 0, brief_sha256=run.brief.sha256,
+            notes_sha256=state.notes_sha256, evidence_sha256=state.evidence_sha256,
+            prompt_version=state.prompt_version,
+            settings_json=json.dumps(state.settings, sort_keys=True),
+            notes_json=json.dumps(state.notes, sort_keys=True), coverage_json=baseline.as_json(),
+            run_id=run.run_id, made_at="",
+        ))
     log.info(
-        "discover: the library already covers %d of %d assessed brief item(s), from %d note(s)",
+        "discover: the library already covers %d of %d assessed brief item(s), from %d note(s); "
+        "%d call(s), %d flip(s) resolved",
         len(baseline.satisfied),
         len(baseline.items),
         baseline.notes_read,
+        len(calls),
+        len(flips),
     )
     return baseline
+
+
+class BaselineState:
+    """Everything a baseline reads, digested: the key it is stored and found by."""
+
+    __slots__ = ("key", "notes", "notes_sha256", "evidence_sha256", "prompt_version", "settings",
+                 "brief_version", "brief_sha256")
+
+    def __init__(self, key, notes, notes_sha256, evidence_sha256, prompt_version, settings,
+                 brief_version=0, brief_sha256="") -> None:
+        self.brief_version = brief_version
+        self.brief_sha256 = brief_sha256
+        self.key = key
+        self.notes = notes
+        self.notes_sha256 = notes_sha256
+        self.evidence_sha256 = evidence_sha256
+        self.prompt_version = prompt_version
+        self.settings = settings
+
+
+def baseline_state(
+    config: Config,
+    brief: Brief,
+    notes: Sequence[LoadedNote],
+    rendered: str,
+    prompt_version: str,
+    *,
+    model: str = "",
+) -> BaselineState | None:
+    """The reuse key for a baseline, or ``None`` when the brief is not approved.
+
+    The key covers the approved brief's version and digest, the prompt's
+    version, the settings that change what the call reads or how it is
+    resolved, and the rendered evidence, which carries every current note's
+    claims and its judge reason: a note added, regenerated or removed, or a new
+    judge reason, changes it. The notes' own digests are kept beside it, to say
+    what changed.
+    """
+    if brief.approved_version is None:
+        return None
+    digests = {
+        note.video_id: hashlib.sha256(note.text.encode("utf-8")).hexdigest() for note in notes
+    }
+    notes_sha256 = hashlib.sha256(json.dumps(sorted(digests.items())).encode("utf-8")).hexdigest()
+    evidence_sha256 = hashlib.sha256(rendered.encode("utf-8")).hexdigest()
+    settings = {
+        "baseline_calls": config.discover.baseline_calls,
+        "baseline_max_tokens": config.discover.baseline_max_tokens,
+        "budget_tokens": _BASELINE_BUDGET_TOKENS,
+        "model": model,
+    }
+    key = hashlib.sha256(json.dumps({
+        "topic": normalise_topic(brief.topic), "brief_version": brief.approved_version,
+        "brief_sha256": brief.sha256, "prompt_version": str(prompt_version),
+        "evidence_sha256": evidence_sha256, "notes_sha256": notes_sha256, "settings": settings,
+    }, sort_keys=True).encode("utf-8")).hexdigest()
+    return BaselineState(key, digests, notes_sha256, evidence_sha256, str(prompt_version), settings,
+                         brief.approved_version, brief.sha256)
+
+
+def _what_changed(previous: BaselineRow | None, state: BaselineState) -> str:
+    """Why a baseline is fresh, against the topic's last stored one."""
+    if previous is None:
+        return "no stored baseline for this topic"
+    reasons = []
+    before = json.loads(previous.notes_json or "{}")
+    added = sum(1 for video in state.notes if video not in before)
+    removed = sum(1 for video in before if video not in state.notes)
+    changed = sum(
+        1 for video, digest in state.notes.items() if video in before and before[video] != digest
+    )
+    if previous.brief_version != state.brief_version or previous.brief_sha256 != state.brief_sha256:
+        reasons.append(f"brief v{previous.brief_version} -> v{state.brief_version}")
+    if previous.prompt_version != state.prompt_version:
+        reasons.append(f"prompt v{previous.prompt_version} -> v{state.prompt_version}")
+    if added or removed or changed:
+        reasons.append(f"notes changed ({added} added, {changed} regenerated, {removed} removed)")
+    if previous.settings_json != json.dumps(state.settings, sort_keys=True):
+        reasons.append("settings changed")
+    if not reasons and previous.evidence_sha256 != state.evidence_sha256:
+        reasons.append("the evidence changed (a judge reason or a cut)")
+    return "; ".join(reasons) or "the evidence changed"
 
 
 # -- the baseline's evidence ---------------------------------------------------

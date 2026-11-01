@@ -440,7 +440,7 @@ def test_the_baseline_runs_before_the_plan_and_the_plan_sees_it(
         planner=OrderedPlanner(log, baseline=HELD), search_planner=planner,
         search_source=SOURCE_PLAN)
 
-    assert log == ["baseline", "plan"]
+    assert log == ["baseline", "baseline", "plan"], "both baseline calls come first"
     coverage, source, note = planner.coverage_seen
     assert [item.part for item in coverage] == ["Part one", "Part two"]
     assert source == "baseline" and "1 of 2 item(s) held, from 1 note(s)" in note
@@ -457,7 +457,7 @@ def test_the_map_gets_the_same_ordering_and_no_coverage(
                   planner=OrderedPlanner(log, baseline=HELD),
                   mapper=OrderedMapper(log, mapped("map query")))
 
-    assert log == ["baseline", "map"]
+    assert log == ["baseline", "baseline", "map"], "both baseline calls come first"
     assert [q.query for q in ledger.queries_for_run(outcome.run_id)
             if q.origin == ORIGIN_TERRITORY] == ["map query"]
 

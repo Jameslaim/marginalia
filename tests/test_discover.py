@@ -2591,7 +2591,8 @@ def test_the_library_is_assessed_before_the_first_round(
     outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
                   max_rounds=2, mapper=FakeMapper(), planner=planner)
 
-    assert planner.assessed == 1, "assessed once, before any round"
+    # `baseline_calls` calls (2 by default), all before any round.
+    assert planner.assessed == config.discover.baseline_calls == 2, "assessed before any round"
     assert [i.part for i in outcome.baseline.items] == ["shows code"]
 
 

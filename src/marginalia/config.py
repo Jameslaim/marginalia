@@ -135,6 +135,13 @@ DEFAULT_BRIEF_MAX_TOKENS = 32768
 # 16,384 ceiling and returned 613 characters; at a higher ceiling the same call
 # finished at 18,939. Doubled, as the brief's was, to about 1.7 times that.
 DEFAULT_BASELINE_MAX_TOKENS = 32768
+# How many baseline calls a fresh baseline makes, resolved toward missing
+# (`brain/coverage.py`). Measured on two topics, three calls each on unchanged
+# notes: 1 of 14 and 1 of 11 items changed state, and one call named 3 to 6 of
+# the 7 gaps any call named on one topic; any two named 5 to 7, and caught both
+# items' less-held state. A third call only when two disagree would have run on
+# 5 of 6 pairs. A reused baseline makes none. 1 is the old behaviour.
+DEFAULT_BASELINE_CALLS = 2
 DEFAULT_TERRITORY_MAX_TOKENS = 16384
 DEFAULT_PLANNER_MAX_TOKENS = 16384
 # Whether to believe `contentDetails.caption` when it says a video has no
@@ -347,6 +354,7 @@ class DiscoverConfig:
     web_context_queries: int = DEFAULT_WEB_CONTEXT_QUERIES
     web_context_results: int = DEFAULT_WEB_CONTEXT_RESULTS
     baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
+    baseline_calls: int = DEFAULT_BASELINE_CALLS
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
     # Stage 2's own output ceiling. `None` — the default — keeps the global
@@ -668,6 +676,9 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         baseline_max_tokens=_positive(
             section, "baseline_max_tokens", DEFAULT_BASELINE_MAX_TOKENS,
             config_path, "discover",
+        ),
+        baseline_calls=_positive(
+            section, "baseline_calls", DEFAULT_BASELINE_CALLS, config_path, "discover"
         ),
         territory_max_tokens=_positive(
             section, "territory_max_tokens", DEFAULT_TERRITORY_MAX_TOKENS,

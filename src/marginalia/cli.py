@@ -38,6 +38,8 @@ from typing import Any, Sequence
 from . import __version__
 from .config import Config, ConfigError, library_root, load_config
 from .contracts import (
+    BASELINE_FRESH,
+    BASELINE_REUSED,
     ITEM_STATES,
     ACQUIRE_FAILED_PERMANENT,
     ACQUIRE_FAILED_TRANSIENT,
@@ -890,7 +892,22 @@ def _baseline_lines(run: DiscoverRun) -> list[str]:
         if not baseline.parsed and baseline.problem:
             line += f"; reply had problems ({baseline.problem})"
         lines.append(line)
+        lines.append(f"          {baseline_reuse_line(baseline)}")
+    elif not run.dry_run:
+        lines.append("baseline: none — the library holds no notes, so this is planned as a fresh "
+                     "topic, as before")
     return lines
+
+
+def baseline_reuse_line(baseline) -> str:
+    """Whether the baseline was made by this run or reused, and what it cost."""
+    if baseline.reuse == BASELINE_REUSED:
+        return f"reused (from run {baseline.reused_from or 'unknown'}): unchanged state, 0 calls"
+    if baseline.reuse == BASELINE_FRESH:
+        why = f" ({baseline.fresh_reason})" if baseline.fresh_reason else ""
+        return (f"fresh{why}: {baseline.calls} call(s), "
+                f"{baseline.flips_resolved} flip(s) resolved toward missing")
+    return "fresh: 1 call (made before baselines were stored)"
 
 
 def _plan_lines(report: RoundReport) -> list[str]:
@@ -989,6 +1006,10 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         # Step 4: what the start-of-run web lookup searched and what the plan
         # was shown. Stored on the ledger too (`web_contexts`).
         "web_context": run.web_context.as_dict(),
+        # What the library held before round one, and whether this run made it
+        # (`reuse: fresh`, with its calls and flips resolved) or reused a
+        # stored one on the same state (`reuse: reused`, `reused_from`).
+        "baseline": run.baseline.as_dict(),
         "search_fallback": run.territory.fallback,
         "territory_version": run.territory.label,
         "territory_revision": run.territory.revision,

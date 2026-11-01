@@ -72,6 +72,8 @@ __all__ = [
     "BriefRow",
     "RepairRow",
     "WebContextRow",
+    "BaselineRow",
+    "RecencyRow",
     "STALE_TRANSCRIPT_SUFFIX",
     "skip_reason",
     "normalise_topic",
@@ -297,6 +299,45 @@ CREATE TABLE IF NOT EXISTS web_contexts (
   sha256          TEXT,
   made_at         TEXT NOT NULL
 );
+
+-- A coverage baseline, stored so an unchanged state gives the same coverage.
+-- `key_sha256` is the digest of everything the baseline reads: the approved
+-- brief's version and digest, the rendered evidence (which carries every
+-- current note and its judge reason), the prompt's version and the settings
+-- that change what it reads. A later run with the same key reuses the row and
+-- makes no call; anything changed makes a fresh one (rule 23). Only usable
+-- baselines are stored, so a failed one is retried rather than repeated.
+CREATE TABLE IF NOT EXISTS baselines (
+  key_sha256      TEXT NOT NULL,
+  topic           TEXT NOT NULL,
+  brief_version   INTEGER NOT NULL,
+  brief_sha256    TEXT NOT NULL,
+  notes_sha256    TEXT NOT NULL,     -- of the sorted (video id, note sha256) pairs
+  evidence_sha256 TEXT NOT NULL,     -- of the rendered evidence the call was shown
+  prompt_version  TEXT NOT NULL,
+  settings_json   TEXT NOT NULL,
+  notes_json      TEXT NOT NULL,     -- {video id: note sha256}, to say what changed
+  coverage_json   TEXT NOT NULL,     -- LibraryCoverage.as_dict(), resolved
+  run_id          TEXT,
+  made_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_baselines_key ON baselines(key_sha256);
+CREATE INDEX IF NOT EXISTS idx_baselines_topic ON baselines(topic);
+
+-- A brief version's recency, decided once (the widest of the samples the
+-- first run on that version made) or set by the owner. The latest row for a
+-- (topic, version) is the one every run on that version uses.
+CREATE TABLE IF NOT EXISTS brief_recency (
+  topic          TEXT NOT NULL,
+  brief_version  INTEGER NOT NULL,
+  months         INTEGER,            -- NULL: any time
+  reason         TEXT,
+  samples_json   TEXT NOT NULL,      -- the windows sampled, in order; [] when owner-set
+  source         TEXT NOT NULL,      -- decided | owner
+  run_id         TEXT,
+  set_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_brief_recency ON brief_recency(topic, brief_version);
 """
 
 # Columns added after a table shipped, which can be introduced in place.
@@ -622,6 +663,46 @@ class WebContextRow:
 
 
 @dataclass(frozen=True)
+class BaselineRow:
+    """One stored coverage baseline and the state it was made from."""
+
+    key_sha256: str
+    topic: str
+    brief_version: int
+    brief_sha256: str
+    notes_sha256: str
+    evidence_sha256: str
+    prompt_version: str
+    settings_json: str
+    notes_json: str
+    coverage_json: str
+    made_at: str
+    run_id: str | None = None
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> "BaselineRow":
+        return cls(**_values(cls, row))
+
+
+@dataclass(frozen=True)
+class RecencyRow:
+    """A brief version's recency: decided once, or set by the owner."""
+
+    topic: str
+    brief_version: int
+    samples_json: str
+    source: str
+    set_at: str
+    months: int | None = None
+    reason: str | None = None
+    run_id: str | None = None
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> "RecencyRow":
+        return cls(**_values(cls, row))
+
+
+@dataclass(frozen=True)
 class RepairRow:
     """One repair of a stored transcript or its language, under rule 3's one
     exception. ``action`` is ``replaced`` or ``language_cleaned``."""
@@ -706,6 +787,8 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "briefs": frozenset(field.name for field in fields(BriefRow)),
     "transcript_repairs": frozenset(field.name for field in fields(RepairRow)),
     "web_contexts": frozenset(field.name for field in fields(WebContextRow)),
+    "baselines": frozenset(field.name for field in fields(BaselineRow)),
+    "brief_recency": frozenset(field.name for field in fields(RecencyRow)),
 }
 
 
@@ -1840,6 +1923,68 @@ class Ledger:
                 ),
             )
         log.info("run %s stored its web context (%s)", run_id, context["status"])
+
+    def save_stored_baseline(self, row: BaselineRow) -> None:
+        """Store a usable baseline under its key, for later runs on the same state."""
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO baselines (key_sha256, topic, brief_version, brief_sha256, notes_sha256, "
+                "evidence_sha256, prompt_version, settings_json, notes_json, coverage_json, run_id, "
+                "made_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.key_sha256, normalise_topic(row.topic), row.brief_version, row.brief_sha256,
+                 row.notes_sha256, row.evidence_sha256, row.prompt_version, row.settings_json,
+                 row.notes_json, row.coverage_json, row.run_id, row.made_at or _utcnow()),
+            )
+
+    def stored_baseline(self, key_sha256: str) -> BaselineRow | None:
+        """The earliest baseline stored under this key: the one every reuse names."""
+        if "baselines" in self._absent:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM baselines WHERE key_sha256 = ? ORDER BY rowid LIMIT 1", (key_sha256,)
+        ).fetchone()
+        return BaselineRow.from_sqlite(row) if row is not None else None
+
+    def latest_stored_baseline(self, topic: str) -> BaselineRow | None:
+        """The topic's latest stored baseline, to say what changed since."""
+        if "baselines" in self._absent:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM baselines WHERE topic = ? ORDER BY rowid DESC LIMIT 1",
+            (normalise_topic(topic),),
+        ).fetchone()
+        return BaselineRow.from_sqlite(row) if row is not None else None
+
+    def set_brief_recency(
+        self, topic: str, brief_version: int, *, months: int | None, reason: str,
+        samples: Sequence[int | None] = (), source: str, run_id: str | None = None,
+    ) -> RecencyRow:
+        """Record a brief version's recency. A later row for the version wins."""
+        row = RecencyRow(
+            topic=normalise_topic(topic), brief_version=brief_version,
+            samples_json=json.dumps(list(samples)), source=source, set_at=_utcnow(),
+            months=months, reason=reason or None, run_id=run_id,
+        )
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO brief_recency (topic, brief_version, months, reason, samples_json, "
+                "source, run_id, set_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (row.topic, row.brief_version, row.months, row.reason, row.samples_json,
+                 row.source, row.run_id, row.set_at),
+            )
+        log.info("brief v%d of %r: recency %s (%s)", brief_version, row.topic,
+                 f"{months} months" if months else "any time", source)
+        return row
+
+    def brief_recency(self, topic: str, brief_version: int) -> RecencyRow | None:
+        if "brief_recency" in self._absent:
+            return None
+        row = self._conn.execute(
+            "SELECT * FROM brief_recency WHERE topic = ? AND brief_version = ? "
+            "ORDER BY rowid DESC LIMIT 1",
+            (normalise_topic(topic), brief_version),
+        ).fetchone()
+        return RecencyRow.from_sqlite(row) if row is not None else None
 
     def web_context_for(self, run_id: str) -> WebContextRow | None:
         if "web_contexts" in self._absent:
