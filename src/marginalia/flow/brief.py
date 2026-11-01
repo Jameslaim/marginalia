@@ -22,9 +22,10 @@ import logging
 from dataclasses import replace
 
 from ..brain.judge import Judge, brief_check, brief_parts, brief_sha256, normalise_brief
+from ..brain.territory import parse_recency
 from ..config import Config
-from ..contracts import Brief, BriefApproval, BriefStatus, PendingBrief
-from ..core.ledger import Ledger, normalise_topic
+from ..contracts import RECENCY_OWNER, Brief, BriefApproval, BriefStatus, PendingBrief
+from ..core.ledger import Ledger, RecencyRow, normalise_topic
 from ..core.ledger import now as ledger_now
 from ..core.library import Library
 
@@ -184,3 +185,32 @@ def _prompt_version(library: Library, key: str) -> str | None:
         return None
     version = meta.get("prompt_version")
     return str(version) if version else None
+
+
+OWNER_RECENCY_REASON = "set by the owner"
+
+
+def set_owner_recency(ledger: Ledger, topic: str, value: str) -> tuple[RecencyRow | None, str]:
+    """Record the owner's recency for the topic's latest approved brief version.
+
+    ``value`` is ``ANY`` (or ``any time``), ``N months`` or ``N years``, read by
+    the same parser as a model's RECENCY line and held to the same limits
+    (rule 30): an unreadable value or one outside the usable window is refused
+    with the reason, and nothing is stored. ``(row, problem)``.
+    """
+    approved = ledger.approved_brief(topic)
+    if approved is None:
+        return None, "no approved brief for this topic; approve one first (marg brief --approve)"
+    text = " ".join(value.split())
+    if text.lower().startswith("last "):
+        text = text[5:]
+    if not text:
+        return None, "an empty recency; give ANY, N months or N years"
+    recency, problem = parse_recency(f"{text} — {OWNER_RECENCY_REASON}")
+    if problem:
+        return None, f"{problem} ({value!r}); give ANY, N months or N years"
+    row = ledger.set_brief_recency(
+        approved.topic, approved.version, months=recency.months, reason=OWNER_RECENCY_REASON,
+        samples=(), source=RECENCY_OWNER,
+    )
+    return row, ""

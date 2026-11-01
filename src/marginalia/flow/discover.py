@@ -90,6 +90,8 @@ from ..contracts import (
     WEB_CONTEXT_OFF,
     ACQUIRE_NO_CAPTIONS,
     BASELINE_FRESH,
+    RECENCY_DECIDED,
+    RECENCY_SAMPLED,
     BASELINE_REUSED,
     ACQUIRE_TRANSLATED_ONLY,
     OUTCOME_JUDGED,
@@ -116,6 +118,7 @@ from ..contracts import (
     TranscriptResult,
     Acquisition,
     Brief,
+    Recency,
     TerritoryMap,
 )
 from ..core.ids import extract_video_id
@@ -314,12 +317,22 @@ def discover(
         elif enabled and source != SOURCE_PLAN:
             run.web_context.reason = "the map has no context slot"
 
+        # **Recency belongs to the approved brief.** Measured: two runs of one
+        # topic on the same day sampled ANY/ANY/24 months and 24/24, so twin
+        # arms ran with different date filters. Decided once per brief version
+        # — the widest of the samples the first run on it makes — or set by the
+        # owner, and every later run on that version uses it with one sample.
+        stored_recency = brief_recency(ledger, brief)
         run.territory = round_one_source(
             config, mapper, search_planner, brief,
             source=source,
             baseline=run.baseline,
             context=context_lines(run.web_context),
+            recency=stored_recency,
         )
+        run.territory = replace(run.territory, recency=_recorded_recency(
+            ledger, brief, run.territory.recency, stored_recency, run_id,
+        ))
         ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
         if run.territory.rejected:
             log.info(
@@ -395,8 +408,12 @@ def round_one_source(
     source: str,
     context: Sequence[str] | None = None,
     baseline: LibraryCoverage | None = None,
+    recency: Recency | None = None,
 ) -> TerritoryMap:
     """What writes round one's planned queries: the search plan or the map.
+
+    ``recency`` is the approved brief's stored window, when it has one: both
+    sources then use it with a single sample instead of sampling their own.
 
     Either way the result is the run's territory, and everything that reads it
     — the recency window, round one, the judges' word list, the planner and its
@@ -420,13 +437,15 @@ def round_one_source(
             coverage=coverage,
             coverage_source=coverage_source,
             coverage_note=coverage_note,
+            **({"recency": recency} if recency is not None else {}),
         )
         if plan.queries:
             return plan
         reason = plan.problem or "no queries"
         log.warning("discover: the search plan was unusable (%s); running the map", reason)
         territory = mapper.map(
-            brief, count=limits.territory_queries, max_tokens=limits.territory_max_tokens
+            brief, count=limits.territory_queries, max_tokens=limits.territory_max_tokens,
+            **({"recency": recency} if recency is not None else {}),
         )
         return replace(
             territory,
@@ -435,7 +454,46 @@ def round_one_source(
             input_tokens=territory.input_tokens + plan.input_tokens,
             output_tokens=territory.output_tokens + plan.output_tokens,
         )
-    return mapper.map(brief, count=limits.territory_queries, max_tokens=limits.territory_max_tokens)
+    return mapper.map(
+        brief, count=limits.territory_queries, max_tokens=limits.territory_max_tokens,
+        **({"recency": recency} if recency is not None else {}),
+    )
+
+
+def brief_recency(ledger: Ledger, brief: Brief) -> Recency | None:
+    """The approved brief version's stored recency, or ``None`` (none yet, or
+    no approved brief)."""
+    if brief.approved_version is None:
+        return None
+    row = ledger.brief_recency(brief.topic, brief.approved_version)
+    if row is None:
+        return None
+    return Recency(
+        months=row.months, reason=row.reason or "",
+        samples=tuple(json.loads(row.samples_json or "[]")),
+        source=row.source, stored_from=row.run_id or "",
+    )
+
+
+def _recorded_recency(
+    ledger: Ledger, brief: Brief, used: Recency, stored: Recency | None, run_id: str
+) -> Recency:
+    """The window round one used, labelled with where it came from.
+
+    Stored, it is the brief's. Otherwise, on an approved brief, this run's
+    samples decide it for the version and it is stored; a window no sample
+    voted for (every sample unreadable) is not stored, and the next run
+    decides. Without an approved brief it is this run's own, as before.
+    """
+    if stored is not None:
+        return stored
+    if brief.approved_version is None or not used.samples:
+        return replace(used, source=RECENCY_SAMPLED)
+    ledger.set_brief_recency(
+        brief.topic, brief.approved_version, months=used.months, reason=used.reason,
+        samples=used.samples, source=RECENCY_DECIDED, run_id=run_id or None,
+    )
+    return replace(used, source=RECENCY_DECIDED, stored_from=run_id)
 
 
 def _loop(
@@ -691,10 +749,7 @@ def _assess_library(
     # stage-2 reason for its video (one line, written by a judge that read the
     # whole transcript) and the note's Claims, cut to a per-note share of a
     # fixed budget. When the budget forces a cut it says so, counted (rule 14).
-    entries = [
-        _note_evidence(note, summarise(note).published, ledger, run.topic) for note in notes
-    ]
-    rendered, evidence = library_evidence(entries, budget_tokens=_BASELINE_BUDGET_TOKENS)
+    rendered, evidence = _rendered_evidence(notes, ledger, run.topic)
 
     # The guard the original never had, using the estimator that would have
     # caught this: `estimate_tokens` puts 646 notes at 1,873,146, within 2% of
@@ -825,6 +880,59 @@ def _assess_library(
         len(flips),
     )
     return baseline
+
+
+def _rendered_evidence(
+    notes: Sequence[LoadedNote], ledger: Ledger, topic: str
+) -> tuple[str, "EvidenceSize"]:
+    entries = [_note_evidence(note, summarise(note).published, ledger, topic) for note in notes]
+    return library_evidence(entries, budget_tokens=_BASELINE_BUDGET_TOKENS)
+
+
+def reusable_baseline(
+    config: Config, ledger: Ledger, library: Library, brief: Brief, *, model: str = ""
+) -> LibraryCoverage | None:
+    """The stored baseline a run on this state would reuse, or ``None``. No call."""
+    notes = load_notes(library, ledger)
+    if not notes:
+        return None
+    rendered, _ = _rendered_evidence(notes, ledger, normalise_topic(brief.topic))
+    state = baseline_state(config, brief, notes, rendered, load_prompt(BASELINE_PROMPT).version,
+                           model=model)
+    stored = ledger.stored_baseline(state.key) if state is not None else None
+    if stored is None:
+        return None
+    return replace(LibraryCoverage.from_dict(json.loads(stored.coverage_json)),
+                   reuse=BASELINE_REUSED, reused_from=stored.run_id or "", key_sha256=state.key)
+
+
+def decide_recency(
+    config: Config,
+    ledger: Ledger,
+    library: Library,
+    client: LlmClient,
+    brief: Brief,
+    *,
+    mapper: Mapper | None = None,
+    search_planner: SearchPlanner | None = None,
+) -> tuple[Recency, TerritoryMap]:
+    """Decide and store the approved brief version's recency without a run.
+
+    The samples a first run on the version would make: the configured
+    source's, shown no context and the coverage a run would reuse (a fresh
+    topic's when none is stored for this state), the widest taken. Stored as
+    `decided`; a window no sample voted for is not stored. No search runs.
+    """
+    if brief.approved_version is None:
+        raise ValueError("recency is decided for an approved brief only")
+    territory = round_one_source(
+        config, mapper or Mapper(client), search_planner or SearchPlanner(client), brief,
+        source=config.discover.search_source,
+        baseline=reusable_baseline(
+            config, ledger, library, brief, model=getattr(client, "model", "") or ""
+        ),
+    )
+    return _recorded_recency(ledger, brief, territory.recency, None, ""), territory
 
 
 class BaselineState:

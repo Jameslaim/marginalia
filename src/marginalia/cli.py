@@ -40,6 +40,9 @@ from .config import Config, ConfigError, library_root, load_config
 from .contracts import (
     BASELINE_FRESH,
     BASELINE_REUSED,
+    RECENCY_DECIDED,
+    RECENCY_OWNER,
+    RECENCY_SAMPLED,
     ITEM_STATES,
     ACQUIRE_FAILED_PERMANENT,
     ACQUIRE_FAILED_TRANSIENT,
@@ -84,8 +87,16 @@ from .contracts import (
 )
 from .core.ids import extract_video_id, is_video_id
 from .flow.acquire import acquire, transcript_providers
-from .flow.brief import BriefNotApproved, BriefPendingExists, approve, brief_status, write_pending
-from .flow.discover import discover
+from .flow.brief import (
+    BriefNotApproved,
+    BriefPendingExists,
+    approve,
+    brief_status,
+    run_brief,
+    set_owner_recency,
+    write_pending,
+)
+from .flow.discover import decide_recency, discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
@@ -433,6 +444,9 @@ def _cmd_brief(args: argparse.Namespace) -> int:
     library.ensure()
     quoted = json.dumps(args.topic, ensure_ascii=False)
 
+    if args.recency is not None and not args.approve:
+        return _brief_recency(config, library, args.topic, args.recency)
+
     if args.approve or args.status:
         with Ledger(library.ledger_path) as ledger:
             if args.status:
@@ -448,6 +462,8 @@ def _cmd_brief(args: argparse.Namespace) -> int:
                     print(f"approved: v{version} {sha256[:12]} at {approved_at}")
                 if not status.versions:
                     print("approved: none — every run writes a fresh brief")
+                else:
+                    print(_recency_status(ledger, status.topic, status.versions[-1][0]))
                 return EXIT_OK
             result = approve(ledger, library, args.topic)
         if result.problem:
@@ -462,6 +478,8 @@ def _cmd_brief(args: argparse.Namespace) -> int:
         print(f"approved: brief v{result.version} for {quoted} (sha256 {result.sha256[:12]})")
         print(f"copy:     {result.approved_path}")
         print("every marg discover on this topic now reuses it")
+        if args.recency is not None:
+            return _brief_recency(config, library, args.topic, args.recency)
         return EXIT_OK
 
     try:
@@ -483,6 +501,49 @@ def _cmd_brief(args: argparse.Namespace) -> int:
             print(f"      . {thing}")
     print(f"next:     edit the file, then run: marg brief {quoted} --approve")
     return EXIT_OK
+
+
+def _recency_status(ledger: Ledger, topic: str, version: int) -> str:
+    """The latest approved version's recency, and whether it was decided or owner-set."""
+    row = ledger.brief_recency(topic, version)
+    if row is None:
+        return (f"recency:  v{version} not decided yet — the next run on it decides it "
+                "(the widest of its samples), or set it with --recency")
+    label = f"last {row.months} months" if row.months else "any time"
+    if row.source == RECENCY_OWNER:
+        return f"recency:  v{version} {label} — owner-set at {row.set_at}"
+    samples = "/".join("any time" if m is None else str(m) for m in json.loads(row.samples_json))
+    by = f"run {row.run_id}" if row.run_id else "marg brief --recency decide"
+    return f"recency:  v{version} {label} — decided by {by} from samples {samples}, at {row.set_at}"
+
+
+def _brief_recency(config, library: Library, topic: str, value: str) -> int:
+    """Set the approved brief's recency (`ANY`, `N months`), or decide it now."""
+    with Ledger(library.ledger_path) as ledger:
+        if value.strip().lower() == "decide":
+            approved = ledger.approved_brief(topic)
+            if approved is None:
+                return _error("recency not decided: no approved brief for this topic", EXIT_FAILED)
+            if ledger.brief_recency(approved.topic, approved.version) is not None:
+                print(_recency_status(ledger, approved.topic, approved.version))
+                print("          already set; give --recency ANY or N months to change it")
+                return EXIT_OK
+            brief = run_brief(config, ledger, Judge(LlmClient(config.llm)), topic)
+            client = LlmClient(config.llm)
+            recency, territory = decide_recency(config, ledger, library, client, brief)
+            if not recency.samples:
+                return _error(
+                    f"recency not decided: no sample voted ({territory.problem or 'no reason'}); "
+                    "nothing stored", EXIT_FAILED,
+                )
+            print(_recency_status(ledger, approved.topic, approved.version))
+            print(f"          {client.usage.requests} call(s), no search")
+            return EXIT_OK
+        row, problem = set_owner_recency(ledger, topic, value)
+        if problem:
+            return _error(f"recency not set: {problem}", EXIT_FAILED)
+        print(_recency_status(ledger, row.topic, row.brief_version))
+        return EXIT_OK
 
 
 def _brief_outcome_lines(brief) -> list[str]:
@@ -688,7 +749,9 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
             f"{len(territory.queries)} queries"
         )
         reason = territory.recency.reason or "no reason given"
-        lines.append(f"recency:  {territory.recency.label} — {reason}")
+        lines.append(
+            f"recency:  {territory.recency.label} — {reason}{recency_source(territory.recency)}"
+        )
     if territory.problem:
         # Printed whenever there was a problem, not only when the map was lost:
         # a usable map can still have dropped a query or a recency vote.
@@ -800,7 +863,8 @@ def _search_plan_lines(territory) -> list[str]:
     lines = [
         f"plan:     {len(plan.items)} items, {len(territory.queries)} queries "
         f"(per item {per_item}), prompt {territory.version}",
-        f"recency:  {territory.recency.label} — {territory.recency.reason or 'no reason given'}",
+        f"recency:  {territory.recency.label} — {territory.recency.reason or 'no reason given'}"
+        f"{recency_source(territory.recency)}",
     ]
     languages = "; ".join(
         f"{language.name} ({language.code or 'no code'}, {language.script or 'script not given'})"
@@ -897,6 +961,19 @@ def _baseline_lines(run: DiscoverRun) -> list[str]:
         lines.append("baseline: none — the library holds no notes, so this is planned as a fresh "
                      "topic, as before")
     return lines
+
+
+def recency_source(recency) -> str:
+    """Where a run's window came from, after its reason (empty before it was recorded)."""
+    samples = f" from samples {recency.samples_label}" if recency.samples else ""
+    run = f" by run {recency.stored_from}" if recency.stored_from else ""
+    if recency.source == RECENCY_OWNER:
+        return " [owner-set for this brief version; reused]"
+    if recency.source == RECENCY_DECIDED:
+        return f" [the brief version's, decided{run}{samples}; stored]"
+    if recency.source == RECENCY_SAMPLED:
+        return " [this run's own samples: no approved brief, or no sample voted]"
+    return ""
 
 
 def baseline_reuse_line(baseline) -> str:
@@ -2279,6 +2356,11 @@ def _build_parser() -> argparse.ArgumentParser:
     action.add_argument("--status", action="store_true", help="show the pending and approved briefs")
     brief.add_argument(
         "--force", action="store_true", help="write a new pending brief over an existing one"
+    )
+    brief.add_argument(
+        "--recency", metavar="WINDOW",
+        help="the approved brief's recency: ANY, '24 months' or '2 years' (owner-set), or "
+             "'decide' to decide it now from the samples a run would make",
     )
     brief.set_defaults(handler=_cmd_brief)
 

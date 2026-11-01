@@ -1045,8 +1045,14 @@ class SearchPlanner:
         coverage: Sequence[CoverageItem] = (),
         coverage_source: str = "fresh",
         coverage_note: str = "",
+        recency: Recency | None = None,
     ) -> TerritoryMap:
         """Sample the plan `recency_samples` times; keep the first, widen the window.
+
+        With ``recency`` given — the approved brief's stored window — the plan
+        is one sample and the window is that one: recency belongs to the brief
+        version, not to the run. The sample's own vote is still read, and a
+        context sample that disagreed is counted as overridden.
 
         ``coverage`` is what the library already holds — the run's baseline,
         when it could be used. The plan is shown it, and its budget is spent
@@ -1094,9 +1100,12 @@ class SearchPlanner:
         # saw it vote on recency — the samples the map's arrangement already
         # makes, so a live run pays nothing more; with a single sample, one
         # context-free sample is added.
+        fixed = recency
         rounds = max(1, recency_samples)
         if supplied:
             rounds = max(2, rounds)
+        if fixed is not None:
+            rounds = 1
         context_sample: TerritoryMap | None = None
         for attempt in range(rounds):
             shown = context_block if (attempt == 0 or not supplied) else bare_block
@@ -1129,7 +1138,7 @@ class SearchPlanner:
                 output_tokens=spent.output_tokens,
             )
         plan, owners = first
-        recency = widest_recency(recencies)
+        recency = fixed if fixed is not None else widest_recency(recencies)
         named_cap = max(1, count * 3 // 8)
         queries, owners, named, named_refused = _check_named(
             plan, owners, context or [], coverage, brief.text,

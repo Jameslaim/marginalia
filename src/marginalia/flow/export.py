@@ -207,6 +207,19 @@ def _coverage_mark(item: dict) -> str:
     return "**PARTLY**" if item.get("partly") else "**NO**"
 
 
+def _recency_source(recency: dict) -> str:
+    """Where a stored map's window came from: the brief version's or the run's own."""
+    source = recency.get("source") or ""
+    if source == "owner":
+        return " *(set by the owner for this brief version)*"
+    if source == "decided":
+        by = f" by run `{recency['stored_from']}`" if recency.get("stored_from") else ""
+        return f" *(the brief version's, decided{by} as the widest of its samples)*"
+    if source == "sampled":
+        return " *(this run's own samples)*"
+    return ""
+
+
 def _baseline_section(run: RunRow) -> list[str]:
     """What the library already covered when the run started.
 
@@ -661,7 +674,8 @@ def render_map(run: RunRow, territory: dict[str, Any] | None, web=None) -> str:
             "",
             "**Recency**: "
             + (f"{months} months" if months else "any time")
-            + f" — {recency.get('reason') or 'no reason given'}",
+            + f" — {recency.get('reason') or 'no reason given'}"
+            + _recency_source(recency),
             "",
             "## Queries the " + ("plan" if plan is not None else "map") + " proposed",
             "",

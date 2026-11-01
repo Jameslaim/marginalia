@@ -1025,8 +1025,12 @@ class Mapper:
         count: int = 12,
         max_tokens: int | None = None,
         recency_samples: int = RECENCY_SAMPLES,
+        recency: Recency | None = None,
     ) -> TerritoryMap:
         """Sample the map `recency_samples` times; keep the first, widen the window.
+
+        With ``recency`` given — the approved brief's stored window — the map is
+        one sample and the window is that one, as for the plan.
 
         **The first usable reply is the map.** Its concepts, vocabulary and
         queries are one coherent account of a subject, and mixing three maps'
@@ -1047,7 +1051,8 @@ class Mapper:
         recencies: list[Recency] = []
         spent = Usage()
 
-        for attempt in range(max(1, recency_samples)):
+        fixed = recency
+        for attempt in range(1 if fixed is not None else max(1, recency_samples)):
             sample = self._sample(brief, count=count, max_tokens=max_tokens)
             spent.add(
                 Usage(
@@ -1092,7 +1097,7 @@ class Mapper:
                 sample, input_tokens=spent.input_tokens, output_tokens=spent.output_tokens
             )
 
-        recency = widest_recency(recencies)
+        recency = fixed if fixed is not None else widest_recency(recencies)
         if not recency.agreed:
             log.info(
                 "territory: recency sampled %s — taking the widest (%s)",
