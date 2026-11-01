@@ -775,7 +775,7 @@ def test_a_second_query_for_a_gap_waits_until_every_gap_has_one() -> None:
 def test_the_prompt_states_the_tiers_and_the_exclusion_rule() -> None:
     prompt = load_prompt(SEARCH_PROMPT)
     text = " ".join(prompt.text.split())
-    assert prompt.version in ("4", "5"), "v5 kept every v4 rule"
+    assert int(prompt.version) >= 4, "later versions keep every v4 rule; the text is checked below"
     assert "1. MISSING PART lines" in text and "3. ALSO WANTED gaps" in text
     assert "4. HELD lines, only when gap queries cannot fill the budget" in text
     assert "Never aim a query at anything EXCLUDED names" in text
@@ -923,6 +923,6 @@ def test_held_lines_fill_only_what_gap_queries_cannot() -> None:
 
 def test_the_prompt_ranks_second_gap_queries_above_held_lines() -> None:
     text = " ".join(load_prompt(SEARCH_PROMPT).text.split())
-    assert load_prompt(SEARCH_PROMPT).version == "5"
+    assert int(load_prompt(SEARCH_PROMPT).version) >= 5, "later versions keep v5's rule"
     assert "Once every gap has a query, spend what is left on second queries for the gaps" in text
     assert "before any HELD line" in text

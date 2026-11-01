@@ -730,6 +730,11 @@ class SearchPlan:
     context: str = "absent"
     context_lines: int = 0
     context_dropped: int = 0
+    # The sha256 of the CURRENT CONTEXT block the plan was shown (rule 23), and
+    # the plan's title phrases withheld from the judges' word list because
+    # they repeat a context line: web text never reaches stage 1 or stage 2.
+    context_sha256: str = ""
+    context_terms_withheld: int = 0
     # What the plan was told the library holds. `coverage` is `baseline` (the
     # run's baseline was used), `fresh` (nothing is held: an empty library or a
     # dry run) or `unusable` (the baseline failed or was degraded, so the plan
@@ -782,6 +787,8 @@ class SearchPlan:
             "context": self.context,
             "context_lines": self.context_lines,
             "context_dropped": self.context_dropped,
+            "context_sha256": self.context_sha256,
+            "context_terms_withheld": self.context_terms_withheld,
             "coverage": self.coverage,
             "coverage_note": self.coverage_note,
             "coverage_lines": self.coverage_lines,

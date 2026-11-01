@@ -68,6 +68,7 @@ from ..brain.judge import (
 )
 from ..brain.planner import PLAN_PROMPT, Planner, apply_revisions
 from ..brain.search_plan import SearchPlanner
+from .web_context import context_lines, gather_context
 from ..brain.territory import Mapper, validate, waiver_applies
 from ..config import Config
 from ..contracts import (
@@ -84,6 +85,7 @@ from ..contracts import (
     ORIGIN_BRIEF,
     ORIGIN_THREAD,
     SOURCE_PLAN,
+    WEB_CONTEXT_OFF,
     ACQUIRE_NO_CAPTIONS,
     ACQUIRE_TRANSLATED_ONLY,
     OUTCOME_JUDGED,
@@ -203,6 +205,8 @@ def discover(
     provider: TranscriptProvider | None = None,
     search_planner: SearchPlanner | None = None,
     search_source: str | None = None,
+    web_context: bool | None = None,
+    web_search: object | None = None,
 ) -> DiscoverRun:
     """Run the loop.
 
@@ -290,10 +294,26 @@ def discover(
         # follows, applied to the next thing that costs a request. Inside the
         # `try`, so a refusal here is recorded as one rather than leaving the
         # run unfinished as though the process had died.
+        source = search_source or config.discover.search_source
+        # Step 4: the start-of-run web lookup, after the baseline (its queries
+        # are aimed by the same coverage the plan is) and before the plan,
+        # whose CURRENT CONTEXT slot is the only place its lines go. Only for
+        # the plan: the map has no slot. Never a reason to stop the run.
+        enabled = (web_context if web_context is not None else config.discover.web_context)
+        run.web_context = gather_context(
+            config, client, brief, plan_coverage(run.baseline)[0],
+            enabled=bool(enabled) and source == SOURCE_PLAN, provider=web_search,
+        )
+        if run.web_context.status != WEB_CONTEXT_OFF:
+            ledger.save_web_context(run_id, run.web_context.as_dict())
+        elif enabled and source != SOURCE_PLAN:
+            run.web_context.reason = "the map has no context slot"
+
         run.territory = round_one_source(
             config, mapper, search_planner, brief,
-            source=search_source or config.discover.search_source,
+            source=source,
             baseline=run.baseline,
+            context=context_lines(run.web_context),
         )
         ledger.save_territory(run_id, run.territory.as_json(), run.territory.version)
         if run.territory.rejected:

@@ -24,6 +24,7 @@ that does not already exist.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from dataclasses import dataclass, fields
@@ -70,6 +71,7 @@ __all__ = [
     "PlanRow",
     "BriefRow",
     "RepairRow",
+    "WebContextRow",
     "STALE_TRANSCRIPT_SUFFIX",
     "skip_reason",
     "normalise_topic",
@@ -276,6 +278,25 @@ CREATE TABLE IF NOT EXISTS transcript_repairs (
   new_end_ms   INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_transcript_repairs_video ON transcript_repairs(video_id);
+
+-- Step 4: what the start-of-run web lookup searched and what the plan was
+-- shown, one row per run that ran it. The queries with their aims and every
+-- result's URL, the digested lines, what was dropped and why, the cost, and
+-- the sha256 of the block the plan saw (rule 23). Never read by a judge.
+CREATE TABLE IF NOT EXISTS web_contexts (
+  run_id          TEXT PRIMARY KEY REFERENCES runs(run_id),
+  status          TEXT NOT NULL,     -- supplied | empty | failed
+  reason          TEXT,
+  provider        TEXT,
+  lookups_json    TEXT NOT NULL,     -- [{query, aim, error, results: [{title, url, domain}]}]
+  lines_json      TEXT NOT NULL,     -- [{aim, domain, text}]
+  dropped_json    TEXT NOT NULL,
+  searches_billed INTEGER NOT NULL DEFAULT 0,
+  search_cost_usd REAL NOT NULL DEFAULT 0,
+  model_requests  INTEGER NOT NULL DEFAULT 0,
+  sha256          TEXT,
+  made_at         TEXT NOT NULL
+);
 """
 
 # Columns added after a table shipped, which can be introduced in place.
@@ -579,6 +600,28 @@ class QueryRow:
 
 
 @dataclass(frozen=True)
+class WebContextRow:
+    """What one run's web lookup searched and what its plan was shown (step 4)."""
+
+    run_id: str
+    status: str
+    lookups_json: str
+    lines_json: str
+    dropped_json: str
+    made_at: str
+    reason: str | None = None
+    provider: str | None = None
+    searches_billed: int = 0
+    search_cost_usd: float = 0.0
+    model_requests: int = 0
+    sha256: str | None = None
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> "WebContextRow":
+        return cls(**_values(cls, row))
+
+
+@dataclass(frozen=True)
 class RepairRow:
     """One repair of a stored transcript or its language, under rule 3's one
     exception. ``action`` is ``replaced`` or ``language_cleaned``."""
@@ -662,6 +705,7 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "plans": frozenset(field.name for field in fields(PlanRow)),
     "briefs": frozenset(field.name for field in fields(BriefRow)),
     "transcript_repairs": frozenset(field.name for field in fields(RepairRow)),
+    "web_contexts": frozenset(field.name for field in fields(WebContextRow)),
 }
 
 
@@ -1773,6 +1817,35 @@ class Ledger:
             )
         log.info("brief v%d approved for %r", version, key)
         return BriefRow(key, version, sha256, brief, prompt_version, approved_at)
+
+    def save_web_context(self, run_id: str, context: dict) -> None:
+        """Store what the run's web lookup did (`WebContext.as_dict()`), once."""
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO web_contexts (run_id, status, reason, provider, lookups_json, "
+                "lines_json, dropped_json, searches_billed, search_cost_usd, model_requests, sha256, "
+                "made_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id, context["status"], context.get("reason") or None,
+                    context.get("provider") or None,
+                    json.dumps(context.get("lookups") or [], ensure_ascii=False),
+                    json.dumps(context.get("lines") or [], ensure_ascii=False),
+                    json.dumps({"dropped": context.get("dropped") or {},
+                                "queries_refused": context.get("queries_refused") or {}},
+                               ensure_ascii=False),
+                    int(context.get("searches_billed") or 0),
+                    float(context.get("search_cost_usd") or 0.0),
+                    int(context.get("model_requests") or 0),
+                    context.get("sha256") or None, _utcnow(),
+                ),
+            )
+        log.info("run %s stored its web context (%s)", run_id, context["status"])
+
+    def web_context_for(self, run_id: str) -> WebContextRow | None:
+        if "web_contexts" in self._absent:
+            return None
+        row = self._conn.execute("SELECT * FROM web_contexts WHERE run_id = ?", (run_id,)).fetchone()
+        return WebContextRow.from_sqlite(row) if row is not None else None
 
     def record_repair(self, row: RepairRow) -> RepairRow:
         """Add one repair row. Additive: an earlier row is never changed."""

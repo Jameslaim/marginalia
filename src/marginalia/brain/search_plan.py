@@ -23,6 +23,7 @@ the run's territory reads it with no second path (rule 25).
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import unicodedata
@@ -168,6 +169,24 @@ def render_coverage(
             seen.add(key)
         out.append(f"- {state.upper()} {kind}: {line}{repeat}")
     return "\n".join(out)
+
+
+def _without_context_words(
+    vocabulary: Sequence[str], context: Sequence[str] | None
+) -> tuple[list[str], int]:
+    """The plan's title phrases, less any that repeat a context line.
+
+    The vocabulary is what stage 1 and stage 2 are shown as the subject's
+    words. The context is web text, used only to plan: a phrase the plan
+    copied from it (every content word of the phrase in one context line) is
+    kept out of the judges' list and counted. The plan's queries keep it.
+    """
+    if not context:
+        return list(vocabulary), 0
+    lines = [aim_words(line) for line in context]
+    kept = [term for term in vocabulary
+            if not (aim_words(term) and any(aim_words(term) <= words for words in lines))]
+    return kept, len(vocabulary) - len(kept)
 
 
 def render_context(lines: Sequence[str] | None) -> tuple[str, SearchPlan]:
@@ -948,6 +967,10 @@ class SearchPlanner:
             "context": context_record.context,
             "context_lines": context_record.context_lines,
             "context_dropped": context_record.context_dropped,
+            "context_sha256": (
+                hashlib.sha256(context_block.encode("utf-8")).hexdigest()
+                if context_record.context == "supplied" else ""
+            ),
             "coverage": coverage_source,
             "coverage_note": coverage_note,
         }
@@ -990,6 +1013,8 @@ class SearchPlanner:
             coverage_kinds(coverage, brief.text) if coverage else (),
         )
         settled = replace(settled, **record)
+        vocabulary, withheld = _without_context_words(plan.vocabulary, context)
+        settled = replace(settled, context_terms_withheld=withheld)
         others = [
             f"sample {number}: {sample.problem if sample.queries else 'unusable'}"
             for number, (sample, _) in enumerate(samples, start=1)
@@ -999,6 +1024,7 @@ class SearchPlanner:
             plan,
             problem="; ".join(part for part in (plan.problem, *others) if part),
             recency=recency,
+            vocabulary=vocabulary,
             queries=kept,
             rejected=[*plan.rejected, *rejections],
             plan=settled,

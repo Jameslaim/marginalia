@@ -395,6 +395,7 @@ def _cmd_discover(args: argparse.Namespace) -> int:
             max_requests=args.max_requests,
             dry_run=args.dry_run,
             search_source=args.search_source,
+            web_context=None if args.web_context is None else args.web_context == "on",
         )
 
     if args.json:
@@ -535,6 +536,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
     lines = [_brief_line(run)]
     lines.extend(_brief_outcome_lines(run.brief))
     lines.extend(_territory_lines(run))
+    lines.extend(_web_context_lines(run))
     lines.extend(_baseline_lines(run))
     for report in run.rounds:
         source = "queries from threads" if report.from_threads else "queries"
@@ -757,6 +759,34 @@ def _territory_lines(run: DiscoverRun) -> list[str]:
     return lines
 
 
+def _web_context_lines(run: DiscoverRun) -> list[str]:
+    """The start-of-run web lookup's line (rule 14): lookups, results, lines
+    kept and dropped with reasons, domains, cost — or why there was none."""
+    context = run.web_context
+    if context.status == "off":
+        # Switched off, nothing ran: no line, as a run with no map prints no map
+        # line (`--json` still says `off`). Asked for on a map run, it says why.
+        return [f"context:  off ({context.reason})"] if context.reason and \
+            context.reason != "web_context is off" else []
+    dropped = ", ".join(f"{n} {why}" for why, n in sorted(context.dropped.items()))
+    refused = ", ".join(f"{n} {why}" for why, n in sorted(context.queries_refused.items()))
+    errors = sum(1 for lookup in context.lookups if lookup.error)
+    lines = [
+        f"context:  {context.status} — {len(context.lookups)} lookup(s) via {context.provider or '?'}, "
+        f"{context.results} result(s), {len(context.lines)} line(s) kept, "
+        f"{sum(context.dropped.values())} dropped{' (' + dropped + ')' if dropped else ''}; "
+        f"{len(context.domains)} domain(s); {context.searches_billed} billed search(es) "
+        f"${context.search_cost_usd:.4f} + {context.model_requests} model call(s)",
+    ]
+    if refused:
+        lines.append(f"          queries refused: {refused}")
+    if errors:
+        lines.append(f"          {errors} lookup(s) failed")
+    if context.reason:
+        lines.append(f"          {context.reason}")
+    return lines
+
+
 def _search_plan_lines(territory) -> list[str]:
     """The search plan's line: items, queries per item, languages, and the
     brief's PARTS no query reaches — each counter printed at zero too, so it
@@ -942,6 +972,9 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         # Which source wrote round one's planned queries, and why the map ran
         # when a plan was asked for. The plan itself is under `territory.plan`.
         "search_source": run.territory.source,
+        # Step 4: what the start-of-run web lookup searched and what the plan
+        # was shown. Stored on the ledger too (`web_contexts`).
+        "web_context": run.web_context.as_dict(),
         "search_fallback": run.territory.fallback,
         "territory_version": run.territory.label,
         "territory_revision": run.territory.revision,
@@ -2188,6 +2221,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="what writes round one's planned queries: the search plan or the map "
         "(default: [discover] search_source)",
+    )
+    disco.add_argument(
+        "--web-context",
+        choices=("on", "off"),
+        default=None,
+        help="a few web searches before the plan, digested into its CURRENT CONTEXT "
+        "(default: [discover] web_context)",
     )
     disco.add_argument("--json", action="store_true", help="emit structured output")
     disco.set_defaults(handler=_cmd_discover)

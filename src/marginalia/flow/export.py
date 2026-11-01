@@ -67,13 +67,14 @@ def export_run(config: Config, ledger: Ledger, library: Library, run_id: str) ->
     decisions = ledger.decisions_for_run(run_id)
     plans = ledger.plans_for_run(run_id)
     territory = _territory(run)
+    web = ledger.web_context_for(run_id)
 
     written = [
         library.write_export(
-            run_id, "report.md", render_report(config, run, queries, decisions, plans)
+            run_id, "report.md", render_report(config, run, queries, decisions, plans, web=web)
         ),
         library.write_export(run_id, "brief.md", _render_brief(run)),
-        library.write_export(run_id, "territory.md", render_map(run, territory)),
+        library.write_export(run_id, "territory.md", render_map(run, territory, web)),
         library.write_export(run_id, "queries.tsv", _render_queries(queries)),
         library.write_export(run_id, "decisions.tsv", _render_decisions(decisions)),
     ]
@@ -97,6 +98,8 @@ def render_report(
     queries: Sequence[QueryRow],
     decisions: Sequence[DecisionRow],
     plans: Sequence[PlanRow] = (),
+    *,
+    web=None,
 ) -> str:
     """The run in prose and tables. Pure: everything it needs is an argument.
 
@@ -121,6 +124,7 @@ def render_report(
         f"| brief prompt | v{run.brief_version or MISSING} |",
         f"| territory map | {run.territory_version or 'none built'} |",
         f"| round-one queries from | {_round_one_source(run)} |",
+        f"| web context | {_web_summary(web)} |",
         f"| candidates seen | {run.candidates_seen} |",
         f"| videos stored | {run.videos_stored} |",
         f"| model requests | {run.requests_made} |",
@@ -549,7 +553,45 @@ def _brief_made(brief_outcome: str | None) -> list[str]:
     return ["", *lines] if lines else []
 
 
-def render_map(run: RunRow, territory: dict[str, Any] | None) -> str:
+def _web_summary(web) -> str:
+    """The start-of-run web lookup on one line, from its ledger row."""
+    if web is None:
+        return "off"
+    lines = json.loads(web.lines_json or "[]")
+    lookups = json.loads(web.lookups_json or "[]")
+    return (f"{web.status}: {len(lines)} line(s) from {len(lookups)} lookup(s), "
+            f"{web.searches_billed} billed (${web.search_cost_usd:.4f})")
+
+
+def _render_web(web) -> list[str]:
+    """What the plan's CURRENT CONTEXT was given, and what was searched for it."""
+    if web is None:
+        return []
+    lookups = json.loads(web.lookups_json or "[]")
+    lines = json.loads(web.lines_json or "[]")
+    dropped = json.loads(web.dropped_json or "{}")
+    out = ["## Current context (the start-of-run web lookup)", "",
+           f"Status **{web.status}**{' — ' + web.reason if web.reason else ''}; provider "
+           f"{web.provider or MISSING}; {web.searches_billed} billed search(es), "
+           f"${web.search_cost_usd:.4f}; {web.model_requests} model call(s); block sha256 "
+           f"`{web.sha256 or MISSING}`.", "", "### Lookups", ""]
+    for lookup in lookups:
+        out.append(f"- [{lookup.get('aim')}] “{lookup.get('query')}” — "
+                   f"{len(lookup.get('results') or [])} result(s)"
+                   + (f", failed: {lookup['error']}" if lookup.get("error") else ""))
+        out.extend(f"  - {result.get('url')}" for result in lookup.get("results") or [])
+    out.extend(["", "### Lines the plan was shown (untrusted web text, used only to plan)", ""])
+    out.extend(f"- [{line.get('aim')}] ({line.get('domain')}) {line.get('text')}" for line in lines)
+    if not lines:
+        out.append("- none")
+    out.extend(["", "### Dropped", ""])
+    for kind in ("dropped", "queries_refused"):
+        out.extend(f"- {kind.replace('_', ' ')}: {n} {why}" for why, n in (dropped.get(kind) or {}).items())
+    out.append("")
+    return out
+
+
+def render_map(run: RunRow, territory: dict[str, Any] | None, web=None) -> str:
     """The map, its revisions, and the diff each revision made.
 
     A revision that says only "removed `caching`" is a change you cannot judge.
@@ -574,6 +616,7 @@ def render_map(run: RunRow, territory: dict[str, Any] | None) -> str:
                       "The map below wrote round one's queries.", ""])
     if plan is not None:
         lines.extend(_render_plan(plan))
+    lines.extend(_render_web(web))
     lines.extend(
         [
             f"Prompt v{territory.get('version') or MISSING}, revision {revision}.",
