@@ -88,7 +88,7 @@ _FALLBACK_TASK = "map_territory"
 
 _LABEL_RE = re.compile(
     r"^\s*\**\s*(RECENCY|MAIN[- ]LANGUAGE|LANGUAGE[- ]ITEMS?|BROAD[- ]ITEM|LANGUAGE|ITEM|INTENT"
-    r"|TITLED|COVERS|SKIP(?:PED)?|QUERY|FILTERS|VARIANT[- ]OF)"
+    r"|TITLED|COVERS|SKIP(?:PED)?|QUERY|FILTERS|FROM|VARIANT[- ]OF)"
     r"\s*\**\s*[:\-]\s*(.*)$",
     re.IGNORECASE,
 )
@@ -416,7 +416,10 @@ def parse_plan(
             PlannedQuery(
                 text=query["QUERY"],
                 origin=ORIGIN_PLAN,
-                origin_detail=tidy(f"aim: {current['item']}", limit=_MAX_REASON),
+                # A FROM line names the context line a named query came from;
+                # carried raw here and checked, then rewritten, in `plan`.
+                origin_detail=tidy(f"aim: {current['item']}", limit=_MAX_REASON)
+                + (f" | from: {tidy(query['FROM'], limit=40)}" if query.get("FROM") else ""),
                 filters=filters,
                 variant_of=tidy(query.get("VARIANT-OF", ""), limit=_MAX_QUERY_WORDS * 20),
                 reasons=reasons,
@@ -474,7 +477,7 @@ def parse_plan(
                     problems.append(f"query too long to be typed by a person: {query!r}")
                 continue
             pending = {"QUERY": query}
-        elif label in ("FILTERS", "VARIANT-OF"):
+        elif label in ("FILTERS", "VARIANT-OF", "FROM"):
             if pending is not None:
                 pending.setdefault(label, body)
         elif label == "INTENT" and current is not None and not current["intent"]:
@@ -915,6 +918,106 @@ def _settle(
     return settled, run
 
 
+_CONTEXT_LINE_RE = re.compile(r"^\[(?P<tag>[^\]]+)\]\s*\((?P<domain>[^)]*)\)\s*(?P<text>.*)$")
+_FROM_RE = re.compile(r"\bC(?P<n>\d+)\b\s*(?P<kind>case|term)?", re.IGNORECASE)
+
+
+def _check_named(
+    plan: TerritoryMap,
+    owners: Sequence[int],
+    context: Sequence[str],
+    coverage: Sequence[CoverageItem],
+    brief_text: str,
+    *,
+    cap: int,
+    supplied: bool,
+) -> tuple[list[PlannedQuery], list[int], list[dict], dict]:
+    """Queries that name a case or a term from a context line, checked.
+
+    Measured: a context named real people and pages whose cases fit a missing
+    gap, and terms people really title videos with, and the plan only
+    paraphrased — while those gaps had found no keeper by wording alone. So a
+    plan may spend a few queries on a named case or a creators' term, each
+    citing its source line (`FROM: C<n> case|term`). The code checks the line
+    exists, is tagged to a gap — never GENERAL or MARKET — and to the same gap
+    as the query's item, and that the query reads as a search, not an
+    instruction. At most `cap` run, so most of the budget stays with queries
+    written from the brief. A refused one is dropped and counted (rule 30).
+    """
+    from .web_context import gaps_for, reads_as_instruction  # the lookup's own labels
+
+    lines = []
+    for raw in context:
+        match = _CONTEXT_LINE_RE.match(raw.strip())
+        lines.append(match.groupdict() if match else None)
+    gaps = {gap.label: gap for gap in gaps_for(brief_text, coverage)}
+    kinds = coverage_kinds(coverage, brief_text) if coverage else []
+
+    def gap_keys_of_item(item: PlanItem) -> frozenset:
+        if not coverage:
+            return frozenset({f"part {item.part}"})
+        for tag in (item.covers, item.item):
+            if tag:
+                _, index, line = _resolve_line(tag, coverage)
+                if index >= 0:
+                    return _served(tag, line, coverage[index])
+        return frozenset()
+
+    def gap_keys_of_label(label: str) -> frozenset:
+        gap = gaps.get(label)
+        if gap is None:
+            return frozenset()
+        if not coverage:
+            return frozenset({f"part {int(label[1:])}"})
+        _, index, line = _resolve_line(gap.line, coverage)
+        return frozenset({gap_key(line, coverage[index])}) if index >= 0 else frozenset()
+
+    kept_queries: list[PlannedQuery] = []
+    kept_owners: list[int] = []
+    named: list[dict] = []
+    refused: dict[str, int] = {}
+
+    def refuse(reason: str) -> None:
+        refused[reason] = refused.get(reason, 0) + 1
+
+    for query, owner in zip(plan.queries, owners):
+        detail, _, source = query.origin_detail.partition(" | from: ")
+        if not source:
+            kept_queries.append(query)
+            kept_owners.append(owner)
+            continue
+        match = _FROM_RE.search(source)
+        number = int(match.group("n")) if match else 0
+        kind = (match.group("kind") or "case").lower() if match else ""
+        entry = lines[number - 1] if supplied and 1 <= number <= len(lines) else None
+        if not supplied:
+            refuse("no context was shown to this plan")
+            continue
+        if entry is None:
+            refuse("names a context line that does not exist")
+            continue
+        tag = entry["tag"].strip().upper()
+        if not re.fullmatch(r"G\d+", tag):
+            refuse("from a GENERAL or MARKET line")
+            continue
+        item = plan.plan.items[owner] if plan.plan else None
+        if item is None or not (gap_keys_of_label(tag) & gap_keys_of_item(item)):
+            refuse("from a line tagged to another gap")
+            continue
+        if reads_as_instruction(query.text):
+            refuse("reads as an instruction")
+            continue
+        if len(named) >= cap:
+            refuse("over the cap")
+            continue
+        named.append({"query": query.text, "kind": kind, "line": f"C{number}", "gap": tag,
+                      "domain": entry["domain"], "source": entry["text"]})
+        kept_queries.append(replace(query, origin_detail=tidy(
+            f"{detail} | context C{number} {kind}", limit=_MAX_REASON + 40)))
+        kept_owners.append(owner)
+    return kept_queries, kept_owners, named, refused
+
+
 # -- the planner of searches --------------------------------------------------
 
 
@@ -961,7 +1064,11 @@ class SearchPlanner:
         the map instead (rule 30): never nothing.
         """
         parts = plan_parts(brief.text)
-        context_block, context_record = render_context(context)
+        # Context lines reach the plan numbered, so a named query can cite one.
+        numbered = [f"C{n} {line}" for n, line in enumerate(context or [], start=1)]
+        context_block, context_record = render_context(numbered if context else context)
+        bare_block, _ = render_context(None)
+        supplied = context_record.context == "supplied"
         coverage_block = render_coverage(coverage, coverage_note, brief.text)
         record = {
             "context": context_record.context,
@@ -978,11 +1085,27 @@ class SearchPlanner:
         recencies: list[Recency] = []
         spent = Usage()
 
-        for attempt in range(max(1, recency_samples)):
+        # **Recency is the brief's alone.** Measured: shown a context, both
+        # topics' plans moved from ANY to 24 months, on a topic whose brief asks
+        # for earnings tracked across program changes, where the plan without
+        # it had chosen ANY for that reason. The context says how a subject is
+        # named today, not how old its useful videos are. So with a context the
+        # first sample sees it and gives the plan, and only samples that never
+        # saw it vote on recency — the samples the map's arrangement already
+        # makes, so a live run pays nothing more; with a single sample, one
+        # context-free sample is added.
+        rounds = max(1, recency_samples)
+        if supplied:
+            rounds = max(2, rounds)
+        context_sample: TerritoryMap | None = None
+        for attempt in range(rounds):
+            shown = context_block if (attempt == 0 or not supplied) else bare_block
             sample, owners = self._sample(
-                brief, parts, context_block, coverage_block, count=count, max_tokens=max_tokens,
+                brief, parts, shown, coverage_block, count=count, max_tokens=max_tokens,
                 coverage=coverage,
             )
+            if supplied and attempt == 0:
+                context_sample = sample
             spent.add(
                 Usage(requests=1, input_tokens=sample.input_tokens, output_tokens=sample.output_tokens)
             )
@@ -993,7 +1116,7 @@ class SearchPlanner:
                     attempt + 1, recency_samples, sample.problem,
                 )
                 continue
-            if sample.recency_readable:
+            if sample.recency_readable and not (supplied and attempt == 0):
                 recencies.append(sample.recency)
 
         first = next(((s, o) for s, o in samples if s.queries), None)
@@ -1007,6 +1130,12 @@ class SearchPlanner:
             )
         plan, owners = first
         recency = widest_recency(recencies)
+        named_cap = max(1, count * 3 // 8)
+        queries, owners, named, named_refused = _check_named(
+            plan, owners, context or [], coverage, brief.text,
+            cap=named_cap, supplied=supplied and plan is context_sample,
+        )
+        plan = replace(plan, queries=queries)
         kept, rejections = validate(plan.queries, recency=recency, topic=brief.topic)
         settled, kept = _settle(
             plan, owners, kept, parts, coverage, count,
@@ -1014,11 +1143,29 @@ class SearchPlanner:
         )
         settled = replace(settled, **record)
         vocabulary, withheld = _without_context_words(plan.vocabulary, context)
-        settled = replace(settled, context_terms_withheld=withheld)
+        overridden = int(bool(
+            context_sample is not None and context_sample.recency_readable
+            and context_sample.recency.months != recency.months
+        ))
+        if overridden:
+            log.info("search plan: the context sample's recency (%s) was not used; the brief's is %s",
+                     context_sample.recency.label, recency.label)
+        run_texts = {query.text for query in kept}
+        settled = replace(
+            settled, context_terms_withheld=withheld,
+            context_recency=context_sample.recency.label if context_sample is not None else "",
+            recency_overridden=overridden,
+            named_queries=tuple(entry for entry in named if entry["query"] in run_texts),
+            named_refused={**named_refused, **(
+                {"not run (budget or duplicate)": sum(1 for e in named if e["query"] not in run_texts)}
+                if any(e["query"] not in run_texts for e in named) else {}
+            )},
+            named_cap=named_cap,
+        )
         others = [
             f"sample {number}: {sample.problem if sample.queries else 'unusable'}"
             for number, (sample, _) in enumerate(samples, start=1)
-            if sample is not plan and (sample.problem or not sample.queries)
+            if sample is not first[0] and (sample.problem or not sample.queries)
         ]
         return replace(
             plan,

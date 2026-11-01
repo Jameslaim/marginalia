@@ -139,7 +139,8 @@ def test_queries_are_checked_ordered_and_capped() -> None:
         "QUERY: MARKET Examplish | composting words in that market\n"
         "QUERY: G4 | worm bin bedding names\n"
     )
-    kept, refused = parse_queries(reply, GAPS, count=4)
+    named = BRIEF_TEXT + "\n- videos in Examplish as well\n"
+    kept, refused = parse_queries(reply, GAPS, count=4, brief_text=named)
     assert [(q.aim, q.text) for q in kept] == [
         ("G1", "worm bin bedding names"),
         ("G3", "what gardeners call a pile that will not heat"),
@@ -148,7 +149,7 @@ def test_queries_are_checked_ordered_and_capped() -> None:
     ]
     assert refused == {"a second GENERAL query": 1, "aimed at nothing in the coverage": 1,
                        "reads as an instruction": 1, "a duplicate": 1}
-    kept, refused = parse_queries(reply, GAPS, count=2)
+    kept, refused = parse_queries(reply, GAPS, count=2, brief_text=named)
     assert len(kept) == 2 and refused["over the cap"] == 2
 
 
@@ -308,3 +309,11 @@ def test_a_refusal_of_the_model_account_is_raised() -> None:
     with pytest.raises(LlmConfigError):
         gather_context(_config(), FakeClient(QUERIES, DIGEST, raises=LlmConfigError("402")),
                        BRIEF, COVERAGE, enabled=True, provider=FakeSearch([]))
+
+
+def test_a_market_the_brief_does_not_name_is_refused() -> None:
+    """Measured: a MARKET query was issued for a brief that names no market."""
+    reply = "QUERY: G1 | worm bin bedding names\nQUERY: MARKET English | composting terminology\n"
+    kept, refused = parse_queries(reply, GAPS, count=6, brief_text=BRIEF_TEXT)
+    assert [q.aim for q in kept] == ["G1"]
+    assert refused == {"a market the brief does not name": 1}

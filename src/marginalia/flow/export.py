@@ -755,6 +755,13 @@ def _render_plan(plan: dict[str, Any]) -> list[str]:
             ) or "none"),
             f"- distinct gaps: {plan.get('distinct_gaps', 0)}; duplicates avoided: "
             f"{plan.get('duplicates_avoided', 0)}",
+            f"- queries naming a case or term from the context: {len(plan.get('named_queries') or [])} "
+            f"(cap {plan.get('named_cap', 0)})",
+            *(f"  - {q.get('line')} [{q.get('gap')}] {q.get('kind')}: “{q.get('query')}” from "
+              f"({q.get('domain')}) {q.get('source')}" for q in plan.get("named_queries") or []),
+            *(f"  - refused: {n} {why}" for why, n in (plan.get("named_refused") or {}).items()),
+            f"- recency: the context sample said {plan.get('context_recency') or 'nothing (no context)'}; "
+            f"overridden {plan.get('recency_overridden', 0)}",
             f"- gaps skipped as excluded: {len(plan.get('excluded_gaps') or [])}",
             *(f"  - {gap}" for gap in plan.get("excluded_gaps") or []),
             f"- coverage gaps with no query: {len(plan.get('unserved_gaps') or [])}",

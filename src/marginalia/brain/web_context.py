@@ -30,7 +30,7 @@ from typing import Sequence
 
 from ..contracts import ContextLine, CoverageItem, WebLookup
 from ..llm import LlmClient, LlmConfigError, Prompt, load_prompt, safe_reason
-from .judge import brief_items
+from .judge import aim_words, brief_items
 from .search_plan import TIERS, _gap_lines, coverage_kinds, gap_key, plan_parts
 from .territory import tidy
 
@@ -145,14 +145,19 @@ def _aim(raw: str, labels: set[str]) -> str:
     return ""
 
 
-def parse_queries(text: str, gaps: Sequence[Gap], *, count: int) -> tuple[list[LookupQuery], dict]:
+def parse_queries(
+    text: str, gaps: Sequence[Gap], *, count: int, brief_text: str = ""
+) -> tuple[list[LookupQuery], dict]:
     """The reply's queries, checked: ``(kept, refused by reason)``.
 
     Kept in the gaps' order — a query on G3 never runs before one on G1 — with
     GENERAL and MARKET queries after the gap queries, GENERAL at most once,
-    duplicates dropped and the count capped. A refused query is counted, not
-    silently lost (rule 14).
+    duplicates dropped and the count capped. A MARKET query is kept only for a
+    language or market the brief itself names — every word of the market's
+    name in the brief; measured, one was issued for a brief naming none. A
+    refused query is counted, not silently lost (rule 14).
     """
+    brief_words = aim_words(brief_text)
     labels = {gap.label for gap in gaps}
     order = {gap.label: n for n, gap in enumerate(gaps)}
     refused: dict[str, int] = {}
@@ -175,6 +180,11 @@ def parse_queries(text: str, gaps: Sequence[Gap], *, count: int) -> tuple[list[L
         if reads_as_instruction(query):
             refuse("reads as an instruction")
             continue
+        if aim.startswith(MARKET):
+            market = aim_words(aim[len(MARKET):])
+            if not market or not market <= brief_words:
+                refuse("a market the brief does not name")
+                continue
         if aim == GENERAL:
             general += 1
             if general > 1:
@@ -304,7 +314,7 @@ class ContextWriter:
         )
         if text is None:
             return None, "the query call failed or was cut off"
-        return parse_queries(text, gaps, count=count)
+        return parse_queries(text, gaps, count=count, brief_text=brief_text)
 
     def digest(self, brief_text: str, gaps: Sequence[Gap], lookups: Sequence[WebLookup]):
         """``(lines, dropped)``, or ``(None, reason)`` when the call failed."""

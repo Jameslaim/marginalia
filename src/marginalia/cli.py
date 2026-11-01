@@ -815,6 +815,20 @@ def _search_plan_lines(territory) -> list[str]:
         f"{plan.duplicates_avoided} duplicate(s) avoided, "
         f"{plan.second_gap_queries} second gap quer(ies))"
     )
+    named = plan.named_queries
+    kinds = ", ".join(f"{sum(1 for q in named if q['kind'] == k)} {k}" for k in ("case", "term"))
+    refused_named = ", ".join(f"{n} {why}" for why, n in sorted(plan.named_refused.items()))
+    lines.append(
+        f"          named from context: {len(named)} ({kinds}; cap {plan.named_cap})"
+        + (f"; refused: {refused_named}" if refused_named else "")
+    )
+    for q in named:
+        lines.append(f"            {q['line']} [{q['gap']}] {q['kind']}: {q['query']!r} <- ({q['domain']})")
+    if plan.context == "supplied":
+        lines.append(
+            f"          recency: the brief's {territory.recency.label}; the context sample said "
+            f"{plan.context_recency or '?'}{' (overridden)' if plan.recency_overridden else ''}"
+        )
     lines.append(f"          skipped as excluded: {len(plan.excluded_gaps)}")
     for skipped in plan.excluded_gaps[:5]:
         line, _, reason = skipped.partition(" | ")

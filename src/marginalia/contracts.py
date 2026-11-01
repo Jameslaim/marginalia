@@ -735,6 +735,17 @@ class SearchPlan:
     # they repeat a context line: web text never reaches stage 1 or stage 2.
     context_sha256: str = ""
     context_terms_withheld: int = 0
+    # Recency is the brief's alone: with a context, only samples that never saw
+    # it vote. `context_recency` is what the sample shown the context said, and
+    # `recency_overridden` is 1 when that differed from the window used.
+    context_recency: str = ""
+    recency_overridden: int = 0
+    # Queries naming a case or a creators' term from a context line tagged to
+    # the same gap: each with its kind and source line. Refused by reason;
+    # `named_cap` is the most a plan may run.
+    named_queries: tuple = ()
+    named_refused: dict = field(default_factory=dict)
+    named_cap: int = 0
     # What the plan was told the library holds. `coverage` is `baseline` (the
     # run's baseline was used), `fresh` (nothing is held: an empty library or a
     # dry run) or `unusable` (the baseline failed or was degraded, so the plan
@@ -789,6 +800,11 @@ class SearchPlan:
             "context_dropped": self.context_dropped,
             "context_sha256": self.context_sha256,
             "context_terms_withheld": self.context_terms_withheld,
+            "context_recency": self.context_recency,
+            "recency_overridden": self.recency_overridden,
+            "named_queries": [dict(q) for q in self.named_queries],
+            "named_refused": dict(self.named_refused),
+            "named_cap": self.named_cap,
             "coverage": self.coverage,
             "coverage_note": self.coverage_note,
             "coverage_lines": self.coverage_lines,

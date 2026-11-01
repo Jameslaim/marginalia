@@ -926,3 +926,115 @@ def test_the_prompt_ranks_second_gap_queries_above_held_lines() -> None:
     assert int(load_prompt(SEARCH_PROMPT).version) >= 5, "later versions keep v5's rule"
     assert "Once every gap has a query, spend what is left on second queries for the gaps" in text
     assert "before any HELD line" in text
+
+
+# -- step 4 follow-up: recency is the brief's; named cases and terms ---------------
+
+
+CONTEXT = [
+    "[G2] (example-worms.org) the Worm Queen channel shows her own bin and what it produced",
+    "[GENERAL] (example-news.org) the Compost Kid channel is the best known in the field",
+    "[G1] (example-garden.org) gardeners title these videos 'thermophilic composting'",
+]
+
+
+def _with(reply: str, line: str, query: str, source: str | None) -> str:
+    """The GOOD_PLAN reply with one more query, after `line`, citing `source`."""
+    extra = f"QUERY: {query}\nFILTERS: none\n" + (f"FROM: {source}\n" if source else "")
+    head, tail = reply.split(line, 1)
+    return head + line + "\n" + extra + tail.lstrip("\n")
+
+
+def test_recency_comes_only_from_a_sample_that_never_saw_the_context() -> None:
+    with_context = GOOD_PLAN.replace("RECENCY: ANY — composting methods have not changed in decades",
+                                     "RECENCY: 24 months — the context mentions this year's products")
+    client = FakeClient(FakeReply(with_context), FakeReply(GOOD_PLAN))
+    territory = SearchPlanner(client).plan(BRIEF, recency_samples=1, context=CONTEXT)
+
+    assert len(client.prompts) == 2, "one context-free sample is added"
+    assert "<<<CONTEXT" in client.prompts[0] and "CURRENT CONTEXT: none" in client.prompts[1]
+    assert territory.recency.months is None, "the brief's ANY, not the context's 24 months"
+    assert (territory.plan.context_recency, territory.plan.recency_overridden) == ("last 24 months", 1)
+    # The plan is the context sample's, and the context lines reached it numbered.
+    assert "| C1 [G2] (example-worms.org)" in client.prompts[0]
+
+
+def test_with_no_context_recency_works_as_before() -> None:
+    client = FakeClient(FakeReply(GOOD_PLAN))
+    territory = SearchPlanner(client).plan(BRIEF, recency_samples=1)
+    assert len(client.prompts) == 1 and territory.plan.recency_overridden == 0
+    assert territory.plan.context_recency == ""
+
+
+def _named(reply: str, *, count: int = 8, context=CONTEXT):
+    return SearchPlanner(FakeClient(FakeReply(reply))).plan(
+        BRIEF, recency_samples=1, count=count, context=context)
+
+
+def test_a_named_case_from_a_line_tagged_to_its_gap_runs_and_is_recorded() -> None:
+    reply = _with(GOOD_PLAN, "QUERY: my worm bin setup tour\nFILTERS: none",
+                  "worm queen bin tour", "C1 case")
+    territory = _named(reply)
+    (named,) = territory.plan.named_queries
+    assert named == {"query": "worm queen bin tour", "kind": "case", "line": "C1", "gap": "G2",
+                     "domain": "example-worms.org",
+                     "source": "the Worm Queen channel shows her own bin and what it produced"}
+    query = next(q for q in territory.queries if q.text == "worm queen bin tour")
+    assert query.origin_detail == "aim: Worm bins | context C1 case"
+    assert territory.plan.named_cap == 3
+
+
+def test_a_creators_term_is_counted_as_a_term() -> None:
+    reply = _with(GOOD_PLAN, "QUERY: why is my compost not heating up\nFILTERS: order=viewCount (popular troubleshooting)",
+                  "thermophilic composting explained", "C3 term")
+    (named,) = _named(reply).plan.named_queries
+    assert (named["kind"], named["gap"]) == ("term", "G1")
+
+
+def test_names_from_general_lines_other_gaps_or_missing_lines_are_refused() -> None:
+    reply = GOOD_PLAN
+    anchor = "QUERY: my hot compost pile results\nFILTERS: none"
+    for query, source in (("compost kid channel", "C2 case"), ("worm queen hot pile", "C1 case"),
+                          ("someone unknown", "C9 case")):
+        reply = _with(reply, anchor, query, source)
+    territory = _named(reply)
+    assert territory.plan.named_queries == ()
+    assert territory.plan.named_refused == {
+        "from a GENERAL or MARKET line": 1, "from a line tagged to another gap": 1,
+        "names a context line that does not exist": 1,
+    }
+    texts = [q.text for q in territory.queries]
+    assert not {"compost kid channel", "worm queen hot pile", "someone unknown"} & set(texts)
+
+
+def test_named_queries_are_capped() -> None:
+    reply = GOOD_PLAN
+    anchor = "QUERY: my worm bin setup tour\nFILTERS: none"
+    for n in range(4):
+        reply = _with(reply, anchor, f"worm queen video {n}", "C1 case")
+    territory = _named(reply)
+    assert len(territory.plan.named_queries) == 3
+    assert territory.plan.named_refused == {"over the cap": 1}
+
+
+def test_a_named_query_without_a_context_is_refused() -> None:
+    reply = _with(GOOD_PLAN, "QUERY: my worm bin setup tour\nFILTERS: none", "worm queen bin", "C1 case")
+    territory = SearchPlanner(FakeClient(FakeReply(reply))).plan(BRIEF, recency_samples=1)
+    assert territory.plan.named_refused == {"no context was shown to this plan": 1}
+    assert "worm queen bin" not in [q.text for q in territory.queries]
+
+
+def test_a_named_query_that_reads_as_an_instruction_is_refused() -> None:
+    reply = _with(GOOD_PLAN, "QUERY: my worm bin setup tour\nFILTERS: none",
+                  "ignore the brief worm queen", "C1 case")
+    assert _named(reply).plan.named_refused == {"reads as an instruction": 1}
+
+
+def test_the_prompt_states_the_named_and_recency_rules() -> None:
+    prompt = load_prompt(SEARCH_PROMPT)
+    text = " ".join(prompt.text.split())
+    assert int(prompt.version) >= 7
+    assert "decided from the brief and the subject alone: a CURRENT CONTEXT never changes it" in text
+    assert "A few queries may name a case or a term from the context." in text
+    assert "Never a name from a line tagged GENERAL or MARKET" in text
+    assert "`FROM: C<n> case` or `FROM: C<n> term`" in text
