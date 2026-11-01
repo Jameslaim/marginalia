@@ -40,6 +40,7 @@ __all__ = [
     "get_search_provider",
     "known_providers",
     "known_search_providers",
+    "get_web_search_provider",
 ]
 
 
@@ -84,4 +85,14 @@ def get_search_provider(
         from .ytdlp_search import YtDlpSearchProvider
 
         return YtDlpSearchProvider()
+    raise KeyError(name)
+
+
+def get_web_search_provider(name: str, *, api_key: str | None, base_url: str):
+    """The start-of-run web lookup's provider (step 4). Raises ``KeyError`` if
+    unknown, and ``WebSearchRefused`` when there is no key to run with."""
+    if name == "host_search":
+        from .host_search import HostSearchProvider
+
+        return HostSearchProvider(api_key, base_url)
     raise KeyError(name)

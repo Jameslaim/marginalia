@@ -168,6 +168,15 @@ DEFAULT_TRUST_CAPTION_HINT = False
 # failed plan falls back to the map, never to nothing.
 DEFAULT_SEARCH_SOURCE = "plan"
 SEARCH_SOURCE_VALUES = ("plan", "map")
+# Step 4: a few web searches at the start of a run, digested into the plan's
+# CURRENT CONTEXT. Off until a live comparison has measured it. Six searches:
+# one per gap for the gaps a baseline typically leaves (4 to 7 measured) plus
+# the one general query, at $0.0045 a run; more mostly re-find the same pages.
+# Ten results each, because the price is per search, not per result, and the
+# digest reads summaries only.
+DEFAULT_WEB_CONTEXT = False
+DEFAULT_WEB_CONTEXT_QUERIES = 6
+DEFAULT_WEB_CONTEXT_RESULTS = 10
 DEFAULT_MAX_COST_USD = 2.0
 DEFAULT_FETCH_DELAY_S = 3.0
 
@@ -333,6 +342,10 @@ class DiscoverConfig:
     # `plan` or `map`: what writes round one's planned queries. See
     # DEFAULT_SEARCH_SOURCE.
     search_source: str = DEFAULT_SEARCH_SOURCE
+    # Step 4's lookup, and its two ceilings. See DEFAULT_WEB_CONTEXT.
+    web_context: bool = DEFAULT_WEB_CONTEXT
+    web_context_queries: int = DEFAULT_WEB_CONTEXT_QUERIES
+    web_context_results: int = DEFAULT_WEB_CONTEXT_RESULTS
     baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
@@ -644,6 +657,13 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         search_source=_choice(
             section, "search_source", DEFAULT_SEARCH_SOURCE, SEARCH_SOURCE_VALUES,
             config_path, "discover",
+        ),
+        web_context=_flag(section, "web_context", DEFAULT_WEB_CONTEXT, config_path, "discover"),
+        web_context_queries=_positive(
+            section, "web_context_queries", DEFAULT_WEB_CONTEXT_QUERIES, config_path, "discover"
+        ),
+        web_context_results=_positive(
+            section, "web_context_results", DEFAULT_WEB_CONTEXT_RESULTS, config_path, "discover"
         ),
         baseline_max_tokens=_positive(
             section, "baseline_max_tokens", DEFAULT_BASELINE_MAX_TOKENS,

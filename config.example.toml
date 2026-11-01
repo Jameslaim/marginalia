@@ -226,6 +226,14 @@ extra = { reasoning_effort = "low" }
 [llm.tasks.search_plan]
 extra = { reasoning_effort = "low" }
 
+# Step 4's two short calls: the lookup's queries, and the digest of what came
+# back. Short lines, no reasoning needed — the shape of query expansion.
+[llm.tasks.web_context_queries]
+extra = { reasoning_effort = "none", temperature = 0, seed = 42 }
+
+[llm.tasks.web_context_digest]
+extra = { reasoning_effort = "none", temperature = 0, seed = 42 }
+
 # Once per video, reading a whole transcript, producing the artifact every
 # later question is answered from. The highest-consequence call in the system,
 # and the one that must have the LEAST thinking — see the table above. `low`
@@ -379,6 +387,17 @@ territory_queries = 8
 # video site, neither found any.
 # `map` stays available here and through `marg discover --search-source map`.
 search_source = "plan"
+
+# Step 4: a few web searches before the plan, aimed at what the library lacks,
+# digested into short tagged lines for the plan's CURRENT CONTEXT — how the
+# subject is named and titled today. Used only to plan: no judge, note or answer
+# ever sees it. On the model account's own key (DeepSeek's Search API, $0.75 per
+# 1,000 searches that return something), plus two short model calls. A failed
+# lookup never stops a run. Off until a live comparison; `marg discover
+# --web-context on` runs one without editing this file.
+web_context = false
+web_context_queries = 6
+web_context_results = 10
 
 # B5. Queries the planner writes at the end of each round, for the next one.
 # They run *first* in that round — they were written against the gaps the last

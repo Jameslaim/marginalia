@@ -42,6 +42,8 @@ __all__ = [
     "QuotaExhausted",
     "ProviderUnavailable",
     "TranslatedOnly",
+    "WebSearchProvider",
+    "WebSearchRefused",
     "clean_language",
     "TranscriptLine",
     "TranscriptResult",
@@ -128,6 +130,26 @@ class TranslatedOnly(ProviderError):
         self.original = original
         self.offered = tuple(offered)
         super().__init__(f"only translated captions (spoken language {original})")
+
+
+class WebSearchRefused(ProviderError):
+    """The web search provider refused the account: no balance (402), a
+    rejected key. Every later lookup would fail the same way. Never a reason
+    to stop a run — the plan proceeds without context — but not retried."""
+
+
+@runtime_checkable
+class WebSearchProvider(Protocol):
+    """A web search for the start-of-run lookup (step 4). Results are
+    untrusted text; nothing above `flow/web_context.py` sees them raw."""
+
+    name: str
+
+    def search(self, query: str, count: int = 10) -> list[Any]: ...
+
+    def cost_per_search(self) -> float:
+        """What one successful, non-empty search costs, in US dollars."""
+        ...
 
 
 @runtime_checkable

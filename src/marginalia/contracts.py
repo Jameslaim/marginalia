@@ -164,6 +164,14 @@ __all__ = [
     "REPAIR_FAILED",
     "RepairResult",
     "RepairRun",
+    "WEB_CONTEXT_OFF",
+    "WEB_CONTEXT_SUPPLIED",
+    "WEB_CONTEXT_EMPTY",
+    "WEB_CONTEXT_FAILED",
+    "WebResult",
+    "WebLookup",
+    "ContextLine",
+    "WebContext",
     "NoteResult",
     "NoteRun",
     # answers
@@ -2035,6 +2043,10 @@ class DiscoverRun:
     # empty means "assume nothing is covered", which is where the planner stood
     # before this existed.
     baseline: LibraryCoverage = field(default_factory=LibraryCoverage)
+    # Step 4. The start-of-run web lookup that filled the plan's CURRENT
+    # CONTEXT, or why it did not. Read by the plan call and by the report,
+    # never by a judge, a note or `ask`.
+    web_context: "WebContext" = field(default_factory=lambda: WebContext())
 
     @property
     def candidates_seen(self) -> int:
@@ -2299,6 +2311,104 @@ class RefetchRun:
     def count(self, outcome: str) -> int:
         return sum(1 for result in self.results if result.outcome == outcome)
 
+
+
+# -- the start-of-run web lookup (step 4) -------------------------------------
+
+# What the lookup put in the plan's CURRENT CONTEXT slot. `off` when the switch
+# is off or the source is the map; `supplied` when lines went in; `empty` when
+# it ran and nothing survived; `failed` when the provider or the digest could
+# not be used. Never a reason to stop a run.
+WEB_CONTEXT_OFF = "off"
+WEB_CONTEXT_SUPPLIED = "supplied"
+WEB_CONTEXT_EMPTY = "empty"
+WEB_CONTEXT_FAILED = "failed"
+
+
+@dataclass(frozen=True)
+class WebResult:
+    """One web search result, as a provider returned it. Untrusted text."""
+
+    title: str
+    url: str
+    domain: str
+    summary: str = ""
+    date: str | None = None
+    score: float | None = None
+
+
+@dataclass(frozen=True)
+class WebLookup:
+    """One lookup query, what it aimed at, and what came back."""
+
+    query: str
+    aim: str
+    results: tuple[WebResult, ...] = ()
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class ContextLine:
+    """One digested line of evidence: what it informs, where it came from."""
+
+    aim: str
+    domain: str
+    text: str
+
+    def render(self) -> str:
+        return f"[{self.aim}] ({self.domain}) {self.text}"
+
+
+@dataclass
+class WebContext:
+    """The lookup's whole account (rule 14), and the lines the plan was shown.
+
+    ``dropped`` counts digest lines refused, by reason: read as instructions,
+    no known aim, a domain no result came from, too long. ``sha256`` is of the
+    rendered block, so a later reader can tell exactly what the plan saw
+    (rule 23).
+    """
+
+    status: str = WEB_CONTEXT_OFF
+    reason: str = ""
+    provider: str = ""
+    lookups: list[WebLookup] = field(default_factory=list)
+    lines: list[ContextLine] = field(default_factory=list)
+    dropped: dict = field(default_factory=dict)
+    queries_refused: dict = field(default_factory=dict)
+    searches_billed: int = 0
+    search_cost_usd: float = 0.0
+    model_requests: int = 0
+    sha256: str = ""
+
+    @property
+    def results(self) -> int:
+        return sum(len(lookup.results) for lookup in self.lookups)
+
+    @property
+    def domains(self) -> list[str]:
+        return sorted({line.domain for line in self.lines})
+
+    def as_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "provider": self.provider,
+            "lookups": [
+                {"query": l.query, "aim": l.aim, "error": l.error,
+                 "results": [{"title": r.title, "url": r.url, "domain": r.domain} for r in l.results]}
+                for l in self.lookups
+            ],
+            "lines": [{"aim": l.aim, "domain": l.domain, "text": l.text} for l in self.lines],
+            "dropped": dict(self.dropped),
+            "queries_refused": dict(self.queries_refused),
+            "results": self.results,
+            "domains": self.domains,
+            "searches_billed": self.searches_billed,
+            "search_cost_usd": round(self.search_cost_usd, 6),
+            "model_requests": self.model_requests,
+            "sha256": self.sha256,
+        }
 
 
 # -- rule 3's one exception: `marg refetch --replace-translated` -------------
