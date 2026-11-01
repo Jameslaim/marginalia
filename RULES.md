@@ -1024,6 +1024,23 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     English speech into Arabic, picked because the video reported `ar`, and 2 more were
     translations into Bengali.
 
+41. **A run may look up how its subject is named today, only to plan, and it is off by
+    default.** With `web_context` on and the plan as source, a few web searches run after
+    the baseline. They are aimed by the coverage's tiers, with MARKET used only for
+    markets the brief names, written by one cheap call, checked by code, and capped.
+    Their results are digested into short numbered lines, each tagged with the gap it
+    informs and its source domain, for the plan's CURRENT CONTEXT only. The plan may
+    spend at most 3 of 8 queries on a named case or a creators' term cited from a line
+    tagged to its own gap. Recency is decided without the context. Web text is untrusted
+    everywhere: it is fenced, and lines that read as instructions are dropped and
+    counted. It never reaches a judge, a note, `ask` or the planner's verdicts, and title
+    phrases copied from it are kept from the judges' word list. A failed lookup never
+    stops a run, and the queries, result URLs, lines and the block's digest are recorded.
+    Measured live, on round one of two topics: the context added no keepers on the
+    missing items of the topic it was meant for (the arm without it found 3), and its
+    term queries on the other topic did about as well as queries written from the brief.
+    Unstable baselines and recency confounded the comparison, so it stays off.
+
 ## Structure
 
 ```
