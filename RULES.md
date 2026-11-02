@@ -971,14 +971,17 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     counts as no item and is counted, and the tag never decides a verdict. Fetching reads
     missing items first, then partly held, then no item, then held, YES before MAYBE
     within each, with rule 31's spread inside every level. Candidates on held items or on
-    none take at most a third of a round's keepers; past that they are released only
-    where no later round could spend the slots and a gap is still listed, and when nothing
-    is missing the cap holds and stopping stays the planner's call. A fresh topic, with no
-    coverage, fetches exactly as before. Measured on one replayed run: held keepers fell
-    from 22 of 25 to about 3, at about twice the fetches, because stage 2 declined about 2
-    of every 3 gap candidates — so the request ceiling is set with that in view. The tag
-    leans stage 1 slightly (gap-tagged NO → MAYBE, held-tagged YES → MAYBE, about 4% of
-    verdicts), which is the cheap direction.
+    none take at most a third of a round's keepers; past that they wait, in every round.
+    The last round's release past the cap is a setting (`release_held_last_round`), off:
+    measured on two real runs, it took 9 and 14 held candidates in the last round, and 13
+    and 8 of the runs' stored videos came from that round, nearly all repeats of held
+    parts. Off, a run stores fewer and says how many it held back. A fetch is counted
+    when its transcript arrives. A fresh topic, with no coverage, fetches exactly as
+    before. Measured on one replayed run: held keepers fell from 22 of 25 to about 3, at
+    about twice the fetches, because stage 2 declined about 2 of every 3 gap candidates —
+    so the request ceiling is set with that in view. The tag leans stage 1 slightly
+    (gap-tagged NO → MAYBE, held-tagged YES → MAYBE, about 4% of verdicts), which is the
+    cheap direction.
 
 38. **A topic's brief is approved once and reused.** `marg brief` writes a brief to
     review; `--approve` checks the owner's edit before storing it (sections, rule 27's
@@ -1010,7 +1013,11 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     Measured, without searching: a plan made before the baseline spent all 8 queries on
     parts the library already held. Once it saw coverage, 5 and 7 of 8 aimed at gaps.
     Two bugs in counting which gaps a query served left 3 of 8 slots unused until they
-    were fixed.
+    were fixed. The plan's held lines run only while no gap is open (rule 43). A reply
+    shorter than its budget while gaps are named is accepted, and its empty slots are
+    counted: measured, a reply wrote 5 queries for a budget of 8 and gave 4 of 9 gaps
+    none. A missing thing on a coverage line is a name; evidence after it is cut where
+    the reply is read.
 
 40. **A transcript is the spoken language's own track.** The spoken language is read from
     the audio: the track marked original, else the one audio language. Failing that, it
@@ -1055,6 +1062,22 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     calls can still agree on a flip that a third would catch: in one measurement, an item
     partly held in 2 of 3 calls was held in both calls of a fresh pair. Twin runs on one
     day had sampled ANY/ANY/24 and 24/24.
+
+43. **Every query source follows the gaps, and an exhausted gap stops being chased.**
+    While a gap is open, no source — the expansion, its threads, the planner, the plan —
+    runs a query on a held part, a gap already exhausted, or a concept only keepers on no
+    gap gave; a source with nothing on a gap runs fewer queries, and each is counted per
+    source. One query text runs once a round. A gap is the brief item it belongs to,
+    because the planner rewords its gaps every round. It is exhausted when its latest two
+    or more rounds in a row brought `gap_exhausted_after` queries and no keeper on it; it
+    gets no more queries, is named, and is recorded on the approved brief version, so the
+    next run gives it one probe. A keeper clears it, a new brief version or
+    `--reopen-gaps` re-opens it. When every open gap is exhausted the run stops,
+    `gaps_exhausted`. Measured on two real runs: after round one the planner named one
+    gap left, and threads then spent 20 queries on held parts and their concepts for
+    about 12 keepers, nearly all repeats; one part's 16 queries over three rounds found
+    no keeper. Replayed, the rules would have run 5 and 14 fewer searches, stored 16 of
+    25 and 12 of 15, and lost no keeper on a gap.
 
 ## Structure
 
