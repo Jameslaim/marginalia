@@ -798,6 +798,11 @@ class SearchPlan:
     # on held parts what could have gone to a gap (rule 14).
     second_gap_queries: int = 0
     held_while_thin: int = 0
+    # Budget slots the reply left empty while the coverage named gaps: accepted
+    # and counted, not asked for again (the cost of asking is a call; a gap the
+    # plan gave no query is the planner's from round two, and each extra query
+    # on a gap that finds nothing is search quota spent on repeats).
+    unfilled: int = 0
     # Languages: the topic's main language, the brief's own language or market
     # items and its broadest item, as the reply named them; and the queries in
     # another language aimed at neither.
@@ -841,6 +846,7 @@ class SearchPlan:
             "distinct_gaps": self.distinct_gaps,
             "second_gap_queries": self.second_gap_queries,
             "held_while_thin": self.held_while_thin,
+            "unfilled": self.unfilled,
             "main_language": self.main_language,
             "language_items": list(self.language_items),
             "broad_item": self.broad_item,

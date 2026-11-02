@@ -879,7 +879,8 @@ def _search_plan_lines(territory) -> list[str]:
     lines.append(
         f"          by tier: {by_tier} ({plan.distinct_gaps} distinct gap(s), "
         f"{plan.duplicates_avoided} duplicate(s) avoided, "
-        f"{plan.second_gap_queries} second gap quer(ies))"
+        f"{plan.second_gap_queries} second gap quer(ies), "
+        f"{plan.unfilled} budget slot(s) unfilled)"
     )
     named = plan.named_queries
     kinds = ", ".join(f"{sum(1 for q in named if q['kind'] == k)} {k}" for k in ("case", "term"))

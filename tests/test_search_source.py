@@ -545,6 +545,7 @@ def test_the_plan_line_shows_tiers_exclusions_and_duplicates() -> None:
     text = "\n".join(_territory_lines(_run_with(plan)))
 
     assert ("by tier: missing part 1, partly part 1, also wanted 0, untagged 0, held 0 "
-            "(3 distinct gap(s), 1 duplicate(s) avoided, 0 second gap quer(ies))") in text
+            "(3 distinct gap(s), 1 duplicate(s) avoided, 0 second gap quer(ies), "
+            "0 budget slot(s) unfilled)") in text
     assert "skipped as excluded: 1" in text
     assert "Cost side — page acquisition — pitches for buying pages" in text

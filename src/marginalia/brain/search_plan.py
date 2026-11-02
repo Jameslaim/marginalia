@@ -914,6 +914,9 @@ def _settle(
         distinct_gaps=len(by_key),
         second_gap_queries=second_run,
         held_while_thin=held_run if thin else 0,
+        # Measured: a reply wrote 5 queries for a budget of 8, one per gap, with
+        # 4 gaps given none. Accepted and counted.
+        unfilled=max(0, count - len(run)) if count and by_key else 0,
     )
     return settled, run
 
