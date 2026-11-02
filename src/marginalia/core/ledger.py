@@ -74,6 +74,10 @@ __all__ = [
     "WebContextRow",
     "BaselineRow",
     "RecencyRow",
+    "GapRow",
+    "GAP_EXHAUSTED",
+    "GAP_CLEARED",
+    "GAP_REOPENED",
     "STALE_TRANSCRIPT_SUFFIX",
     "skip_reason",
     "normalise_topic",
@@ -338,6 +342,23 @@ CREATE TABLE IF NOT EXISTS brief_recency (
   set_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_brief_recency ON brief_recency(topic, brief_version);
+
+-- A gap a run found exhausted on a brief version: enough queries over two
+-- rounds and no keeper. Additive; the latest row per (topic, version, gap)
+-- wins. `exhausted` gives the gap one probe query on the next run; `cleared`
+-- (a keeper on it since) and `reopened` (the owner) give it a full share.
+CREATE TABLE IF NOT EXISTS exhausted_gaps (
+  topic          TEXT NOT NULL,
+  brief_version  INTEGER NOT NULL,
+  gap_key        TEXT NOT NULL,      -- the brief item (`item 3`), or the gap's own words
+  line           TEXT NOT NULL,      -- the brief item's name: never evidence (rule 1)
+  queries        INTEGER NOT NULL,
+  rounds_json    TEXT NOT NULL,      -- [[round, queries, keepers], ...]
+  state          TEXT NOT NULL,      -- exhausted | cleared | reopened
+  run_id         TEXT,
+  set_at         TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_exhausted_gaps ON exhausted_gaps(topic, brief_version);
 """
 
 # Columns added after a table shipped, which can be introduced in place.
@@ -684,6 +705,30 @@ class BaselineRow:
         return cls(**_values(cls, row))
 
 
+GAP_EXHAUSTED = "exhausted"
+GAP_CLEARED = "cleared"
+GAP_REOPENED = "reopened"
+
+
+@dataclass(frozen=True)
+class GapRow:
+    """A gap's state on a brief version, as the last run (or the owner) left it."""
+
+    topic: str
+    brief_version: int
+    gap_key: str
+    line: str
+    queries: int
+    rounds_json: str
+    state: str
+    set_at: str
+    run_id: str | None = None
+
+    @classmethod
+    def from_sqlite(cls, row: sqlite3.Row) -> "GapRow":
+        return cls(**_values(cls, row))
+
+
 @dataclass(frozen=True)
 class RecencyRow:
     """A brief version's recency: decided once, or set by the owner."""
@@ -789,6 +834,7 @@ _EXPECTED_COLUMNS: dict[str, frozenset[str]] = {
     "web_contexts": frozenset(field.name for field in fields(WebContextRow)),
     "baselines": frozenset(field.name for field in fields(BaselineRow)),
     "brief_recency": frozenset(field.name for field in fields(RecencyRow)),
+    "exhausted_gaps": frozenset(field.name for field in fields(GapRow)),
 }
 
 
@@ -1985,6 +2031,61 @@ class Ledger:
             (normalise_topic(topic), brief_version),
         ).fetchone()
         return RecencyRow.from_sqlite(row) if row is not None else None
+
+    def record_gap(
+        self, topic: str, brief_version: int, *, gap_key: str, line: str, queries: int,
+        rounds: Sequence[Sequence[int]], state: str, run_id: str | None = None,
+    ) -> GapRow:
+        """Record a gap's state on a brief version. A later row for the gap wins."""
+        row = GapRow(
+            topic=normalise_topic(topic), brief_version=brief_version, gap_key=gap_key,
+            line=line, queries=queries, rounds_json=json.dumps([list(r) for r in rounds]),
+            state=state, set_at=_utcnow(), run_id=run_id,
+        )
+        names = [field.name for field in fields(GapRow)]
+        with self._conn:
+            self._conn.execute(
+                f"INSERT INTO exhausted_gaps ({', '.join(names)}) "
+                f"VALUES ({', '.join('?' for _ in names)})",
+                tuple(getattr(row, name) for name in names),
+            )
+        return row
+
+    def gap_states(self, topic: str, brief_version: int) -> list[GapRow]:
+        """The latest row per gap recorded on this brief version, in first-seen order."""
+        if "exhausted_gaps" in self._absent:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM exhausted_gaps WHERE topic = ? AND brief_version = ? ORDER BY rowid",
+            (normalise_topic(topic), brief_version),
+        ).fetchall()
+        latest: dict[str, GapRow] = {}
+        for row in rows:
+            latest[row["gap_key"]] = GapRow.from_sqlite(row)
+        return list(latest.values())
+
+    def gaps_for_run(self, run_id: str) -> list[GapRow]:
+        """The gap rows one run wrote, in order."""
+        if "exhausted_gaps" in self._absent:
+            return []
+        rows = self._conn.execute(
+            "SELECT * FROM exhausted_gaps WHERE run_id = ? ORDER BY rowid", (run_id,)
+        ).fetchall()
+        return [GapRow.from_sqlite(row) for row in rows]
+
+    def exhausted_gaps(self, topic: str, brief_version: int) -> list[GapRow]:
+        """The gaps still exhausted on this brief version."""
+        return [row for row in self.gap_states(topic, brief_version) if row.state == GAP_EXHAUSTED]
+
+    def reopen_gaps(self, topic: str, brief_version: int) -> list[GapRow]:
+        """The owner re-opens every exhausted gap on a version; the rows written."""
+        return [
+            self.record_gap(
+                topic, brief_version, gap_key=row.gap_key, line=row.line, queries=row.queries,
+                rounds=json.loads(row.rounds_json), state=GAP_REOPENED,
+            )
+            for row in self.exhausted_gaps(topic, brief_version)
+        ]
 
     def web_context_for(self, run_id: str) -> WebContextRow | None:
         if "web_contexts" in self._absent:

@@ -446,6 +446,8 @@ def _cmd_brief(args: argparse.Namespace) -> int:
 
     if args.recency is not None and not args.approve:
         return _brief_recency(config, library, args.topic, args.recency)
+    if getattr(args, "reopen_gaps", False):
+        return _reopen_gaps(library, args.topic)
 
     if args.approve or args.status:
         with Ledger(library.ledger_path) as ledger:
@@ -464,6 +466,7 @@ def _cmd_brief(args: argparse.Namespace) -> int:
                     print("approved: none — every run writes a fresh brief")
                 else:
                     print(_recency_status(ledger, status.topic, status.versions[-1][0]))
+                    print(_gaps_status(ledger, status.topic, status.versions[-1][0]))
                 return EXIT_OK
             result = approve(ledger, library, args.topic)
         if result.problem:
@@ -515,6 +518,28 @@ def _recency_status(ledger: Ledger, topic: str, version: int) -> str:
     samples = "/".join("any time" if m is None else str(m) for m in json.loads(row.samples_json))
     by = f"run {row.run_id}" if row.run_id else "marg brief --recency decide"
     return f"recency:  v{version} {label} — decided by {by} from samples {samples}, at {row.set_at}"
+
+
+def _gaps_status(ledger: Ledger, topic: str, version: int) -> str:
+    """The gaps exhausted on the latest approved version, each with its queries."""
+    rows = ledger.exhausted_gaps(topic, version)
+    if not rows:
+        return f"gaps:     v{version} none exhausted"
+    named = "; ".join(f"{row.line} ({row.queries} queries, run {row.run_id})" for row in rows)
+    return (f"gaps:     v{version} {len(rows)} exhausted, one probe query each per run — "
+            f"{named}; re-open with --reopen-gaps")
+
+
+def _reopen_gaps(library: Library, topic: str) -> int:
+    """Re-open every exhausted gap on the approved brief: a full share again."""
+    with Ledger(library.ledger_path) as ledger:
+        approved = ledger.approved_brief(topic)
+        if approved is None:
+            return _error("no gaps re-opened: no approved brief for this topic", EXIT_FAILED)
+        rows = ledger.reopen_gaps(topic, approved.version)
+    print(f"gaps:     v{approved.version} {len(rows)} re-opened"
+          + (" — " + "; ".join(row.line for row in rows) if rows else ""))
+    return EXIT_OK
 
 
 def _brief_recency(config, library: Library, topic: str, value: str) -> int:
@@ -594,6 +619,34 @@ def _gap_first_line(report) -> str | None:
         f"{report.held_capped} left by it, {report.released} released past it, "
         f"{report.held_back_last} held back in the last round (release off)"
     )
+
+
+def _by_source(counts: dict[str, int]) -> str:
+    return ", ".join(f"{n} {origin}" for origin, n in sorted(counts.items())) or "0"
+
+
+def _gap_follow_lines(report) -> list[str]:
+    """What following the gaps took out of the round, zeros included once the
+    round had coverage to follow (rule 14), and the gaps that became exhausted
+    at its end, each with its query count. Nothing on a fresh topic."""
+    counted = (report.held_while_gaps or report.exhausted_skipped or report.threads_held_back
+               or report.exhausted)
+    if not report.held_cap and not counted:
+        return []
+    lines = [
+        f"          gaps: {sum(report.held_while_gaps.values())} quer(ies) on held parts "
+        f"while a gap was open, not run ({_by_source(report.held_while_gaps)}); "
+        f"{sum(report.exhausted_skipped.values())} on exhausted gaps, not run "
+        f"({_by_source(report.exhausted_skipped)}); "
+        f"{sum(report.threads_held_back.values())} thread quer(ies) on a concept only "
+        f"keepers on no gap gave, held back ({_by_source(report.threads_held_back)})"
+    ]
+    for gap in report.exhausted:
+        lines.append(
+            f"          exhausted: {gap['line']} — {gap['queries']} quer(ies) over "
+            f"{len(gap['rounds'])} round(s), no keeper"
+        )
+    return lines
 
 
 def _discover_report(run: DiscoverRun) -> list[str]:
@@ -689,6 +742,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         gap_first = _gap_first_line(report)
         if gap_first:
             lines.append(gap_first)
+        lines.extend(_gap_follow_lines(report))
         lines.extend(_plan_lines(report))
     verb = "would store" if run.dry_run else "stored"
     lines.append(
@@ -700,6 +754,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
         + f", {run.judged} judged, "
         f"{len(run.rounds)} rounds, {run.requests} requests, "
         f"stopped: {run.stopped_because}"
+        + (f" — {run.stop_detail}" if run.stop_detail else "")
     )
     # The same shape citation parsing reports, for the same reason: a parser
     # that silently drops what it cannot read is how `/ask` came to report 2
@@ -1108,6 +1163,10 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
             for rejection in run.rejected_filters
         ],
         "stopped_because": run.stopped_because,
+        "stop_detail": run.stop_detail,
+        # Every gap's account: queries aimed at it, keepers on it, by round, and
+        # the round it became exhausted in (0: it did not).
+        "gaps": [tally.as_dict() for tally in run.gaps],
         "fetched": run.fetched,
         "requests": run.requests,
         "input_tokens": run.input_tokens,
@@ -1166,7 +1225,13 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "held_capped": report.held_capped,
                 "released": report.released,
                 "fetched": report.fetched,
+                # Following the gaps, per source, and what became exhausted.
+                "held_while_gaps": dict(report.held_while_gaps),
+                "exhausted_skipped": dict(report.exhausted_skipped),
+                "threads_held_back": dict(report.threads_held_back),
+                "held_concepts": list(report.held_concepts),
                 "held_back_last": report.held_back_last,
+                "exhausted": list(report.exhausted),
                 "unread_by_item": _count_by_item(report.unread),
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next
@@ -2366,6 +2431,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--recency", metavar="WINDOW",
         help="the approved brief's recency: ANY, '24 months' or '2 years' (owner-set), or "
              "'decide' to decide it now from the samples a run would make",
+    )
+    brief.add_argument(
+        "--reopen-gaps", action="store_true",
+        help="give the gaps runs found exhausted on the approved brief a full share of "
+             "queries again (a run otherwise gives each one probe query)",
     )
     brief.set_defaults(handler=_cmd_brief)
 

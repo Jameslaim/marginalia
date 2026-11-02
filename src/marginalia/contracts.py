@@ -132,6 +132,7 @@ __all__ = [
     # discovery runs
     "RoundReport",
     "UnreadCandidate",
+    "GapTally",
     "DiscoverRun",
     # search runs
     "NEW",
@@ -2066,9 +2067,25 @@ class RoundReport:
     # round, on a dry run, and whenever the budget stopped the loop first —
     # planning a round that cannot happen is a request spent on nothing.
     plan: RoundPlan | None = None
+    # Every query source follows the coverage tiers while a gap is open, each
+    # outcome on its own counter, per source (`origin`). `held_while_gaps`:
+    # queries on a held part or a held thread concept, not run. `exhausted_skipped`:
+    # queries on a gap already exhausted, not run. `threads_held_back`: thread
+    # queries on a concept only keepers on no gap gave, not run. (A query text
+    # another source had already put in the round is a duplicate, in
+    # `duplicates_skipped`.) `held_concepts`: this round's concepts from keepers
+    # on no gap while one was open, which the next round's threads are checked
+    # against.
+    held_while_gaps: dict[str, int] = field(default_factory=dict)
+    exhausted_skipped: dict[str, int] = field(default_factory=dict)
+    threads_held_back: dict[str, int] = field(default_factory=dict)
+    held_concepts: list[str] = field(default_factory=list)
     # Held candidates the last round left unread because the release is off
     # (`release_held_last_round`): the run stores fewer, and says how many.
     held_back_last: int = 0
+    # The gaps that became exhausted at the end of this round, as dicts of
+    # `GapTally.as_dict()`.
+    exhausted: list[dict] = field(default_factory=list)
 
     @property
     def fetched(self) -> int:
@@ -2099,6 +2116,42 @@ class RoundReport:
             for video_id, origins in self.surfaced_by.items()
             if origins == {origin}
         ]
+
+
+@dataclass
+class GapTally:
+    """One gap's account across a run: what was spent on it and what it gave.
+
+    ``key`` is the gap's identity — the brief item it belongs to (``item 3``),
+    or its own words when there is no brief item to place it on — so a gap the
+    planner words differently in a later round is still the same gap. ``line``
+    names it. ``rounds`` is ``(round, queries, keepers)`` for each round that
+    aimed a query at it or kept something on it. ``carried`` marks a gap an
+    earlier run on the same brief version recorded as exhausted: it starts as a
+    round 0 one query short of the threshold, so it gets one probe this run,
+    and a keeper clears it.
+    """
+
+    key: str
+    line: str
+    rounds: tuple[tuple[int, int, int], ...] = ()
+    carried: bool = False
+    exhausted_in: int = 0
+
+    @property
+    def queries(self) -> int:
+        return sum(queries for _, queries, _ in self.rounds)
+
+    @property
+    def keepers(self) -> int:
+        return sum(keepers for _, _, keepers in self.rounds)
+
+    def as_dict(self) -> dict:
+        return {
+            "key": self.key, "line": self.line, "queries": self.queries,
+            "keepers": self.keepers, "rounds": [list(r) for r in self.rounds],
+            "carried": self.carried, "exhausted_in": self.exhausted_in,
+        }
 
 
 @dataclass
@@ -2152,6 +2205,14 @@ class DiscoverRun:
     # CONTEXT, or why it did not. Read by the plan call and by the report,
     # never by a judge, a note or `ask`.
     web_context: "WebContext" = field(default_factory=lambda: WebContext())
+    # Per gap the coverage named: the queries aimed at it, the rounds they ran
+    # in, and the keepers on it. A gap is exhausted when enough queries over at
+    # least two rounds brought no keeper (`brain.gaps.exhausted`). Seeded from
+    # the gaps an earlier run on the same brief version recorded.
+    gaps: list["GapTally"] = field(default_factory=list)
+    # Why the run stopped, in words, where the stop reason alone does not say:
+    # the gaps named on `gaps_exhausted`.
+    stop_detail: str = ""
 
     @property
     def fetched(self) -> int:

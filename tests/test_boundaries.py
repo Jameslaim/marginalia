@@ -440,6 +440,7 @@ def test_every_shared_structure_is_in_contracts() -> None:
         # discovery runs
         "RoundReport",
         "UnreadCandidate",
+        "GapTally",
         "DiscoverRun",
         # search runs
         "NEW",

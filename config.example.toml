@@ -407,6 +407,18 @@ web_context_results = 10
 # before.
 baseline_calls = 2
 
+# When a gap stops being chased. A gap is exhausted when at least this many
+# queries aimed at it, over at least two rounds in a row, brought no stage-2
+# keeper on it. It then gets no more queries this run, and is recorded so the
+# next run on the same approved brief gives it one probe query, not a full
+# share; `marg brief "<topic>" --reopen-gaps` re-opens them. When every open gap
+# is exhausted the run stops (`gaps_exhausted`). Measured on two real runs:
+# every gap that ever brought a keeper did so within its first two rounds, and
+# the longest stretch a gap later broke with a keeper was 5 queries; the two
+# that never did ran 10 and 5 queries over two rounds, and 16 and 6 over three.
+# Lower stops a slowly filling gap sooner; higher spends more on a dead one.
+gap_exhausted_after = 6
+
 # Whether the last round may release candidates on held items past the held
 # cap, to fill the video budget. Off: measured on two real runs, the release
 # took 9 and 14 held candidates in the last round and 13 and 8 of the runs'

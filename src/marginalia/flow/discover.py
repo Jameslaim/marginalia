@@ -67,7 +67,8 @@ from ..brain.judge import (
     item_lines,
     match_item,
 )
-from ..brain.coverage import names_only, resolve_coverage
+from ..brain.coverage import BriefAnchor, names_only, resolve_coverage
+from ..brain.gaps import credit_keeper, exhausted, gate, open_gaps, tally_queries, unexhausted
 from ..brain.planner import BASELINE_PROMPT, PLAN_PROMPT, Planner, apply_revisions
 from ..brain.search_plan import SearchPlanner
 from .web_context import context_lines, gather_context
@@ -106,6 +107,7 @@ from ..contracts import (
     VERDICT_YES,
     CoverageItem,
     DiscoverRun,
+    GapTally,
     JudgedVideo,
     LibraryCoverage,
     MetadataVerdict,
@@ -124,6 +126,8 @@ from ..contracts import (
 from ..core.ids import extract_video_id
 from ..core.ledger import (
     FAIL_PERMANENT,
+    GAP_CLEARED,
+    GAP_EXHAUSTED,
     STAGE_FULL,
     STAGE_METADATA,
     BaselineRow,
@@ -173,6 +177,11 @@ STOP_QUOTA = "quota"
 # between them: the configuration, not the videos. Its own word, so it reads
 # neither as a crash nor as a provider refusal.
 STOP_CONTEXT_WINDOW = "context_window"
+# Every gap the coverage still names has been chased enough (`brain.gaps`):
+# at least `gap_exhausted_after` queries over two rounds in a row, and no
+# keeper. Its own word, because it is neither the brief being covered nor the
+# money running out: the gaps are named on the run (`stop_detail`).
+STOP_GAPS_EXHAUSTED = "gaps_exhausted"
 # How many stage-2 overflows in a row, with nothing fitting between them, end the
 # run. Above the client's own three: three long videos in a row are ordinary
 # (R1 F5) and must not end a run; five with nothing fitting is a setting.
@@ -189,6 +198,7 @@ STOP_REASONS = (
     STOP_QUOTA,
     STOP_REFUSED,
     STOP_CONTEXT_WINDOW,
+    STOP_GAPS_EXHAUSTED,
 )
 
 # Requests a round needs beyond judging: query expansion. Checked before the
@@ -340,10 +350,13 @@ def discover(
                 len(run.territory.rejected),
             )
 
+        run.gaps = carried_gaps(ledger, brief, config.discover.gap_exhausted_after)
         _loop(
             config, ledger, library, client, judge, planner, run, providers,
             max_rounds=max_rounds, max_videos=max_videos, max_requests=max_requests,
         )
+        if not dry_run:
+            record_gaps(ledger, run, config.discover.gap_exhausted_after)
     except LlmConfigError:
         # The provider refused — billing, a rejected key, a wait longer than the
         # run. Its own stop reason, the note drain's word for the same thing:
@@ -366,6 +379,40 @@ def discover(
             stopped_because=run.stopped_because or "incomplete",
         )
     return run
+
+
+def carried_gaps(ledger: Ledger, brief: Brief, after: int) -> list[GapTally]:
+    """The gaps an earlier run on this approved brief version recorded as
+    exhausted, as tallies one query short of `after`: each gets one probe this
+    run, and a keeper on it clears it. None without an approved brief — a brief
+    written fresh is a different target every run, so its gaps are too."""
+    if not brief.approved_version:
+        return []
+    return [
+        GapTally(key=row.gap_key, line=row.line, rounds=((0, max(0, after - 1), 0),), carried=True)
+        for row in ledger.exhausted_gaps(brief.topic, brief.approved_version)
+    ]
+
+
+def record_gaps(ledger: Ledger, run: DiscoverRun, after: int) -> None:
+    """Record what this run left exhausted, and what a keeper cleared, on the
+    approved brief version, so the next run sees it. The brief item's name is
+    stored, never a coverage line's evidence (rule 1)."""
+    version = run.brief.approved_version
+    if not version:
+        return
+    recorded = {row.gap_key: row.state for row in ledger.gap_states(run.brief.topic, version)}
+    for tally in run.gaps:
+        if exhausted(tally, after):
+            state = GAP_EXHAUSTED
+        elif recorded.get(tally.key) == GAP_EXHAUSTED and tally.keepers:
+            state = GAP_CLEARED
+        else:
+            continue
+        ledger.record_gap(
+            run.brief.topic, version, gap_key=tally.key, line=tally.line,
+            queries=tally.queries, rounds=tally.rounds, state=state, run_id=run.run_id,
+        )
 
 
 def plan_coverage(
@@ -518,6 +565,9 @@ def _loop(
     # What the planner asked for at the end of the previous round. Empty in
     # round one, which is what makes round one the same round it always was.
     from_planner: list[PlannedQuery] = []
+    # Gaps are placed on the brief's items, which do not move between rounds.
+    anchor = BriefAnchor(run.brief.text) if run.brief.text else None
+    after = config.discover.gap_exhausted_after
 
     for number in range(1, max_rounds + 1):
         if client.usage.requests + _ROUND_OVERHEAD_REQUESTS > max_requests:
@@ -535,6 +585,14 @@ def _loop(
         # query and a thread query with the same words ran as two searches in
         # one round, differing only in a language filter (run `55b34544d713`).
         planned, same_text = one_per_text(planned)
+        # **Every source follows the coverage tiers while a gap is open**: no
+        # query on what is held, none on a gap already exhausted. A source
+        # with nothing aimed at a gap runs fewer queries, not held ones.
+        coverage = coverage_so_far(run)
+        previous = run.rounds[-1].held_concepts if run.rounds else []
+        planned, held_skipped, exhausted_skipped, threads_held = gate(
+            planned, coverage, run.gaps, after, anchor, held_concepts=previous
+        )
         # Validated again: the map's queries were validated inside `Mapper.map`
         # and the planner's when the plan was made. That is deliberate rather
         # than sloppy — this is the only gate between a proposed filter and a
@@ -597,6 +655,9 @@ def _loop(
             expansion_unaimed=expansion_counts.get("unaimed", 0),
             expansion_capped=expansion_counts.get("capped", 0),
             expansion_unmatched=expansion_counts.get("unmatched", 0),
+            held_while_gaps=held_skipped,
+            exhausted_skipped=exhausted_skipped,
+            threads_held_back=threads_held,
         )
         run.rounds.append(report)
         # On the run rather than only on the map: a filter rejected in round two
@@ -607,15 +668,17 @@ def _loop(
         if not planned:
             run.stopped_because = STOP_NO_NEW_VIDEOS
             _spend_remaining(config, ledger, library, client, judge, run, report, providers,
-                             max_videos=max_videos, max_requests=max_requests)
+                             max_videos=max_videos, max_requests=max_requests, anchor=anchor)
             return
 
         searched: list[tuple[PlannedQuery, int | None]] = []
         candidates = _gather(config, ledger, run, planned, report, searched, library=library)
+        tally_queries(run.gaps, [query for query, results in searched if results is not None],
+                      coverage, number, anchor)
         if candidates is None:
             run.stopped_because = STOP_NO_SEARCH
             _spend_remaining(config, ledger, library, client, judge, run, report, providers,
-                             max_videos=max_videos, max_requests=max_requests)
+                             max_videos=max_videos, max_requests=max_requests, anchor=anchor)
             return
 
         # This round's share of what is left, so round 1 cannot spend the run
@@ -628,6 +691,7 @@ def _loop(
                 max_videos - len(run.stored_ids), max_rounds - number + 1
             ),
             last=number >= max_rounds,
+            anchor=anchor,
         )
         # Recorded on the round that *produced* them, so a later reader can ask
         # whether round N+1's queries actually came from round N's findings.
@@ -635,10 +699,13 @@ def _loop(
         # that they changed anything, which is the claim worth checking.
         report.concepts = list(threads)
 
+        _mark_exhausted(run, report, after)
         if run.stopped_because:
             return
         if len(run.stored_ids) >= max_videos:
             run.stopped_because = STOP_MAX_VIDEOS
+            return
+        if _gaps_exhausted(run, coverage, after, anchor):
             return
 
         # Kept, not stored: a round that judged held transcripts relevant found
@@ -647,7 +714,7 @@ def _loop(
         if quiet_rounds >= config.discover.quiet_rounds:
             run.stopped_because = STOP_NO_NEW_VIDEOS
             _spend_remaining(config, ledger, library, client, judge, run, report, providers,
-                             max_videos=max_videos, max_requests=max_requests)
+                             max_videos=max_videos, max_requests=max_requests, anchor=anchor)
             return
 
         # The planning call, and only if another round could actually run.
@@ -666,6 +733,10 @@ def _loop(
             rounds_left=max_rounds - number,
         )
         from_planner = list(plan.queries)
+        # Checked again on the coverage the planner ended the round with: a
+        # round whose gaps are all exhausted is not run.
+        if plan.coverage and _gaps_exhausted(run, plan.coverage, after, anchor):
+            return
 
         # Advisory, never sovereign. Budget ceilings are checked above and
         # below this; what the planner gets is a stop reason of its own, so
@@ -702,6 +773,35 @@ def one_per_text(queries: Sequence[PlannedQuery]) -> tuple[list[PlannedQuery], i
     return kept, len(queries) - len(kept)
 
 
+def _mark_exhausted(run: DiscoverRun, report: RoundReport, after: int) -> None:
+    """Name on the round the gaps that became exhausted at its end."""
+    for index, tally in enumerate(run.gaps):
+        if tally.exhausted_in or not exhausted(tally, after):
+            continue
+        run.gaps[index] = replace(tally, exhausted_in=report.number)
+        report.exhausted.append(run.gaps[index].as_dict())
+        log.info(
+            "discover: gap exhausted — %s: %d quer(ies) over %d round(s), no keeper",
+            tally.line, tally.queries, len(tally.rounds),
+        )
+
+
+def _gaps_exhausted(
+    run: DiscoverRun, coverage: Sequence[CoverageItem], after: int, anchor: BriefAnchor | None
+) -> bool:
+    """Stop the run when the coverage names gaps and every one is exhausted."""
+    gaps = open_gaps(coverage, anchor)
+    if not gaps or unexhausted(coverage, run.gaps, after, anchor):
+        return False
+    run.stopped_because = STOP_GAPS_EXHAUSTED
+    run.stop_detail = "; ".join(
+        f"{gap.label} ({next((t.queries for t in run.gaps if t.key == gap.key), 0)} queries)"
+        for gap in gaps
+    )
+    log.info("discover: every open gap is exhausted — %s", run.stop_detail)
+    return True
+
+
 def _spend_remaining(
     config: Config,
     ledger: Ledger,
@@ -714,6 +814,7 @@ def _spend_remaining(
     *,
     max_videos: int,
     max_requests: int,
+    anchor: BriefAnchor | None = None,
 ) -> None:
     """When the run stops for want of anything new, read what is still waiting.
 
@@ -732,6 +833,7 @@ def _spend_remaining(
     _judge_round(
         config, ledger, library, client, judge, run, report, [], providers,
         max_videos=max_videos, max_requests=max_requests, allowance=remaining, last=True,
+        anchor=anchor,
     )
     run.stopped_because = run.stopped_because or stopped
 
@@ -1741,6 +1843,7 @@ def _judge_round(
     max_requests: int,
     allowance: int | None = None,
     last: bool = False,
+    anchor: BriefAnchor | None = None,
 ) -> list[str]:
     """Screen this round's candidates, then fetch and judge within `allowance`.
 
@@ -1844,6 +1947,7 @@ def _judge_round(
     )
     by_id = {candidate.video_id: candidate for candidate in candidates}
     concepts: list[str] = []
+    held_concepts: list[str] = []
     fetched_any = False
 
     metadata_version = judge.prompt(METADATA_PROMPT).version if verdicts else None
@@ -2203,7 +2307,18 @@ def _judge_round(
         # come from videos judged relevant, and a rejected video's jargon is
         # often the other meaning of a shared word: the mistake the stage-2
         # prompt says once cost eight good videos, fed forward as a query.
-        concepts.extend(judgement.concepts)
+        on_gap = entry is not None and _level(entry) in _GAP_STATES
+        if gap_open and not on_gap:
+            # **Threads come from keepers on a gap while one is open.** A held
+            # keeper's concepts are held material: measured, they fed 20 thread
+            # queries in two rounds, nearly all repeats. Still passed on, after
+            # the gap keepers', so a query they lead to that aims at a gap runs;
+            # one aimed at the concept itself is held back by the gate.
+            held_concepts.extend(judgement.concepts)
+        else:
+            concepts.extend(judgement.concepts)
+        if on_gap:
+            credit_keeper(run.gaps, entry.item, coverage, report.number, anchor)
 
         # Knowable now, and only now. The note worker refuses a transcript past
         # its ceiling, which happens after this run has ended — so without this
@@ -2307,7 +2422,9 @@ def _judge_round(
         _overflowed(run)
     if screened_short and not run.stopped_because:
         run.stopped_because = STOP_MAX_REQUESTS
-    return _dedupe_concepts(concepts)
+    gap_concepts = _dedupe_concepts(concepts)
+    report.held_concepts = [c for c in _dedupe_concepts(held_concepts) if c not in gap_concepts]
+    return gap_concepts + report.held_concepts
 
 
 def _retagged(entry: UnreadCandidate, coverage: Sequence[CoverageItem]) -> UnreadCandidate:

@@ -71,7 +71,9 @@ def export_run(config: Config, ledger: Ledger, library: Library, run_id: str) ->
 
     written = [
         library.write_export(
-            run_id, "report.md", render_report(config, run, queries, decisions, plans, web=web)
+            run_id, "report.md",
+            render_report(config, run, queries, decisions, plans, web=web,
+                          gaps=ledger.gaps_for_run(run_id)),
         ),
         library.write_export(run_id, "brief.md", _render_brief(run)),
         library.write_export(run_id, "territory.md", render_map(run, territory, web)),
@@ -100,6 +102,7 @@ def render_report(
     plans: Sequence[PlanRow] = (),
     *,
     web=None,
+    gaps: Sequence = (),
 ) -> str:
     """The run in prose and tables. Pure: everything it needs is an argument.
 
@@ -145,6 +148,7 @@ def render_report(
         )
 
     lines.extend(_baseline_section(run))
+    lines.extend(_gaps_section(gaps))
     lines.extend(["## Rounds", ""])
     if not rounds:
         lines.extend(
@@ -197,6 +201,18 @@ def render_report(
         )
     lines.append("")
     return "\n".join(lines)
+
+
+def _gaps_section(gaps: Sequence) -> list[str]:
+    """The gaps this run found exhausted, or cleared, each with its queries."""
+    if not gaps:
+        return ["## Gaps", "", "No gap was exhausted or cleared by this run.", ""]
+    lines = ["## Gaps", "", "| gap | state | queries | by round (queries, keepers) |",
+             "|---|---|---|---|"]
+    for row in gaps:
+        rounds = ", ".join(f"r{r}: {q}, {k}" for r, q, k in json.loads(row.rounds_json))
+        lines.append(f"| {_cell(row.line)} | {row.state} | {row.queries} | {rounds} |")
+    return [*lines, ""]
 
 
 def _coverage_mark(item: dict) -> str:

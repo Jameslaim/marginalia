@@ -142,6 +142,15 @@ DEFAULT_BASELINE_MAX_TOKENS = 32768
 # items' less-held state. A third call only when two disagree would have run on
 # 5 of 6 pairs. A reused baseline makes none. 1 is the old behaviour.
 DEFAULT_BASELINE_CALLS = 2
+# A gap is exhausted when at least this many queries aimed at it, over at least
+# two rounds in a row, brought no stage-2 keeper on it: it gets no more queries,
+# and when every open gap is exhausted the run stops (`gaps_exhausted`).
+# Measured on two real runs: every gap that ever brought a keeper did so within
+# its first two rounds, and the longest stretch of queries a gap later broke
+# with a keeper was 5. The two that never did had 10 and 5 queries over two
+# rounds, and 16 and 6 over three. 6 is above the 5 and stops the first at the
+# end of round two.
+DEFAULT_GAP_EXHAUSTED_AFTER = 6
 # Whether the last round may release candidates on held items past the held
 # cap to fill the video budget. Off: measured, the release bought 9 and 14
 # held candidates in two runs' last rounds, and 13 and 8 of their stored
@@ -360,7 +369,8 @@ class DiscoverConfig:
     web_context_results: int = DEFAULT_WEB_CONTEXT_RESULTS
     baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
     baseline_calls: int = DEFAULT_BASELINE_CALLS
-    # See DEFAULT_RELEASE_HELD_LAST_ROUND.
+    # See DEFAULT_GAP_EXHAUSTED_AFTER and DEFAULT_RELEASE_HELD_LAST_ROUND.
+    gap_exhausted_after: int = DEFAULT_GAP_EXHAUSTED_AFTER
     release_held_last_round: bool = DEFAULT_RELEASE_HELD_LAST_ROUND
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
@@ -686,6 +696,9 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         ),
         baseline_calls=_positive(
             section, "baseline_calls", DEFAULT_BASELINE_CALLS, config_path, "discover"
+        ),
+        gap_exhausted_after=_positive(
+            section, "gap_exhausted_after", DEFAULT_GAP_EXHAUSTED_AFTER, config_path, "discover"
         ),
         release_held_last_round=_flag(
             section, "release_held_last_round", DEFAULT_RELEASE_HELD_LAST_ROUND,
