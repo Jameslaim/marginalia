@@ -531,6 +531,10 @@ def _loop(
         planned = _plan_round(
             config, judge, run, number, threads, from_planner, expansion_counts
         )
+        # **One query text once a round, whatever its source.** The planner's
+        # query and a thread query with the same words ran as two searches in
+        # one round, differing only in a language filter (run `55b34544d713`).
+        planned, same_text = one_per_text(planned)
         # Validated again: the map's queries were validated inside `Mapper.map`
         # and the planner's when the plan was made. That is deliberate rather
         # than sloppy — this is the only gate between a proposed filter and a
@@ -572,7 +576,9 @@ def _loop(
                 for item in rejections
                 if not item.is_duplicate_query and not item.is_recency_waiver
             ),
-            duplicates_skipped=sum(
+            # The validator's duplicates — a query already run, or repeated with
+            # the same filters — and this round's repeated texts across sources.
+            duplicates_skipped=same_text + sum(
                 1 for item in rejections if item.is_duplicate_query
             ),
             # Counted off the queries this round will search, not off this
@@ -676,6 +682,24 @@ def _loop(
             )
 
     run.stopped_because = STOP_MAX_ROUNDS
+
+
+def one_per_text(queries: Sequence[PlannedQuery]) -> tuple[list[PlannedQuery], int]:
+    """``(kept, skipped)``: each query text once, the first source's kept.
+
+    The same words in one round are one search whatever their source or
+    filters — except ``order``, which returns a different slice of the same
+    results (`PlannedQuery.key`). Across rounds the validator's identity holds.
+    """
+    kept: list[PlannedQuery] = []
+    seen: set[tuple[str, str]] = set()
+    for query in queries:
+        identity = (" ".join(query.text.lower().split()), query.filters.order or "")
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kept.append(query)
+    return kept, len(queries) - len(kept)
 
 
 def _spend_remaining(
