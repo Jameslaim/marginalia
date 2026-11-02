@@ -24,8 +24,8 @@ from ..contracts import CoverageItem, LibraryCoverage
 from .judge import aim_words, brief_items, brief_parts
 
 __all__ = [
-    "FLIP_HELD", "FLIP_STATE", "FLIP_UNLISTED", "BriefAnchor", "disagree", "resolve_coverage",
-    "thing_name",
+    "FLIP_HELD", "FLIP_STATE", "FLIP_UNLISTED", "BriefAnchor", "disagree", "names_only",
+    "resolve_coverage", "thing_name",
 ]
 
 _RANK = {"no": 0, "partly": 1, "yes": 2}
@@ -53,6 +53,21 @@ def thing_name(text: str) -> str:
         if mark in text:
             text = text.split(mark, 1)[0]
     return " ".join(text.split())
+
+
+def names_only(coverage: LibraryCoverage) -> LibraryCoverage:
+    """The coverage with every missing thing cut to its name.
+
+    A missing thing names what to search for and carries no evidence: measured,
+    a baseline wrote video ids and a paraphrase after the dash, and they went
+    on into the plan's items and every query's origin. Applied where a reply
+    is parsed and where a stored baseline is read back, so one written before
+    this is read the same way and needs no new key.
+    """
+    return replace(coverage, items=[
+        replace(item, missing=tuple(dict.fromkeys(thing_name(thing) for thing in item.missing)))
+        for item in coverage.items
+    ])
 
 
 class BriefAnchor:
@@ -158,7 +173,7 @@ def resolve_coverage(
                 names.setdefault(k, thing)
                 missing_names.setdefault(k, thing_name(thing))
                 missing_in.setdefault(k, set()).add(position)
-        missing = [names[k] for k in names if k in missing_in]
+        missing = [missing_names[k] for k in names if k in missing_in]
         held = [names[k] for k in names if k not in missing_in]
         mark = least.mark
         if mark == "yes" and missing:

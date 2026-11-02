@@ -67,7 +67,7 @@ from ..brain.judge import (
     item_lines,
     match_item,
 )
-from ..brain.coverage import resolve_coverage
+from ..brain.coverage import names_only, resolve_coverage
 from ..brain.planner import BASELINE_PROMPT, PLAN_PROMPT, Planner, apply_revisions
 from ..brain.search_plan import SearchPlanner
 from .web_context import context_lines, gather_context
@@ -805,7 +805,7 @@ def _assess_library(
         stored = ledger.stored_baseline(state.key)
         if stored is not None:
             baseline = replace(
-                LibraryCoverage.from_dict(json.loads(stored.coverage_json)),
+                names_only(LibraryCoverage.from_dict(json.loads(stored.coverage_json))),
                 reuse=BASELINE_REUSED, reused_from=stored.run_id or "", key_sha256=state.key,
                 calls=0, flips=(), input_tokens=0, output_tokens=0, latency_s=0.0,
             )
@@ -902,7 +902,7 @@ def reusable_baseline(
     stored = ledger.stored_baseline(state.key) if state is not None else None
     if stored is None:
         return None
-    return replace(LibraryCoverage.from_dict(json.loads(stored.coverage_json)),
+    return replace(names_only(LibraryCoverage.from_dict(json.loads(stored.coverage_json))),
                    reuse=BASELINE_REUSED, reused_from=stored.run_id or "", key_sha256=state.key)
 
 

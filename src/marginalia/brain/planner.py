@@ -65,6 +65,7 @@ from ..contracts import (
     VERDICT_YES,
 )
 from ..llm import LlmClient, LlmConfigError, Prompt, load_prompt, safe_reason
+from .coverage import thing_name
 from .territory import parse_filters, tidy, validate
 
 log = logging.getLogger(__name__)
@@ -388,9 +389,12 @@ def _parse_coverage(body: str) -> CoverageItem | None:
             if piece:
                 rest.append(piece)
             continue
-        target = held if found.group(1).lower() == "held" else missing
+        is_held = found.group(1).lower() == "held"
+        target = held if is_held else missing
         target.extend(
-            tidy(thing, limit=_MAX_THING).strip("*. ")
+            # A missing thing is a name only: evidence after its dash is cut
+            # here, where the reply is read (rule 1; `thing_name`).
+            tidy(thing if is_held else thing_name(thing), limit=_MAX_THING).strip("*. ")
             for thing in found.group(2).split(";")
             if thing.strip(" .*-")
         )
