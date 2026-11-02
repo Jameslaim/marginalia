@@ -1996,9 +1996,6 @@ def _judge_round(
         else:
             _pace(config, fetched_any)
             fetched_any = True
-            if entry is not None:
-                state = _level(entry)
-                report.fetched_by_state[state] = report.fetched_by_state.get(state, 0) + 1
             acquisition = acquire(ledger, candidate.video_id, providers)
             if acquisition.outcome == ACQUIRE_NO_CAPTIONS:
                 # A route, not a failure — counted as one in discovery alone,
@@ -2013,6 +2010,12 @@ def _judge_round(
             if not acquisition.acquired:
                 report.failed += 1
                 continue
+            # Counted once the transcript is in hand. Counted before the fetch,
+            # a video with no captions was a fetch here and a no-caption route
+            # on the line below it, so the rounds summed to more than the run
+            # fetched (54 and 53 against 52 and 52).
+            state = _level(entry) if entry is not None else ITEM_UNTAGGED
+            report.fetched_by_state[state] = report.fetched_by_state.get(state, 0) + 1
             fetched = acquisition.result
             assert fetched is not None
             if fetched.audio_label:

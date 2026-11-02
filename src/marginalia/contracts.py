@@ -2062,6 +2062,11 @@ class RoundReport:
     plan: RoundPlan | None = None
 
     @property
+    def fetched(self) -> int:
+        """Transcripts this round fetched: the sum of `fetched_by_state`."""
+        return sum(self.fetched_by_state.values())
+
+    @property
     def judged_here(self) -> int:
         """Candidates this round actually reached a stage-2 verdict on.
 
@@ -2138,6 +2143,11 @@ class DiscoverRun:
     # CONTEXT, or why it did not. Read by the plan call and by the report,
     # never by a judge, a note or `ask`.
     web_context: "WebContext" = field(default_factory=lambda: WebContext())
+
+    @property
+    def fetched(self) -> int:
+        """Transcripts this run fetched, summed over its rounds."""
+        return sum(report.fetched for report in self.rounds)
 
     @property
     def candidates_seen(self) -> int:

@@ -1106,6 +1106,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
             for rejection in run.rejected_filters
         ],
         "stopped_because": run.stopped_because,
+        "fetched": run.fetched,
         "requests": run.requests,
         "input_tokens": run.input_tokens,
         "output_tokens": run.output_tokens,
@@ -1162,6 +1163,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "held_cap": report.held_cap,
                 "held_capped": report.held_capped,
                 "released": report.released,
+                "fetched": report.fetched,
                 "unread_by_item": _count_by_item(report.unread),
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next
