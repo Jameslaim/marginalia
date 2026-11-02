@@ -12,6 +12,8 @@ The subjects below are invented and general; none is a test topic.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from conftest import make_llm_config
 from marginalia.brain.judge import (
     Judge,
@@ -275,6 +277,7 @@ def test_the_safeguard_releases_held_slots_when_no_later_round_can_use_them(
 ) -> None:
     judge = _shape(searches, library, gaps_maybe=GAP[:1])
 
+    config = replace(config, discover=replace(config.discover, release_held_last_round=True))
     outcome = run(config, ledger, library, client, judge,
                   max_rounds=1, max_videos=4, planner=FakePlanner(baseline=COVERAGE))
 
@@ -349,7 +352,9 @@ def test_an_unmatched_tag_is_counted_and_read_as_untagged(
     only = outcome.rounds[0]
     assert only.tags_unmatched == 1
     assert only.tagged == {ITEM_HELD: 1, ITEM_UNTAGGED: 1, ITEM_PARTLY: 1}
-    assert transcripts.fetched == ["partpart001", "unmatched01", "heldheld001"]
+    # The held one is past the cap of 1, and the last round no longer releases it.
+    assert transcripts.fetched == ["partpart001", "unmatched01"]
+    assert only.held_back_last == 1
 
 
 @pytest.mark.parametrize("allowance, cap", [(0, 0), (1, 1), (3, 1), (9, 3), (25, 8)])

@@ -142,6 +142,11 @@ DEFAULT_BASELINE_MAX_TOKENS = 32768
 # items' less-held state. A third call only when two disagree would have run on
 # 5 of 6 pairs. A reused baseline makes none. 1 is the old behaviour.
 DEFAULT_BASELINE_CALLS = 2
+# Whether the last round may release candidates on held items past the held
+# cap to fill the video budget. Off: measured, the release bought 9 and 14
+# held candidates in two runs' last rounds, and 13 and 8 of their stored
+# videos, nearly all repeats of parts the library already held.
+DEFAULT_RELEASE_HELD_LAST_ROUND = False
 DEFAULT_TERRITORY_MAX_TOKENS = 16384
 DEFAULT_PLANNER_MAX_TOKENS = 16384
 # Whether to believe `contentDetails.caption` when it says a video has no
@@ -355,6 +360,8 @@ class DiscoverConfig:
     web_context_results: int = DEFAULT_WEB_CONTEXT_RESULTS
     baseline_max_tokens: int = DEFAULT_BASELINE_MAX_TOKENS
     baseline_calls: int = DEFAULT_BASELINE_CALLS
+    # See DEFAULT_RELEASE_HELD_LAST_ROUND.
+    release_held_last_round: bool = DEFAULT_RELEASE_HELD_LAST_ROUND
     territory_max_tokens: int = DEFAULT_TERRITORY_MAX_TOKENS
     planner_max_tokens: int = DEFAULT_PLANNER_MAX_TOKENS
     # Stage 2's own output ceiling. `None` — the default — keeps the global
@@ -679,6 +686,10 @@ def _discover(data: dict, config_path: Path) -> DiscoverConfig:
         ),
         baseline_calls=_positive(
             section, "baseline_calls", DEFAULT_BASELINE_CALLS, config_path, "discover"
+        ),
+        release_held_last_round=_flag(
+            section, "release_held_last_round", DEFAULT_RELEASE_HELD_LAST_ROUND,
+            config_path, "discover",
         ),
         territory_max_tokens=_positive(
             section, "territory_max_tokens", DEFAULT_TERRITORY_MAX_TOKENS,

@@ -591,7 +591,8 @@ def _gap_first_line(report) -> str | None:
     return (
         f"          items: stage 1 tagged {tagged} ({report.tags_unmatched} unmatched); "
         f"fetched {fetched}; held cap {report.held_cap}, "
-        f"{report.held_capped} left by it, {report.released} released past it"
+        f"{report.held_capped} left by it, {report.released} released past it, "
+        f"{report.held_back_last} held back in the last round (release off)"
     )
 
 
@@ -1165,6 +1166,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "held_capped": report.held_capped,
                 "released": report.released,
                 "fetched": report.fetched,
+                "held_back_last": report.held_back_last,
                 "unread_by_item": _count_by_item(report.unread),
                 # What the planner concluded at the end of this round, in full:
                 # its coverage assessment, the queries it wrote for the next

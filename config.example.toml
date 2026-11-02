@@ -407,6 +407,13 @@ web_context_results = 10
 # before.
 baseline_calls = 2
 
+# Whether the last round may release candidates on held items past the held
+# cap, to fill the video budget. Off: measured on two real runs, the release
+# took 9 and 14 held candidates in the last round and 13 and 8 of the runs'
+# stored videos came from that round, nearly all on parts the library already
+# held. Off, a run stores fewer videos and says how many it held back.
+release_held_last_round = false
+
 # B5. Queries the planner writes at the end of each round, for the next one.
 # They run *first* in that round — they were written against the gaps the last
 # round actually left open — and `queries_per_round` still runs alongside them,

@@ -2066,6 +2066,9 @@ class RoundReport:
     # round, on a dry run, and whenever the budget stopped the loop first —
     # planning a round that cannot happen is a request spent on nothing.
     plan: RoundPlan | None = None
+    # Held candidates the last round left unread because the release is off
+    # (`release_held_last_round`): the run stores fewer, and says how many.
+    held_back_last: int = 0
 
     @property
     def fetched(self) -> int:

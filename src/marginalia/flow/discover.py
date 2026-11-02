@@ -1920,7 +1920,11 @@ def _judge_round(
     # what is left would buy only repeats, and stopping is the planner's call.
     capped = bool(coverage)
     cap = held_cap(allowance) if capped else 0
-    release = last and coverage_has_gap(coverage)
+    gap_open = capped and coverage_has_gap(coverage)
+    # **The release is a setting, off by default.** Measured on two real runs,
+    # it bought 9 and 14 held candidates in the last round, where 13 and 8 of
+    # the runs' stored videos came from, nearly all on parts already held.
+    release = last and gap_open and config.discover.release_held_last_round
     report.held_cap = max(report.held_cap, cap)
     off_gap_here = 0
     ordered: list[tuple[SearchResult, object | None, UnreadCandidate | None]] = [
@@ -1950,7 +1954,11 @@ def _judge_round(
             # a held item or none, so they wait together; the slots stay in the
             # budget for the next round's share.
             stop_at = index
-            report.held_capped += sum(1 for _, _, rest in ordered[index:] if rest is not None)
+            waiting = sum(1 for _, _, rest in ordered[index:] if rest is not None)
+            report.held_capped += waiting
+            if last and gap_open:
+                # The release would have spent these; off, they are counted.
+                report.held_back_last += waiting
             break
         if entry is not None:
             run.fetched_by_query[entry.query] = run.fetched_by_query.get(entry.query, 0) + 1
