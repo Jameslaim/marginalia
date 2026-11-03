@@ -356,22 +356,24 @@ def test_the_retryable_4xx_still_retry(status: int) -> None:
 
 
 def test_backoff_is_exponential() -> None:
+    """A failed request that is not an outage — a timeout, a conflict — keeps
+    1, 2, 4 (`_OUTAGE_BACKOFF_S` is for the provider being down)."""
     clock = FakeClock()
     instance, _ = client(
-        HttpError(500), HttpError(500), HttpError(500), FakeResponse("ok"), clock=clock
+        HttpError(408), HttpError(408), HttpError(408), FakeResponse("ok"), clock=clock
     )
     instance.complete("s", "u")
     assert clock.slept == [1.0, 2.0, 4.0]
 
 
 def test_giving_up_names_the_last_failure() -> None:
-    instance, calls = client(*[HttpError(500)] * 6, max_attempts=3)
+    instance, calls = client(*[HttpError(408)] * 6, max_attempts=3)
 
     with pytest.raises(LlmError) as caught:
         instance.complete("s", "u")
 
     assert len(calls) == 3
-    assert "500" in str(caught.value)
+    assert "408" in str(caught.value)
 
 
 def test_a_missing_key_is_reported_as_unconfigured() -> None:
@@ -1015,11 +1017,12 @@ def test_an_unreadable_retry_after_falls_back_to_the_backoff() -> None:
     turns it into a hot loop against a server that just asked for room."""
     clock = FakeClock()
     instance, _ = client(
-        HttpErrorWithHeaders(429, {"retry-after": "soon-ish"}), FakeResponse("ok"), clock=clock
+        HttpErrorWithHeaders(429, {"retry-after": "soon-ish"}), FakeResponse("ok"), clock=clock,
+        jitter=lambda: 1.0,
     )
 
     instance.complete("s", "u")
-    assert clock.slept == [1.0], "the ordinary first backoff"
+    assert clock.slept == [2.0], "the outage schedule's first wait"
 
 
 def test_a_wait_longer_than_the_run_stops_instead_of_hanging() -> None:
@@ -1118,7 +1121,7 @@ class _Unclassified(Exception):
     ids=["unclassified", "503", "402", "401", "418", "400-overflow"],
 )
 def test_no_provider_text_reaches_the_error_or_the_log(failure, caplog) -> None:
-    instance, _ = client(failure, failure, failure, failure)
+    instance, _ = client(*[failure] * 10)
 
     with caplog.at_level(logging.DEBUG, logger="marginalia"):
         with pytest.raises(LlmError) as raised:
@@ -1491,10 +1494,10 @@ def test_a_connection_failure_gives_up_within_a_bounded_wait_and_says_so(caplog)
         with pytest.raises(LlmError) as caught:
             instance.complete("s", "u")
 
-    assert len(calls) == 6, "five waits, then the last attempt"
-    assert sum(clock.slept) <= 75.0
-    assert "gave up after 6 attempts" in caplog.text
-    assert "after 6 attempts" in str(caught.value)
+    assert len(calls) == 10, "nine waits, then the last attempt"
+    assert sum(clock.slept) <= 300.0
+    assert "gave up after 10 attempts" in caplog.text
+    assert "after 10 attempts" in str(caught.value)
 
 
 def test_the_connection_wait_is_jittered() -> None:
@@ -1506,15 +1509,27 @@ def test_the_connection_wait_is_jittered() -> None:
     assert clock.slept == [pytest.approx(1.6)]
 
 
-def test_a_server_error_keeps_the_short_schedule() -> None:
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_a_provider_outage_is_waited_out_within_five_minutes(status: int) -> None:
+    """Measured: a 503 for 8 seconds ended a discovery run after its baseline
+    and plan were paid for. An outage status now gets the outage schedule."""
     clock = FakeClock()
-    instance, calls = client(*[HttpError(500)] * 10, clock=clock, jitter=lambda: 1.0)
+    instance, calls = client(*[HttpError(status)] * 10, clock=clock, jitter=lambda: 1.0)
 
     with pytest.raises(LlmError):
         instance.complete("s", "u")
 
-    assert len(calls) == 4
-    assert clock.slept == [1.0, 2.0, 4.0]
+    assert len(calls) == 10
+    assert clock.slept == [2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 58.0]
+    assert sum(clock.slept) == 300.0
+
+
+def test_an_outage_that_ends_is_ridden_out() -> None:
+    clock = FakeClock()
+    instance, calls = client(*[HttpError(503)] * 5, FakeResponse("back"), clock=clock, jitter=lambda: 1.0)
+
+    assert instance.complete("s", "u").text == "back"
+    assert sum(clock.slept) == 62.0
 
 
 def test_retrying_turned_off_stays_off_for_a_connection_failure() -> None:

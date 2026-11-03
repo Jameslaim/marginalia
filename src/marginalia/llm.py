@@ -368,8 +368,8 @@ class LlmClient:
         ]
         extra = self.config.extra_for(task)
         last: Exception | None = None
-        # Raised from `_max_attempts` the first time a connection-class failure
-        # is seen, when retrying is on at all; see `_CONNECTION_BACKOFF_S`.
+        # Raised from `_max_attempts` the first time an outage-class failure is
+        # seen, when retrying is on at all; see `_OUTAGE_BACKOFF_S`.
         limit = self._max_attempts
         waited = 0.0
 
@@ -415,22 +415,22 @@ class LlmClient:
                         f"take — stopping instead {_safe(error, exc)}"
                     ) from exc
 
-                connection = _is_connection_failure(exc)
-                if connection and self._max_attempts > 1:
-                    limit = max(limit, len(_CONNECTION_BACKOFF_S) + 1)
+                outage = _is_outage(exc)
+                if outage and self._max_attempts > 1:
+                    limit = max(limit, len(_OUTAGE_BACKOFF_S) + 1)
                 if attempt >= limit:
-                    if connection and waited:
+                    if outage and waited:
                         log.warning(
-                            "llm: gave up after %d attempts and %.0fs of waiting on a "
-                            "connection failure (%s)",
+                            "llm: gave up after %d attempts and %.0fs of waiting on an "
+                            "outage (%s)",
                             attempt, waited, _safe(error, exc),
                         )
                     break
                 if asked is not None:
                     backoff = asked
-                elif connection:
-                    base = _CONNECTION_BACKOFF_S[min(attempt, len(_CONNECTION_BACKOFF_S)) - 1]
-                    backoff = min(base * self._jitter(), _CONNECTION_WAIT_S - waited)
+                elif outage:
+                    base = _OUTAGE_BACKOFF_S[min(attempt, len(_OUTAGE_BACKOFF_S)) - 1]
+                    backoff = min(base * self._jitter(), _OUTAGE_WAIT_S - waited)
                 else:
                     backoff = 2.0 ** (attempt - 1)
                 backoff = max(0.0, backoff)
@@ -445,8 +445,8 @@ class LlmClient:
                     _safe(error, exc),
                     backoff,
                     " (as the provider asked)" if asked is not None
-                    else f" (connection; {waited:.0f}s waited of {_CONNECTION_WAIT_S:.0f}s)"
-                    if connection else "",
+                    else f" (outage; {waited:.0f}s waited of {_OUTAGE_WAIT_S:.0f}s)"
+                    if outage else "",
                 )
                 self._sleep(backoff)
                 continue
@@ -640,16 +640,23 @@ _RETRY_AFTER_HEADER = "retry-after"
 # schedules and far shorter than a note drain.
 _MAX_RETRY_AFTER_S = 120.0
 
-# **A connection that drops waits longer than a request that failed.** The
-# 1, 2, 4 s schedule gives up after about 7 seconds, and a connection outage of
-# about 30 seconds failed three notes in a row and stopped a note run on
-# `repeated_failures`. A connection-class failure — the request never reached a
-# server that answered — gets this schedule instead: five waits, each scaled
-# by a jitter of ±`_JITTER` so a drain of many clients does not retry in step,
-# and all of them together capped at `_CONNECTION_WAIT_S`, so the worst case is
-# bounded and logged. Every other failure keeps 1, 2, 4.
-_CONNECTION_BACKOFF_S = (2.0, 4.0, 8.0, 16.0, 30.0)
-_CONNECTION_WAIT_S = 75.0
+# **An outage is waited out; a failed request is retried.** The 1, 2, 4 s
+# schedule gives up after about 7 seconds. Measured twice: a connection outage
+# of about 30 seconds failed three notes in a row and stopped a note run, and a
+# provider answering 503 for 8 seconds ended discovery run `0c65d765d2a3`
+# after its baseline and plan had been paid for. An outage-class failure — no
+# server answered, or the provider said it is overloaded or rate-limiting
+# (429, 500, 502, 503, 504) — gets this schedule instead: nine waits, each
+# scaled by a jitter of ±`_JITTER` so many clients do not retry in step, and
+# all of them together capped at `_OUTAGE_WAIT_S`, five minutes, so the worst
+# case is bounded and logged. The provider's guidance for these codes is to
+# retry after a short wait or pace requests; a failed attempt is not billed, so
+# the cost of waiting is time alone, and five minutes is short beside a run.
+# A Retry-After header still wins (`_retry_after`). Every other retryable
+# failure (408, 409, an unclassified error) keeps 1, 2, 4.
+_OUTAGE_BACKOFF_S = (2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0, 60.0)
+_OUTAGE_WAIT_S = 300.0
+_OUTAGE_STATUSES = frozenset({429, 500, 502, 503, 504})
 _JITTER = 0.25
 
 # What a connection-class failure looks like, by class: the builtin family and
@@ -665,6 +672,14 @@ def _is_connection_failure(exc: Exception) -> bool:
     return isinstance(exc, (ConnectionError, TimeoutError)) or any(
         cls.__name__ in _CONNECTION_NAMES for cls in type(exc).__mro__
     )
+
+
+def _is_outage(exc: Exception) -> bool:
+    """No server answered, or the provider said it is overloaded or limiting."""
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in _OUTAGE_STATUSES
+    return _is_connection_failure(exc)
 
 # Where a provider puts the one field its support will ask for. Headers first,
 # because a header cannot contain a transcript; the SDK attribute second.

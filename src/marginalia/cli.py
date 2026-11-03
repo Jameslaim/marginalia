@@ -96,7 +96,7 @@ from .flow.brief import (
     set_owner_recency,
     write_pending,
 )
-from .flow.discover import decide_recency, discover
+from .flow.discover import STOP_MODEL_UNAVAILABLE, decide_recency, discover
 from .flow.doctor import diagnose
 from .flow.export import export_run
 from .flow.refetch import refetch
@@ -390,6 +390,10 @@ def _candidate_json(candidate: Candidate) -> dict[str, Any]:
     }
 
 
+# Discovery stops that end the run before its work: printed in full, exit 1.
+_DISCOVER_FAILED = frozenset({STOP_MODEL_UNAVAILABLE})
+
+
 def _cmd_discover(args: argparse.Namespace) -> int:
     config = _load(args)
     library = Library(config.library_path)
@@ -411,13 +415,16 @@ def _cmd_discover(args: argparse.Namespace) -> int:
             web_context=None if args.web_context is None else args.web_context == "on",
         )
 
+    # Recorded and reported in full, and still not a success: a run the model
+    # provider ended is reported, then exits as failed.
+    status = EXIT_FAILED if run.stopped_because in _DISCOVER_FAILED else EXIT_OK
     if args.json:
         print(json.dumps(_discover_json(run), indent=2, ensure_ascii=False))
-        return EXIT_OK
+        return status
 
     for line in _discover_report(run):
         print(line)
-    return EXIT_OK
+    return status
 
 
 def _brief_line(run) -> str:

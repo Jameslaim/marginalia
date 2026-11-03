@@ -139,7 +139,7 @@ from ..core.ledger import now as ledger_now
 from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
 from ..quotes import note_sections
 from ..core.library import Library, format_timestamp, render_transcript
-from ..llm import LlmClient, LlmConfigError, load_prompt
+from ..llm import LlmClient, LlmConfigError, LlmError, load_prompt
 from ..providers import PermanentError, TransientError
 from ..providers.base import TranscriptProvider
 from .acquire import acquire, transcript_providers
@@ -182,6 +182,10 @@ STOP_CONTEXT_WINDOW = "context_window"
 # keeper. Its own word, because it is neither the brief being covered nor the
 # money running out: the gaps are named on the run (`stop_detail`).
 STOP_GAPS_EXHAUSTED = "gaps_exhausted"
+# The model provider stayed unavailable through every retry (`llm`'s outage
+# schedule). The run ends cleanly: recorded, with what it stored kept and the
+# last failure named. A refusal — 402, a rejected key — is `provider_refused`.
+STOP_MODEL_UNAVAILABLE = "model_unavailable"
 # How many stage-2 overflows in a row, with nothing fitting between them, end the
 # run. Above the client's own three: three long videos in a row are ordinary
 # (R1 F5) and must not end a run; five with nothing fitting is a setting.
@@ -199,6 +203,7 @@ STOP_REASONS = (
     STOP_REFUSED,
     STOP_CONTEXT_WINDOW,
     STOP_GAPS_EXHAUSTED,
+    STOP_MODEL_UNAVAILABLE,
 )
 
 # Requests a round needs beyond judging: query expansion. Checked before the
@@ -363,6 +368,13 @@ def discover(
         # recorded as `incomplete` it read exactly like a crash.
         run.stopped_because = STOP_REFUSED
         raise
+    except LlmError as exc:
+        # **An outage that outlasted the retries ends the run, not the
+        # process.** Measured: a 503 for 8 seconds raised out of discovery and
+        # the run was recorded `incomplete`, read exactly like a crash.
+        run.stopped_because = STOP_MODEL_UNAVAILABLE
+        run.stop_detail = f"the model provider stayed unavailable through the retries — {exc}"
+        log.warning("discover: %s", run.stop_detail)
     finally:
         run.requests = client.usage.requests
         run.input_tokens = client.usage.input_tokens
