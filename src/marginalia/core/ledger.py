@@ -1488,22 +1488,23 @@ class Ledger:
         """
         rows = []
         for row in self.list_by_status(STATUS_HAS_TRANSCRIPT):
+            if missing_only and row.noted_at is not None:
+                continue
+            if not missing_only and stale_only and row.note_is_current(version):
+                continue
             decisions = self.decisions_for(row.video_id)
             if not wanted_for_a_note(row, decisions):
                 continue
             # **Only keepers**, as this docstring always said: measured, a
             # no-ids run queued stage-2 NO videos, against it. Counted in
-            # `not_keepers`, by reason (`note_keeper`).
+            # `not_keepers`, by reason (`note_keeper`) — after the width
+            # filters, so the count is of videos this run would have taken.
             why = note_keeper(decisions)
             if why:
                 if not_keepers is not None:
                     not_keepers[why] = not_keepers.get(why, 0) + 1
                 continue
             rows.append(row)
-        if missing_only:
-            rows = [row for row in rows if row.noted_at is None]
-        elif stale_only:
-            rows = [row for row in rows if not row.note_is_current(version)]
         # Untried first (by `first_seen`, a stable sort), then fewest failures,
         # then the oldest failure — so a video that keeps failing sinks behind
         # the ones that failed once. Without this the same three failing videos
