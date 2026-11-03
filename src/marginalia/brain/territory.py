@@ -49,6 +49,7 @@ from ..contracts import (
     ORDER_VALUES,
     ORIGIN_TERRITORY,
     RECENCY_DERIVED_WHY,
+    RECENCY_OWNER,
     VIDEO_DURATION_VALUES,
     Brief,
     FilterRejection,
@@ -157,9 +158,11 @@ class UserConstraints:
     they asked for excluded, silently, by a model reasoning about ecosystems.
     """
 
-    def __init__(self, *, no_date_filter: bool = False, reason: str = "") -> None:
+    def __init__(self, *, no_date_filter: bool = False, reason: str = "", outranked: str = "") -> None:
         self.no_date_filter = no_date_filter
         self.reason = reason
+        # The topic's phrase an owner-set window outranked, or "".
+        self.outranked = outranked
 
 
 # Phrases that say, in the user's own words, that age is not a disqualifier.
@@ -182,13 +185,27 @@ _TIMELESS_PHRASES = (
 )
 
 
-def user_constraints(topic: str) -> UserConstraints:
-    """Read the explicit constraints out of the topic the user typed."""
+def user_constraints(topic: str, recency: Recency | None = None) -> UserConstraints:
+    """Read the explicit constraints out of the topic the user typed.
+
+    **An owner-set window outranks a phrase in the topic.** The phrase is a
+    guess at what the user meant, read from one word; a window the owner set
+    for the approved brief is what they meant, said after reading the brief.
+    Measured: a topic asking "what still works from classic SEO" read as a
+    request for old material, and the owner's "last 24 months" reached none of
+    its 37 queries. A window the model sampled or decided does not outrank it.
+    """
     lowered = " ".join(topic.split()).lower()
     for phrase in _TIMELESS_PHRASES:
         # Whole words. As a substring "ever" is inside "every", "however" and
         # "never", and "every agent framework" is not a request for old videos.
         if re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", lowered):
+            if recency is not None and recency.source == RECENCY_OWNER and recency.limited:
+                return UserConstraints(
+                    outranked=phrase,
+                    reason=f"the owner set {recency.label} for the approved brief, "
+                    f"which outranks the topic's {phrase!r}",
+                )
             return UserConstraints(
                 no_date_filter=True,
                 reason=f"the topic says {phrase!r}, which asks for older material",
@@ -585,7 +602,7 @@ def waiver_applies(query: PlannedQuery, *, recency: Recency, topic: str = "") ->
     already forbade the filter, prevented nothing; nor does one on a variant,
     which is never dated anyway — counting those would be counting no-ops.
     """
-    return _waiver_applies(query, recency=recency, constraints=user_constraints(topic))
+    return _waiver_applies(query, recency=recency, constraints=user_constraints(topic, recency))
 
 
 def _waiver_applies(
@@ -599,13 +616,15 @@ def _waiver_applies(
     )
 
 
-def _derived_why(recency: Recency) -> str:
+def _derived_why(recency: Recency, constraints: UserConstraints | None = None) -> str:
     """The `why` a derived cutoff carries into `filters_json`."""
+    over = (f"; owner-set, outranks the topic's {constraints.outranked!r}"
+            if constraints is not None and constraints.outranked else "")
     if not recency.samples or recency.agreed:
-        return f"{RECENCY_DERIVED_WHY} ({recency.label})"
+        return f"{RECENCY_DERIVED_WHY} ({recency.label}{over})"
     return (
         f"{RECENCY_DERIVED_WHY} ({recency.label}; "
-        f"{len(recency.samples)} samples returned {recency.samples_label}, widest taken)"
+        f"{len(recency.samples)} samples returned {recency.samples_label}, widest taken{over})"
     )
 
 
@@ -688,7 +707,7 @@ def _derive_published_after(
                 # a consensus or a coin flip?" is a question the ledger can
                 # answer on any run months later — and the answer changes how
                 # much a stored cutoff should be trusted.
-                FILTER_PUBLISHED_AFTER: _derived_why(recency),
+                FILTER_PUBLISHED_AFTER: _derived_why(recency, constraints),
             },
         ),
         None,
@@ -770,7 +789,7 @@ def validate(
     duplicate was already dropped.
     """
     today = today or datetime.now(timezone.utc).date()
-    constraints = user_constraints(topic)
+    constraints = user_constraints(topic, recency)
     seen = {key for key in already_run}
     # A variant may name a main query that already ran — earlier this round in a
     # previous pass, or in an earlier round — and still adds a slice. Without
