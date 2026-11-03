@@ -535,6 +535,11 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     in `filters_json` so the ledger still says whether a date was a judgement or
     arithmetic.
 
+    A window the owner set for the approved brief outranks a phrase in the topic:
+    measured, a topic asking what still works from classic practice read as a request for
+    older material, and the owner's last 24 months reached none of 37 queries. A sampled
+    or decided window still yields to the phrase.
+
 18. **A rejection reason is evidence about the judge, never a fact about the world.**
     The planner reads what the round decided, and the thing it must not do is redesign
     the search around a rejection pattern. When this judge had a duration bias, twelve of
@@ -732,6 +737,15 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     there is nothing left to degrade to. Recorded so it is not re-litigated from the
     same video.
 
+    Two refusals one layer below the model provider are honoured the same way. A
+    transcript provider that fails three fetches in a row — a rate limit, a bot check,
+    the network — stops discovery as `throttled`, as it stops refetch: measured,
+    discovery otherwise ran two more rounds and 28 searches against a block for one
+    transcript. And an outage is waited out, not retried for 8 seconds: 429 and 5xx get
+    up to five minutes of backoff, and an outage that outlasts it ends the run as
+    `model_unavailable`, recorded with what it stored. A 402 or a rejected key still
+    stops at once.
+
 25. **A guard added to one caller must be traced to every caller that shares the
     failure.** Fixing the caller where a failure was *observed* is half the work; the
     other half is asking what else calls the same thing in the same way, and it is
@@ -877,17 +891,20 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     to relax one a part's videos can meet. A stage-1 NO that guesses is MAYBE in
     code, under rule 8, kept in `said` and counted in `guessed_no`.
 
-30. **A reply that feeds another call is checked before it is fed.** A model reply
-    passed into a second call — a draft into its review, a plan into the next round, a
-    query list into the search — must have finished and must be the thing it claims to be.
-    Checked only afterwards, it is not checked at all: the review of an empty draft wrote a
-    brief from the topic alone and looked like a reviewed one (2 of 12 drafts with the
+30. **A reply that feeds another call is checked before it is fed.** A model reply passed
+    into a second call — a draft into its review, a plan into the next round, a query
+    list into the search — must have finished and must be the thing it claims to be.
+    Checked only afterwards, it is not checked at all: the review of an empty draft wrote
+    a brief from the topic alone and looked like a reviewed one (2 of 12 drafts with the
     `write_brief` v5 prompt at a 16,384-token ceiling). What a step does with an unusable
-    reply depends on the step — the brief draft is drawn again once and then stops the run
-    before anything spends quota or records a decision; a cut query list drops its
+    reply depends on the step — the brief draft is drawn again once and then stops the
+    run before anything spends quota or records a decision; a cut query list drops its
     possibly half-written last line; the map and the planner discard a cut reply — but it
     is never passed on as if it were whole, and never silently. How the brief was made is
-    recorded on the run (`runs.brief_outcome`).
+    recorded on the run (`runs.brief_outcome`). A line that is the reply format's own
+    words is never a query: measured, a one-token expansion reply, `query`, ran as a
+    search. A reply with no usable query is refused and its step runs without it — never
+    replaced by the topic — and a short one is counted.
 
 31. **A budget is spent across what was searched for, and a NO names what was seen.** A
     run-wide cap spent in discovery order lets the first queries' finds crowd out every
@@ -1077,7 +1094,11 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     gap left, and threads then spent 20 queries on held parts and their concepts for
     about 12 keepers, nearly all repeats; one part's 16 queries over three rounds found
     no keeper. Replayed, the rules would have run 5 and 14 fewer searches, stored 16 of
-    25 and 12 of 15, and lost no keeper on a gap.
+    25 and 12 of 15, and lost no keeper on a gap. A query counts toward exhaustion only
+    if its candidates could be judged: one whose candidates hit a transient fetch failure
+    is left out and counted, and a round or run that stopped on a block records no new
+    exhaustion. Measured: a gap was recorded exhausted on 6 queries run while every fetch
+    was blocked.
 
 ## Structure
 
