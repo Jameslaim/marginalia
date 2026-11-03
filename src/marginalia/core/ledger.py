@@ -215,7 +215,10 @@ CREATE TABLE IF NOT EXISTS runs (
   territory_version TEXT,
   library_baseline  TEXT,        -- what the library already covered, before round 1
   -- how the brief was made: draft retries, review fallback
-  brief_outcome     TEXT
+  brief_outcome     TEXT,
+  -- why the run stopped, in words: the block on `throttled`, the gaps on
+  -- `gaps_exhausted`, the failure on `model_unavailable`
+  stop_detail       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_runs_topic ON runs(topic);
 
@@ -370,6 +373,8 @@ CREATE INDEX IF NOT EXISTS idx_exhausted_gaps ON exhausted_gaps(topic, brief_ver
 # a decision made before runs existed. Destroying a library of transcripts to
 # add a column nobody had yet would be the more damaging choice.
 _ADDITIVE_COLUMNS: tuple[tuple[str, str, str], ...] = (
+    # Why a run stopped, in words. NULL on every run before it existed.
+    ("runs", "stop_detail", "TEXT"),
     ("decisions", "run_id", "TEXT"),
     ("decisions", "model", "TEXT"),
     # M5. A library of transcripts that predates notes is exactly the library
@@ -624,6 +629,7 @@ class RunRow:
     library_baseline: str | None = None
     # JSON: draft_attempts, draft_problems, review_problem, final_is.
     brief_outcome: str | None = None
+    stop_detail: str | None = None
 
     @classmethod
     def from_sqlite(cls, row: sqlite3.Row) -> RunRow:
@@ -1709,6 +1715,7 @@ class Ledger:
         input_tokens: int,
         output_tokens: int,
         stopped_because: str,
+        stop_detail: str | None = None,
     ) -> RunRow:
         with self._conn:
             cursor = self._conn.execute(
@@ -1721,7 +1728,8 @@ class Ledger:
                     requests_made   = ?,
                     input_tokens    = ?,
                     output_tokens   = ?,
-                    stopped_because = ?
+                    stopped_because = ?,
+                    stop_detail     = ?
                 WHERE run_id = ?
                 """,
                 (
@@ -1733,6 +1741,7 @@ class Ledger:
                     input_tokens,
                     output_tokens,
                     stopped_because,
+                    stop_detail,
                     run_id,
                 ),
             )

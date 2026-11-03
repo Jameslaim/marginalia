@@ -99,6 +99,8 @@ from ..contracts import (
     OUTCOME_TOO_LARGE,
     RECOMMEND_STOP,
     STOP_REFUSED,
+    STOP_THROTTLED,
+    ACQUIRE_FAILED_TRANSIENT,
     REJECTED,
     STATUS_FAILED,
     STORED_THIS_RUN,
@@ -142,7 +144,7 @@ from ..core.library import Library, format_timestamp, render_transcript
 from ..llm import LlmClient, LlmConfigError, LlmError, load_prompt
 from ..providers import PermanentError, TransientError
 from ..providers.base import TranscriptProvider
-from .acquire import acquire, transcript_providers
+from .acquire import FAILURE_STREAK, acquire, transcript_providers
 from .brief import run_brief
 from .search import quota_headroom, run_search
 from ..enrich.note import note_refusal
@@ -186,6 +188,9 @@ STOP_GAPS_EXHAUSTED = "gaps_exhausted"
 # schedule). The run ends cleanly: recorded, with what it stored kept and the
 # last failure named. A refusal — 402, a rejected key — is `provider_refused`.
 STOP_MODEL_UNAVAILABLE = "model_unavailable"
+# `throttled` — the transcript provider is blocking: `FAILURE_STREAK` transient
+# fetch failures in a row (rate limited, a bot check, the network). The word
+# `refetch` uses for the same condition; see `_fetch_blocked`.
 # How many stage-2 overflows in a row, with nothing fitting between them, end the
 # run. Above the client's own three: three long videos in a row are ordinary
 # (R1 F5) and must not end a run; five with nothing fitting is a setting.
@@ -204,6 +209,7 @@ STOP_REASONS = (
     STOP_CONTEXT_WINDOW,
     STOP_GAPS_EXHAUSTED,
     STOP_MODEL_UNAVAILABLE,
+    STOP_THROTTLED,
 )
 
 # Requests a round needs beyond judging: query expansion. Checked before the
@@ -382,6 +388,7 @@ def discover(
         run.cost_usd = config.llm.cost_usd(run.input_tokens, run.output_tokens)
         ledger.finish_run(
             run_id,
+            stop_detail=run.stop_detail or None,
             rounds=len(run.rounds),
             candidates_seen=run.candidates_seen,
             videos_stored=len(run.stored_ids),
@@ -2155,15 +2162,28 @@ def _judge_round(
                 # A route, not a failure — counted as one in discovery alone,
                 # so a round with captionless videos reported fetch failures.
                 report.no_captions += 1
+                run.fetch_streak = []
                 continue
             if acquisition.outcome == ACQUIRE_TRANSLATED_ONLY:
+                run.fetch_streak = []
                 # Routed as a captionless video is, and counted on its own: the
                 # tracks existed, only not in the language the video is spoken in.
                 report.translated_only += 1
                 continue
             if not acquisition.acquired:
                 report.failed += 1
+                if acquisition.outcome == ACQUIRE_FAILED_TRANSIENT:
+                    report.failed_queries.add(entry.query if entry is not None else "")
+                    if _fetch_blocked(run, candidate.video_id, acquisition):
+                        # **A block stops discovery.** No further search or
+                        # stage-1 call: everything after this candidate waits,
+                        # unread, and what was judged stays as it was.
+                        stop_at = index + 1
+                        break
+                else:
+                    run.fetch_streak = []
                 continue
+            run.fetch_streak = []
             # Counted once the transcript is in hand. Counted before the fetch,
             # a video with no captions was a fetch here and a no-caption route
             # on the line below it, so the rounds summed to more than the run
@@ -2458,6 +2478,38 @@ def _retagged(entry: UnreadCandidate, coverage: Sequence[CoverageItem]) -> Unrea
     if unmatched:
         return entry
     return replace(entry, item=item, item_state=state)
+
+
+def _fetch_blocked(run: DiscoverRun, video_id: str, acquisition: Acquisition) -> bool:
+    """Count one transient fetch failure; stop the run when they make a block.
+
+    The rule `refetch` uses: `FAILURE_STREAK` transient failures in a row, of
+    any class — rate limited, a bot check, the network — is the provider being
+    authoritative about rate (rule 24, one layer below the model provider).
+    Measured: after one 429 and a bot check, discovery kept fetching for two
+    rounds and 28 searches; all 170 fetches failed, and one transcript came of
+    them. Every failed video is `failed (transient)` on the ledger, which is
+    what `marg refetch` retries first; the next run judges what it recovers
+    from disk.
+    """
+    run.fetch_streak.append((video_id, ledger_now(), acquisition.detail or "transient"))
+    if len(run.fetch_streak) < FAILURE_STREAK:
+        return False
+    classes: dict[str, int] = {}
+    for _, _, kind in run.fetch_streak:
+        classes[kind] = classes.get(kind, 0) + 1
+    first, at, _ = run.fetch_streak[0]
+    run.fetch_block = {"first": first, "at": at, "failures": len(run.fetch_streak),
+                       "classes": classes, "provider": acquisition.provider or ""}
+    run.stopped_because = STOP_THROTTLED
+    run.stop_detail = (
+        f"transcript fetches blocked from {first} at {at}: {len(run.fetch_streak)} transient "
+        f"failures in a row ({', '.join(f'{n} {kind}' for kind, n in classes.items())}); "
+        f"no further search or stage-1 call was made — `marg refetch` retries the failed "
+        f"videos first, and the next run judges what it recovers"
+    )
+    log.warning("discover: %s", run.stop_detail)
+    return True
 
 
 def _overflowed(run: DiscoverRun) -> bool:

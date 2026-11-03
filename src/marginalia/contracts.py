@@ -2106,6 +2106,8 @@ class RoundReport:
     # Held candidates the last round left unread because the release is off
     # (`release_held_last_round`): the run stores fewer, and says how many.
     held_back_last: int = 0
+    # The query texts whose candidates hit a transient fetch failure this round.
+    failed_queries: set[str] = field(default_factory=set)
     # The gaps that became exhausted at the end of this round, as dicts of
     # `GapTally.as_dict()`.
     exhausted: list[dict] = field(default_factory=list)
@@ -2234,8 +2236,14 @@ class DiscoverRun:
     # the gaps an earlier run on the same brief version recorded.
     gaps: list["GapTally"] = field(default_factory=list)
     # Why the run stopped, in words, where the stop reason alone does not say:
-    # the gaps named on `gaps_exhausted`.
+    # the gaps named on `gaps_exhausted`, the block on `throttled`.
     stop_detail: str = ""
+    # Transient fetch failures in a row, across rounds, and where the streak
+    # began; reset by any fetch that got an answer. `fetch_block` is the block
+    # that stopped the run: the first blocked id, its time, the failures in the
+    # streak and their classes. Empty when no block stopped it.
+    fetch_streak: list[tuple[str, str, str]] = field(default_factory=list)
+    fetch_block: dict = field(default_factory=dict)
 
     @property
     def fetched(self) -> int:

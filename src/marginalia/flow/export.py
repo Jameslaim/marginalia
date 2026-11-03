@@ -122,7 +122,8 @@ def render_report(
         "|---|---|",
         f"| started | {run.started_at} |",
         f"| finished | {run.finished_at or '**never — the run did not complete**'} |",
-        f"| stopped because | {run.stopped_because or MISSING} |",
+        f"| stopped because | {run.stopped_because or MISSING}"
+        f"{' — ' + _cell(run.stop_detail) if run.stop_detail else ''} |",
         f"| model | {run.model or MISSING} |",
         f"| brief prompt | v{run.brief_version or MISSING} |",
         f"| territory map | {run.territory_version or 'none built'} |",

@@ -46,18 +46,16 @@ from ..contracts import (
 )
 from ..core.ledger import Ledger
 from ..core.library import Library
-from .acquire import acquire, transcript_providers
+from .acquire import FAILURE_STREAK, acquire, transcript_providers
 from .store import reconcile_stored, store_transcript
 
 log = logging.getLogger(__name__)
 
 __all__ = ["refetch"]
 
-# Consecutive transient failures before the run gives up. Three, matching the
-# note drain, and for a sharper reason: the failure being retried here is the
-# one that arrives in bursts, so a streak is the signature of the condition
-# rather than bad luck about one video.
-_FAILURE_STREAK = 3
+# Consecutive transient failures before the run gives up: `acquire.FAILURE_STREAK`,
+# which discovery reads too.
+_FAILURE_STREAK = FAILURE_STREAK
 
 
 def refetch(

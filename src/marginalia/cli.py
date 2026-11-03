@@ -391,7 +391,7 @@ def _candidate_json(candidate: Candidate) -> dict[str, Any]:
 
 
 # Discovery stops that end the run before its work: printed in full, exit 1.
-_DISCOVER_FAILED = frozenset({STOP_MODEL_UNAVAILABLE})
+_DISCOVER_FAILED = frozenset({STOP_MODEL_UNAVAILABLE, STOP_THROTTLED})
 
 
 def _cmd_discover(args: argparse.Namespace) -> int:
@@ -1176,6 +1176,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
         ],
         "stopped_because": run.stopped_because,
         "stop_detail": run.stop_detail,
+        "fetch_block": dict(run.fetch_block),
         # Every gap's account: queries aimed at it, keepers on it, by round, and
         # the round it became exhausted in (0: it did not).
         "gaps": [tally.as_dict() for tally in run.gaps],

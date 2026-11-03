@@ -76,6 +76,16 @@ def transcript_providers(config: Config) -> list[TranscriptProvider]:
     return providers
 
 
+# Consecutive transient fetch failures that mean the provider is blocking, not
+# that one video is unlucky. Three, matching the note drain. Read by `refetch`
+# and by discovery, so the two cannot disagree about when a block has begun:
+# the failure retried there is the one that arrives in bursts, so a streak is
+# the signature of the condition rather than bad luck about one video.
+# Measured: once YouTube answered 429 and then a bot check, every one of the
+# next 170 fetches of a discovery run failed.
+FAILURE_STREAK = 3
+
+
 def acquire(
     ledger: Ledger,
     video_id: str,
