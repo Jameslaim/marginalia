@@ -543,16 +543,11 @@ def test_the_stored_note_carries_the_header_and_the_body(tmp_path: Path) -> None
     assert (row.note_version, row.note_model) == ("1", "test-model")
 
 
-def test_a_bulk_run_notes_a_rejected_video_too(tmp_path: Path) -> None:
-    """**Note-writing consults the transcript, never the verdict.** A stage-2 NO
-    says a video missed one brief; it says nothing about whether the transcript
-    can be read, and a note is written from the transcript.
-
-    Measured: of the 69 videos a stage 2 declined and note-writing kept anyway,
-    37 are cited in stored answers and one in nine of them. Stage 2 asks whether
-    a video satisfies a brief, `/ask` asks whether a note helps answer a
-    question, and a video that missed the first is often evidence for the
-    second."""
+def test_a_bulk_run_skips_a_video_stage_2_said_no_to_for_every_topic(tmp_path: Path) -> None:
+    """**A bulk run notes keepers only**, as `videos_needing_note` always said.
+    Measured: a no-ids run queued stage-2 NO videos against its own docstring.
+    The trade-off is known: of 69 declined videos noted before, 37 were cited
+    in stored answers — a named video is still noted (see the next test)."""
     config, library, ledger = library_with(tmp_path, "aaaaaaaaaaa", "bbbbbbbbbbb")
     ledger.log_decision(
         "bbbbbbbbbbb", "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="no"
@@ -563,10 +558,8 @@ def test_a_bulk_run_notes_a_rejected_video_too(tmp_path: Path) -> None:
         prompts_directory=prompts(tmp_path),
     )
 
-    assert sorted(r.video_id for r in run.results if r.outcome == NOTED) == [
-        "aaaaaaaaaaa",
-        "bbbbbbbbbbb",
-    ]
+    assert sorted(r.video_id for r in run.results if r.outcome == NOTED) == ["aaaaaaaaaaa"]
+    assert run.not_keepers == {"stage 2 said NO for every topic": 1}
 
 
 def test_degraded_evidence_still_stops_a_note(tmp_path: Path) -> None:

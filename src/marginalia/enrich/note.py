@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from datetime import date
 import time
 from typing import Any, Sequence
@@ -51,7 +52,15 @@ from ..contracts import (
     VideoRow,
 )
 from ..brain.judge import blames_damaged_evidence
-from ..core.ledger import STAGE_FULL, UNMARKED_SUFFIX, DecisionRow, Ledger, wanted_for_a_note
+from ..core.ledger import (
+    NOT_KEEPER_NO,
+    STAGE_FULL,
+    UNMARKED_SUFFIX,
+    DecisionRow,
+    Ledger,
+    note_keeper,
+    wanted_for_a_note,
+)
 from ..core.library import Library, format_duration
 from ..llm import (
     LlmClient,
@@ -386,8 +395,14 @@ def select(
     regenerate: bool = False,
     every: bool = False,
     missing_only: bool = False,
+    not_keepers: dict[str, int] | None = None,
+    named_not_keepers: list[str] | None = None,
 ) -> tuple[list[VideoRow], list[NoteResult]]:
     """Decide what this run will read, and say why anything named was skipped.
+
+    With no ids, only keepers (`ledger.note_keeper`), the rest counted in
+    `not_keepers`. Named, the owner's choice stands; one stage 2 said NO for
+    every topic is noted and named in `named_not_keepers`, for its line.
 
     Named videos are returned even when they are current, unless they carry a
     note this prompt wrote — the same logic as ``skip_reason``: a direct request
@@ -410,6 +425,10 @@ def select(
                 )
             else:
                 chosen.append(row)
+                if named_not_keepers is not None and (
+                    note_keeper(ledger.decisions_for(video_id)) == NOT_KEEPER_NO
+                ):
+                    named_not_keepers.append(video_id)
         return chosen, skipped
 
     # **Not limited here.** The queue is ordered by `first_seen`, and a video
@@ -422,6 +441,7 @@ def select(
         version=version,
         stale_only=not every,
         missing_only=missing_only,
+        not_keepers=not_keepers,
     )
     return rows, skipped
 
@@ -686,6 +706,8 @@ def write_notes(
         regenerate=regenerate,
         every=every,
         missing_only=missing_only,
+        not_keepers=run.not_keepers,
+        named_not_keepers=run.named_not_keepers,
     )
     run.results.extend(skipped)
 
@@ -722,6 +744,9 @@ def write_notes(
                 log.error("note: stopping — %s", safe_reason(exc))
                 run.stopped_because = STOP_REFUSED
                 break
+            if row.video_id in run.named_not_keepers:
+                # Noted as asked, and said so on its line.
+                result = replace(result, detail=f"{result.detail} — {NOT_KEEPER_NO}; named, so noted")
             run.results.append(result)
             if result.outcome == FAILED:
                 ledger.mark_note_failed(row.video_id)

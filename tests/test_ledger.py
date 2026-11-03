@@ -979,15 +979,18 @@ def test_an_existing_note_is_always_wanted() -> None:
 # -- and the same policy through the ledger ---------------------------------
 
 
-def test_a_rejected_video_is_offered_to_the_note_worker(ledger: Ledger) -> None:
-    """Note-writing consults the transcript, never the verdict."""
+def test_a_rejected_video_is_not_offered_to_the_note_worker(ledger: Ledger) -> None:
+    """Only keepers are queued: a video stage 2 said NO to for every topic is
+    counted, not offered."""
     ledger.mark_pending(VIDEO_ID)
     ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
     ledger.log_decision(
         VIDEO_ID, "prompt caching", stage=STAGE_OPENING, verdict=VERDICT_NO, reason="off topic"
     )
 
-    assert [r.video_id for r in ledger.videos_needing_note(version="1")] == [VIDEO_ID]
+    skipped: dict = {}
+    assert ledger.videos_needing_note(version="1", not_keepers=skipped) == []
+    assert skipped == {"stage 2 said NO for every topic": 1}
 
 
 def test_a_kept_video_is_offered_to_the_note_worker(ledger: Ledger) -> None:
@@ -1010,10 +1013,11 @@ def test_a_directly_ingested_video_is_offered(ledger: Ledger) -> None:
     assert [r.video_id for r in ledger.videos_needing_note(version="1")] == [VIDEO_ID]
 
 
-def test_regenerate_all_still_reaches_a_rejected_video_that_has_a_note(
+def test_regenerate_all_does_not_reach_a_rejected_video_that_has_a_note(
     ledger: Ledger,
 ) -> None:
-    """A video noted before B2 and rejected afterwards keeps its note current."""
+    """A video noted before and rejected for every topic since is not a keeper:
+    its note stays as it is, and is not regenerated."""
     ledger.mark_pending(VIDEO_ID)
     ledger.mark_has_transcript(VIDEO_ID, source="captions", provider="ytdlp")
     ledger.mark_noted(VIDEO_ID, version="0", model="m")
@@ -1022,7 +1026,7 @@ def test_regenerate_all_still_reaches_a_rejected_video_that_has_a_note(
     )
 
     rows = ledger.videos_needing_note(version="1", stale_only=False)
-    assert [r.video_id for r in rows] == [VIDEO_ID]
+    assert rows == []
 
 
 def test_a_rejection_no_longer_makes_a_transcript_unreadable(ledger: Ledger) -> None:
@@ -1039,7 +1043,8 @@ def test_a_rejection_no_longer_makes_a_transcript_unreadable(ledger: Ledger) -> 
     counts = ledger.note_counts(version="1")
 
     assert counts["has_transcript"] == 2
-    assert counts["missing"] == 2
+    assert counts["missing"] == 1, "the ingested one; the rejected one is not queued"
+    assert counts["not_keepers"] == 1
     assert counts["unreadable"] == 0
 
 

@@ -86,6 +86,9 @@ __all__ = [
     "current_verdicts",
     "judged_for_topic",
     "topic_verdict",
+    "note_keeper",
+    "NOT_KEEPER_NO",
+    "NOT_KEEPER_UNREAD",
     "rejection_in",
     "legacy_outcome",
     "quota_day",
@@ -1025,6 +1028,31 @@ def topic_verdict(decisions: Sequence[DecisionRow], topic: str) -> str | None:
     return latest
 
 
+# Why a video is not in the note queue: its notes would rest on no keeper.
+NOT_KEEPER_NO = "stage 2 said NO for every topic"
+NOT_KEEPER_UNREAD = "found by discovery, not yet read by stage 2"
+
+
+def note_keeper(decisions: Sequence[DecisionRow]) -> str:
+    """``""`` when a video belongs in the note queue, else why it does not.
+
+    A keeper is a video some topic's stage 2 kept: its latest stage-2 verdict
+    for any topic is YES or MAYBE (a MAYBE is kept, rule 8). One whose latest
+    verdict is NO for every topic it was judged for is not queued. One no stage
+    2 has judged is queued only when nothing discovered it — a manual `marg
+    ingest` writes no decision, and is the owner's choice — and waits when
+    discovery screened it and stage 2 has not yet read it: a recovered fetch is
+    judged from disk by the next run, and noted once it is kept.
+    """
+    latest: dict[str, str] = {}
+    for decision in decisions:
+        if decision.stage in _STAGE_TWO:
+            latest[decision.topic] = decision.verdict
+    if latest:
+        return "" if any(v in ("yes", "maybe") for v in latest.values()) else NOT_KEEPER_NO
+    return NOT_KEEPER_UNREAD if decisions else ""
+
+
 def rejection_in(decisions: Sequence[DecisionRow], topic: str) -> DecisionRow | None:
     """Gate 2: the judgement that currently declines this video for this topic.
 
@@ -1427,6 +1455,7 @@ class Ledger:
         stale_only: bool = True,
         missing_only: bool = False,
         limit: int | None = None,
+        not_keepers: dict[str, int] | None = None,
     ) -> list[VideoRow]:
         """Videos holding a transcript, wanted, with no note from this prompt.
 
@@ -1457,11 +1486,20 @@ class Ledger:
         than a random sample: reading three notes, revising the prompt and
         running again should show you the same three.
         """
-        rows = [
-            row
-            for row in self.list_by_status(STATUS_HAS_TRANSCRIPT)
-            if wanted_for_a_note(row, self.decisions_for(row.video_id))
-        ]
+        rows = []
+        for row in self.list_by_status(STATUS_HAS_TRANSCRIPT):
+            decisions = self.decisions_for(row.video_id)
+            if not wanted_for_a_note(row, decisions):
+                continue
+            # **Only keepers**, as this docstring always said: measured, a
+            # no-ids run queued stage-2 NO videos, against it. Counted in
+            # `not_keepers`, by reason (`note_keeper`).
+            why = note_keeper(decisions)
+            if why:
+                if not_keepers is not None:
+                    not_keepers[why] = not_keepers.get(why, 0) + 1
+                continue
+            rows.append(row)
         if missing_only:
             rows = [row for row in rows if row.noted_at is None]
         elif stale_only:
@@ -1538,11 +1576,17 @@ class Ledger:
         """
         counts = {
             "has_transcript": 0, "current": 0, "stale": 0, "missing": 0, "unreadable": 0,
-            "unmarked": 0,
+            "unmarked": 0, "not_keepers": 0,
         }
         for row in self.list_by_status(STATUS_HAS_TRANSCRIPT):
             counts["has_transcript"] += 1
-            if not wanted_for_a_note(row, self.decisions_for(row.video_id)):
+            decisions = self.decisions_for(row.video_id)
+            if row.noted_at is None and wanted_for_a_note(row, decisions) and note_keeper(decisions):
+                # No note, and none queued: not a keeper (`note_keeper`). Not
+                # missing work — the queue will not do it.
+                counts["not_keepers"] += 1
+                continue
+            if not wanted_for_a_note(row, decisions):
                 # The judge said it could not read the transcript. Not a missing
                 # note — a note deliberately not written, and counting it as
                 # missing would report permanent work that will never be done.

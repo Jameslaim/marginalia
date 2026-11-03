@@ -2474,6 +2474,11 @@ class NoteRun:
     cost_usd: float = 0.0
     elapsed_s: float = 0.0
     stopped_because: str = STOP_DONE
+    # Videos the no-ids queue left out because no topic's stage 2 kept them, by
+    # reason (`ledger.note_keeper`); and named videos noted as asked although
+    # stage 2 said NO for every topic.
+    not_keepers: dict = field(default_factory=dict)
+    named_not_keepers: list = field(default_factory=list)
 
     def count(self, outcome: str) -> int:
         return sum(1 for result in self.results if result.outcome == outcome)

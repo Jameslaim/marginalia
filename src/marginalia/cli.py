@@ -1472,6 +1472,10 @@ def _cmd_note(args: argparse.Namespace) -> int:
         f"${run.cost_usd:.2f}, {_elapsed(run.elapsed_s)}"
         + (f", stopped: {run.stopped_because}" if run.stopped_because != "done" else "")
     )
+    if run.not_keepers:
+        # The queue's own skips, by reason: not keepers, so not noted.
+        print("          " + f"{sum(run.not_keepers.values())} skipped as not a keeper ("
+              + ", ".join(f"{n} {why}" for why, n in sorted(run.not_keepers.items())) + ")")
     checked = sum(result.verbatim_checked for result in run.results)
     if checked:
         # Printed whenever anything was checked, zero included: "0 not found"
@@ -1567,7 +1571,8 @@ def _note_status(config: Config, library: Library) -> int:
     print(
         f"notes:    {counts['has_transcript']} with transcript, {counts['current']} current, "
         f"{counts['stale']} stale, {counts['missing']} missing, "
-        f"{counts['unreadable']} unreadable, {counts['unmarked']} unmarked  (prompt v{version})"
+        f"{counts['unreadable']} unreadable, {counts['unmarked']} unmarked, "
+        f"{counts['not_keepers']} not keepers (no note, not queued)  (prompt v{version})"
     )
     return EXIT_OK
 
