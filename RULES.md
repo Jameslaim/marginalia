@@ -972,15 +972,20 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     into it and the call returns nothing.
 
 36. **The budget buys what the system can read.** A cap on videos is spent only on
-    keepers a later layer can use. A keeper no note will ever be written from — unreadable
-    evidence, past the note ceiling, refused by the note rule — is still kept and counted
-    (rule 8), but stored off the budget, and that exemption is itself bounded (at most one
-    round's share per round and one video budget per run) so a topic made of unreadable
-    clips cannot fetch without limit. One rule decides whether a video can be noted, and
-    every layer that asks reads that rule, so two layers never disagree about the same
-    video. Measured: one run spent 6 of its 25 places on keepers no note could be written
-    from; two of them were short clips stage 2 had judged substantive on clear evidence,
-    and a shared rule now notes them.
+    keepers a later layer can use. A keeper no note will ever be written from —
+    unreadable evidence, past the note ceiling, refused by the note rule — is still kept
+    and counted (rule 8), but stored off the budget, and that exemption is itself bounded
+    (at most one round's share per round and one video budget per run) so a topic made of
+    unreadable clips cannot fetch without limit. One rule decides whether a video can be
+    noted, and every layer that asks reads that rule, so two layers never disagree about
+    the same video. Measured: one run spent 6 of its 25 places on keepers no note could
+    be written from; two of them were short clips stage 2 had judged substantive on clear
+    evidence, and a shared rule now notes them. A run with no ids notes keepers only: a
+    video some topic's stage 2 kept, or one the owner ingested by hand. One stage 2 said
+    NO to for every topic is not queued, and one discovery found that stage 2 has not
+    read waits for it; each is counted. Named, the owner's choice stands, and a NO is
+    said on the line. Measured: the queue held stage-2 NO videos against its own
+    docstring; now 36 are queued, and 202 NO and 111 unread are held back.
 
 37. **The fetch budget is spent on what the coverage is missing.** Stage 1 tags each
     candidate with the coverage item it would serve; the tag is matched against the
@@ -1078,7 +1083,13 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     call named 3 to 6 of the 7 gaps that any call named, while any two named 5 to 7. Two
     calls can still agree on a flip that a third would catch: in one measurement, an item
     partly held in 2 of 3 calls was held in both calls of a fresh pair. Twin runs on one
-    day had sampled ANY/ANY/24 and 24/24.
+    day had sampled ANY/ANY/24 and 24/24. A topic's coverage rests only on videos that
+    passed its own stage 2: the baseline's evidence holds only notes whose video's latest
+    stage-2 verdict for the topic is YES, and every other note is left out and counted by
+    kind. Measured: a baseline read every note in the library and cited a MAYBE and ten
+    notes no stage 2 had judged for the topic as held evidence; replayed, 137 of its 155
+    notes leave the evidence, and every held item keeps a YES citation. A fresh topic in
+    a shared library has no keepers, and no call is made.
 
 43. **Every query source follows the gaps, and an exhausted gap stops being chased.**
     While a gap is open, no source — the expansion, its threads, the planner, the plan —
@@ -1098,7 +1109,10 @@ without them re-breaks bugs that have already been found, fixed and paid for.
     if its candidates could be judged: one whose candidates hit a transient fetch failure
     is left out and counted, and a round or run that stopped on a block records no new
     exhaustion. Measured: a gap was recorded exhausted on 6 queries run while every fetch
-    was blocked.
+    was blocked. An expansion query that comes back with no aim is given one from the
+    coverage lines by the aims' matcher, so the gate checks it like any other source's;
+    one on no line stays unaimed and is counted. Measured: a round-one reply named no aim
+    for any of its 9 queries; replayed, 7 get one, all on gaps.
 
 ## Structure
 
