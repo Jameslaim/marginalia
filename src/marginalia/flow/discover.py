@@ -68,7 +68,15 @@ from ..brain.judge import (
     match_item,
 )
 from ..brain.coverage import BriefAnchor, names_only, resolve_coverage
-from ..brain.gaps import credit_keeper, exhausted, gate, open_gaps, tally_queries, unexhausted
+from ..brain.gaps import (
+    credit_keeper,
+    exhausted,
+    gate,
+    infer_aim,
+    open_gaps,
+    tally_queries,
+    unexhausted,
+)
 from ..brain.planner import BASELINE_PROMPT, PLAN_PROMPT, Planner, apply_revisions
 from ..brain.search_plan import SearchPlanner
 from .web_context import context_lines, gather_context
@@ -101,6 +109,7 @@ from ..contracts import (
     STOP_REFUSED,
     STOP_THROTTLED,
     ACQUIRE_FAILED_TRANSIENT,
+    AimedQuery,
     REJECTED,
     STATUS_FAILED,
     STORED_THIS_RUN,
@@ -679,6 +688,7 @@ def _loop(
             expansion_refused=expansion_counts.get("refused", 0),
             expansion_short=expansion_counts.get("short", 0),
             expansion_placeholders=expansion_counts.get("placeholders", 0),
+            expansion_aims_inferred=expansion_counts.get("inferred", 0),
             held_while_gaps=held_skipped,
             exhausted_skipped=exhausted_skipped,
             threads_held_back=threads_held,
@@ -1566,6 +1576,12 @@ def _plan_round(
     counts["refused"] = int(bool(getattr(expanded, "refused", False)))
     counts["short"] = int(bool(getattr(expanded, "short", False)))
     counts["placeholders"] = int(getattr(expanded, "placeholders", 0))
+    # **A query that came back with no aim is given one** from the coverage
+    # lines, by the matcher the aims use (`infer_aim`), so the gate can check
+    # it like any other source's. Measured: a round-one reply named no aim for
+    # any of its 9 queries, and the gate kept all 9 unchecked. One that matches
+    # no line stays unaimed, and is counted.
+    expanded, counts["inferred"] = _aimed(expanded, coverage)
     expanded, unaimed, capped = cap_per_aim(expanded)
     counts["unaimed"], counts["capped"] = unaimed, capped
     counts["unmatched"] = unmatched_aims(expanded, coverage)
@@ -1594,6 +1610,20 @@ def _plan_round(
         # round exactly as it was.
         planned.extend(run.territory.queries)
     return planned
+
+
+def _aimed(queries: Sequence[str], coverage: Sequence[CoverageItem]) -> tuple[list[str], int]:
+    """``(queries, inferred)``: each unaimed query given the coverage line it is on."""
+    out: list[str] = []
+    inferred = 0
+    for query in queries:
+        if getattr(query, "aim", "") or not coverage:
+            out.append(query)
+            continue
+        aim = infer_aim(str(query), coverage)
+        inferred += bool(aim)
+        out.append(AimedQuery(str(query), aim))
+    return out, inferred
 
 
 def _gather(

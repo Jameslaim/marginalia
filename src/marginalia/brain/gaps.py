@@ -58,8 +58,8 @@ from .search_plan import _gap_lines, gap_key
 
 __all__ = [
     "KIND_GAP", "KIND_HELD", "KIND_THREAD", "KIND_UNAIMED", "KIND_UNMATCHED",
-    "Gap", "Placement", "credit_keeper", "exhausted", "gate", "held_thread", "open_gaps", "place",
-    "query_aim", "tally_queries", "unexhausted", "window",
+    "Gap", "Placement", "credit_keeper", "exhausted", "gate", "held_thread", "infer_aim",
+    "open_gaps", "place", "query_aim", "tally_queries", "unexhausted", "window",
 ]
 
 KIND_GAP = "gap"
@@ -161,6 +161,39 @@ def _named_gaps(aim: str, gaps: Sequence[Gap]) -> tuple[Gap, ...]:
     if best < _GAP_SHARE:
         return ()
     return tuple(gap for share, gap in scored if share == best)
+
+
+def infer_aim(text: str, coverage: Sequence[CoverageItem]) -> str:
+    """The coverage line an unaimed query is on, or "" when it is on none.
+
+    The expansion is asked to name each query's aim; measured, a round-one
+    reply named none of its 9, so the gate could not check them. The query's
+    own words are matched as an aim's are: the stage-1 matcher first, then the
+    line whose own words the query carries the largest share of, at
+    `_GAP_SHARE` or more — a listed thing's words, or a part's when it lists
+    none. A tie goes to a gap, the cheap direction. The line is written as the
+    coverage names it (`part — thing`), so the gate places it as any aim.
+    """
+    state, line, _ = match_item(text, coverage)
+    if state in (ITEM_MISSING, ITEM_PARTLY, ITEM_HELD) and line:
+        return line
+    words = aim_words(text)
+    if not words:
+        return ""
+    best: tuple[float, int, str] = (0.0, 0, "")
+    for item in coverage:
+        things = [(thing, False) for thing in item.missing] + [(thing, True) for thing in item.held]
+        candidates = things or [("", item.satisfied)]
+        for thing, held in candidates:
+            target = aim_words(thing) if thing else aim_words(item.part)
+            if not target:
+                continue
+            share = len(words & target) / len(target)
+            gap = 0 if held or item.satisfied and not thing else 1
+            score = (share, gap, f"{item.part} — {thing}" if thing else item.part)
+            if score[:2] > best[:2]:
+                best = score
+    return best[2] if best[0] >= _GAP_SHARE else ""
 
 
 # -- the tallies --------------------------------------------------------------

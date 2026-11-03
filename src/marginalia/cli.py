@@ -730,6 +730,7 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.expansion_refused, "expansion reply refused, round ran without it"),
             (report.expansion_short, "expansion reply short of the queries asked for"),
             (report.expansion_placeholders, "expansion placeholder line(s), not run"),
+            (report.expansion_aims_inferred, "expansion aims given from the coverage lines"),
             # Never silent: judged worth reading, not fetched because this
             # round's share of the video budget ran out, carried forward.
             (report.unread_yes, "stage-1 YES not yet read, carried forward"),
@@ -1209,6 +1210,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "expansion_refused": report.expansion_refused,
                 "expansion_short": report.expansion_short,
                 "expansion_placeholders": report.expansion_placeholders,
+                "expansion_aims_inferred": report.expansion_aims_inferred,
                 "stored_unreadable": report.stored_unreadable,
                 "queries": report.queries,
                 # The same queries with their provenance. `queries` above stays

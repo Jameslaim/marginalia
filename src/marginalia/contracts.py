@@ -2050,6 +2050,9 @@ class RoundReport:
     expansion_refused: int = 0
     expansion_short: int = 0
     expansion_placeholders: int = 0
+    # Expansion queries the reply named no aim for, given one from the coverage
+    # lines (`brain.gaps.infer_aim`); the rest are `expansion_unaimed`.
+    expansion_aims_inferred: int = 0
     # Gap-first fetching, each outcome on its own counter. `tagged`: this
     # round's stage-1 verdicts by the state of the item each was tagged with
     # (`ITEM_STATES`), NO included. `tags_unmatched`: of the untagged, those
