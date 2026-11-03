@@ -637,7 +637,7 @@ def _gap_follow_lines(report) -> list[str]:
     round had coverage to follow (rule 14), and the gaps that became exhausted
     at its end, each with its query count. Nothing on a fresh topic."""
     counted = (report.held_while_gaps or report.exhausted_skipped or report.threads_held_back
-               or report.exhausted)
+               or report.exhausted or report.exhaustion_excluded)
     if not report.held_cap and not counted:
         return []
     lines = [
@@ -646,7 +646,9 @@ def _gap_follow_lines(report) -> list[str]:
         f"{sum(report.exhausted_skipped.values())} on exhausted gaps, not run "
         f"({_by_source(report.exhausted_skipped)}); "
         f"{sum(report.threads_held_back.values())} thread quer(ies) on a concept only "
-        f"keepers on no gap gave, held back ({_by_source(report.threads_held_back)})"
+        f"keepers on no gap gave, held back ({_by_source(report.threads_held_back)}); "
+        f"{report.exhaustion_excluded} quer(ies) not counted toward exhaustion, their "
+        f"candidates blocked"
     ]
     for gap in report.exhausted:
         lines.append(
@@ -1247,6 +1249,7 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "threads_held_back": dict(report.threads_held_back),
                 "held_concepts": list(report.held_concepts),
                 "held_back_last": report.held_back_last,
+                "exhaustion_excluded": report.exhaustion_excluded,
                 "exhausted": list(report.exhausted),
                 "unread_by_item": _count_by_item(report.unread),
                 # What the planner concluded at the end of this round, in full:

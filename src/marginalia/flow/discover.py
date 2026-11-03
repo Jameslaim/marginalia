@@ -422,7 +422,8 @@ def record_gaps(ledger: Ledger, run: DiscoverRun, after: int) -> None:
         return
     recorded = {row.gap_key: row.state for row in ledger.gap_states(run.brief.topic, version)}
     for tally in run.gaps:
-        if exhausted(tally, after):
+        # A run that stopped on a block records no new exhaustion.
+        if exhausted(tally, after) and run.stopped_because != STOP_THROTTLED:
             state = GAP_EXHAUSTED
         elif recorded.get(tally.key) == GAP_EXHAUSTED and tally.keepers:
             state = GAP_CLEARED
@@ -695,8 +696,6 @@ def _loop(
 
         searched: list[tuple[PlannedQuery, int | None]] = []
         candidates = _gather(config, ledger, run, planned, report, searched, library=library)
-        tally_queries(run.gaps, [query for query, results in searched if results is not None],
-                      coverage, number, anchor)
         if candidates is None:
             run.stopped_because = STOP_NO_SEARCH
             _spend_remaining(config, ledger, library, client, judge, run, report, providers,
@@ -721,7 +720,18 @@ def _loop(
         # that they changed anything, which is the claim worth checking.
         report.concepts = list(threads)
 
-        _mark_exhausted(run, report, after)
+        # **Exhaustion counts only queries that could be judged** (rule 43).
+        # Measured: a gap was recorded exhausted on 6 queries run while every
+        # fetch was blocked, which says nothing about the gap. A query counts
+        # only if none of its candidates hit a transient fetch failure; a round
+        # that stopped on a block counts none, and marks no new exhaustion.
+        ran = [query for query, results in searched if results is not None]
+        blocked = run.stopped_because == STOP_THROTTLED
+        judged = [] if blocked else [q for q in ran if q.text not in report.failed_queries]
+        report.exhaustion_excluded = len(ran) - len(judged)
+        tally_queries(run.gaps, judged, coverage, number, anchor)
+        if not blocked:
+            _mark_exhausted(run, report, after)
         if run.stopped_because:
             return
         if len(run.stored_ids) >= max_videos:

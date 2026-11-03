@@ -2106,8 +2106,11 @@ class RoundReport:
     # Held candidates the last round left unread because the release is off
     # (`release_held_last_round`): the run stores fewer, and says how many.
     held_back_last: int = 0
-    # The query texts whose candidates hit a transient fetch failure this round.
+    # The query texts whose candidates hit a transient fetch failure this round,
+    # and how many of the round's queries were left out of the gap tallies for
+    # it, or because the round stopped on a block (rule 43).
     failed_queries: set[str] = field(default_factory=set)
+    exhaustion_excluded: int = 0
     # The gaps that became exhausted at the end of this round, as dicts of
     # `GapTally.as_dict()`.
     exhausted: list[dict] = field(default_factory=list)
