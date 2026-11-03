@@ -131,6 +131,7 @@ __all__ = [
     "VideoRow",
     # discovery runs
     "RoundReport",
+    "ExpandedQueries",
     "UnreadCandidate",
     "GapTally",
     "DiscoverRun",
@@ -517,6 +518,23 @@ class FilterRejection:
     @property
     def is_recency_waiver(self) -> bool:
         return self.field == FILTER_FIELD_RECENCY_WAIVER
+
+
+class ExpandedQueries(list):
+    """The expansion's queries, with what its reply could not give.
+
+    ``placeholders``: lines that were the format's own words (``query``,
+    ``aim``, ``<…>``), never run. ``refused``: no usable query was left, so the
+    round runs without the expansion. ``short``: fewer than half the queries
+    asked for, run as they are. Counted on the round (rule 14).
+    """
+
+    def __init__(self, queries=(), *, placeholders: int = 0, refused: bool = False,
+                 short: bool = False) -> None:
+        super().__init__(queries)
+        self.placeholders = placeholders
+        self.refused = refused
+        self.short = short
 
 
 class AimedQuery(str):
@@ -2020,6 +2038,11 @@ class RoundReport:
     # never dropped. A string check — it cannot see a query that names a real
     # gap as its aim and searches for something else.
     expansion_unmatched: int = 0
+    # The expansion's reply, refused (no usable query: the round ran without
+    # it), short (fewer than half asked for), and its placeholder lines.
+    expansion_refused: int = 0
+    expansion_short: int = 0
+    expansion_placeholders: int = 0
     # Gap-first fetching, each outcome on its own counter. `tagged`: this
     # round's stage-1 verdicts by the state of the item each was tagged with
     # (`ITEM_STATES`), NO included. `tags_unmatched`: of the untagged, those

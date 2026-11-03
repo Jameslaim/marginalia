@@ -46,6 +46,7 @@ from ..contracts import (
     VERDICT_NO,
     VERDICT_YES,
     AimedQuery,
+    ExpandedQueries,
     Brief,
     CoverageItem,
     FullVerdict,
@@ -114,6 +115,15 @@ _BATCH_LINE_RE = re.compile(
 
 # A labelled line, which query expansion must not mistake for a query.
 _LABEL_RE = re.compile(r"^\s*\**\s*(VERDICT|REASON|CONCEPTS)\s*\**\s*[:\-]\s*(.*)$", re.IGNORECASE)
+
+# A line that is the reply format's own words, not a query: measured, an
+# expansion reply of one output token was the word `query`, and it ran as a
+# search. A placeholder is never a query, whatever else the reply held.
+_PLACEHOLDER_RE = re.compile(
+    r"^(?:search\s+)?(?:quer(?:y|ies)|aims?|query\s*\|\s*aim|search\s+terms?|text)$"
+    r"|^<[^>]*>$|^\[[^\]]*\]$|^\.{2,}$|^…$",
+    re.IGNORECASE,
+)
 
 # Leading list markers a model adds to query lines despite being told not to.
 _LIST_MARKER_RE = re.compile(r"^\s*(?:[-*•]|\d{1,2}[.)])\s*")
@@ -817,14 +827,24 @@ def parse_queries(text: str, limit: int) -> list[str]:
     return queries
 
 
+def is_placeholder(query: str) -> bool:
+    """Is this line the reply format's own words rather than a query?"""
+    cleaned = " ".join(_LIST_MARKER_RE.sub("", query).strip().strip("\"'`*").split())
+    return bool(cleaned) and bool(_PLACEHOLDER_RE.match(cleaned))
+
+
 def parse_aimed_queries(text: str, limit: int) -> list[AimedQuery]:
     """Read ``query | aim`` lines. A line with no ``|`` is a query with no aim,
-    kept — a query is still a query — and its empty aim is what gets counted."""
+    kept — a query is still a query — and its empty aim is what gets counted.
+    A placeholder line is dropped before the limit, so it takes no query's
+    place (`placeholder_lines` counts them)."""
     out: list[AimedQuery] = []
     aims: dict[str, str] = {}
     lines = []
     for line in text.splitlines():
         query, bar, aim = line.partition("|")
+        if is_placeholder(query) or is_placeholder(line):
+            continue
         lines.append(query)
         if bar:
             key = " ".join(_LIST_MARKER_RE.sub("", query).strip().strip("\"'").lower().split())
@@ -832,6 +852,12 @@ def parse_aimed_queries(text: str, limit: int) -> list[AimedQuery]:
     for query in parse_queries("\n".join(lines), limit):
         out.append(AimedQuery(query, aims.get(" ".join(query.lower().split()), "")))
     return out
+
+
+def placeholder_lines(text: str) -> int:
+    """How many of a reply's lines are placeholders, not queries."""
+    return sum(1 for line in text.splitlines()
+               if is_placeholder(line.partition("|")[0]) or is_placeholder(line))
 
 
 # An aim names a part or a missing thing; this is room for a long one.
@@ -1199,10 +1225,21 @@ class Judge:
                 "its last line was dropped as a possible fragment"
             )
         queries = parse_aimed_queries(text, count)
+        placeholders = placeholder_lines(text)
         if not queries:
-            log.warning("judge: query expansion returned nothing parseable; falling back to topic")
-            return [AimedQuery(brief.topic, "")]
-        return list(queries)
+            # **Refused, not replaced by the topic.** The topic is a paragraph,
+            # not a search; the round runs without the expansion — round one
+            # on the plan's or the map's queries, later rounds on the planner's.
+            log.warning(
+                "judge: query expansion gave no usable query (%d placeholder line(s), "
+                "%d output tokens); this round runs without it",
+                placeholders, reply.usage.output_tokens,
+            )
+            return ExpandedQueries(placeholders=placeholders, refused=True)
+        short = len(queries) < max(1, count // 2)
+        if short:
+            log.warning("judge: query expansion gave %d of %d queries asked for", len(queries), count)
+        return ExpandedQueries(queries, placeholders=placeholders, short=short)
 
     # -- stage 1: metadata, batched ---------------------------------------
 

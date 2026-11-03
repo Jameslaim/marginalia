@@ -716,6 +716,11 @@ def _discover_report(run: DiscoverRun) -> list[str]:
             (report.expansion_unaimed, "expansion queries with no aim named"),
             (report.expansion_capped, "expansion queries over two on one aim, dropped"),
             (report.expansion_unmatched, "expansion aims matching no coverage line"),
+            # The expansion's reply itself: refused (the round ran without it),
+            # short, and the placeholder lines it held, never run.
+            (report.expansion_refused, "expansion reply refused, round ran without it"),
+            (report.expansion_short, "expansion reply short of the queries asked for"),
+            (report.expansion_placeholders, "expansion placeholder line(s), not run"),
             # Never silent: judged worth reading, not fetched because this
             # round's share of the video budget ran out, carried forward.
             (report.unread_yes, "stage-1 YES not yet read, carried forward"),
@@ -1182,6 +1187,9 @@ def _discover_json(run: DiscoverRun) -> dict[str, Any]:
                 "expansion_unaimed": report.expansion_unaimed,
                 "expansion_capped": report.expansion_capped,
                 "expansion_unmatched": report.expansion_unmatched,
+                "expansion_refused": report.expansion_refused,
+                "expansion_short": report.expansion_short,
+                "expansion_placeholders": report.expansion_placeholders,
                 "stored_unreadable": report.stored_unreadable,
                 "queries": report.queries,
                 # The same queries with their provenance. `queries` above stays

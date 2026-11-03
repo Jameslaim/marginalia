@@ -655,6 +655,9 @@ def _loop(
             expansion_unaimed=expansion_counts.get("unaimed", 0),
             expansion_capped=expansion_counts.get("capped", 0),
             expansion_unmatched=expansion_counts.get("unmatched", 0),
+            expansion_refused=expansion_counts.get("refused", 0),
+            expansion_short=expansion_counts.get("short", 0),
+            expansion_placeholders=expansion_counts.get("placeholders", 0),
             held_while_gaps=held_skipped,
             exhausted_skipped=exhausted_skipped,
             threads_held_back=threads_held,
@@ -1501,6 +1504,9 @@ def _plan_round(
         concepts=list(threads)[:8],
         coverage=coverage,
     )
+    counts["refused"] = int(bool(getattr(expanded, "refused", False)))
+    counts["short"] = int(bool(getattr(expanded, "short", False)))
+    counts["placeholders"] = int(getattr(expanded, "placeholders", 0))
     expanded, unaimed, capped = cap_per_aim(expanded)
     counts["unaimed"], counts["capped"] = unaimed, capped
     counts["unmatched"] = unmatched_aims(expanded, coverage)
