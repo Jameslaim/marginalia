@@ -36,6 +36,7 @@ from marginalia.contracts import (
 from marginalia.flow.discover import round_one_source
 from marginalia.flow.export import render_map
 from test_discover import (  # noqa: F401 - fixtures are found by name
+    kept_note,
     BRIEF,
     TOPIC,
     FakeJudge,
@@ -432,7 +433,7 @@ def test_the_baseline_runs_before_the_plan_and_the_plan_sees_it(
     config, ledger, library, client, searches
 ) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
     log: list[str] = []
     planner = OrderedSearchPlanner(log, a_plan("plan query"))
 
@@ -450,7 +451,7 @@ def test_the_map_gets_the_same_ordering_and_no_coverage(
     config, ledger, library, client, searches
 ) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
     log: list[str] = []
 
     outcome = run(config, ledger, library, client, FakeJudge(), max_rounds=1,
@@ -482,7 +483,7 @@ def test_a_failed_baseline_plans_as_a_fresh_topic_and_says_so(
             return LibraryCoverage(notes_read=1, parsed=False, problem="reply hit the token ceiling")
 
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# An old note\n\nCovers part one.\n")
     planner = FakeSearchPlanner(a_plan("plan query"))
 
     run(config, ledger, library, client, FakeJudge(), max_rounds=1, planner=Failing(),

@@ -1,8 +1,15 @@
 ---
 name: plan/baseline
-version: "6"
+version: "7"
 stage: plan
-note: "v6 is shown evidence that can show coverage. v2 to v5 were shown one
+note: "v7 is shown only the notes of videos this topic's stage 2 kept. v6 was
+  shown every note in the library and told that a NO reason, or one written for
+  another brief, could still show what a video covers; one baseline then cited
+  a MAYBE and ten notes no stage 2 had judged for the topic as held evidence.
+  The code now sends only notes whose video's latest stage-2 verdict for this
+  topic is YES, and counts the rest; the guidance on NO and other-brief reasons
+  is gone.
+  v6 is shown evidence that can show coverage. v2 to v5 were shown one
   index line per note, a title and the first claim, and told to answer NO
   when a line was too thin; against a brief whose parts each list several
   things no line could pass, and one run marked 0 of 14 items held while the
@@ -32,8 +39,8 @@ You are checking what a library of video notes **already** covers, before any
 searching happens.
 
 A research brief is below, and after it the evidence for every understanding
-note the library holds: the judge's reason for keeping or declining its video,
-and the note's claims. Each note was written by one model reading one video end
+note the library holds on a video this brief's judge kept: the judge's reason
+for keeping it, and the note's claims. Each note was written by one model reading one video end
 to end. Your job is to say, for each part of the brief, which of the things it
 lists the library already holds.
 
@@ -84,10 +91,8 @@ it, and it is what you write when you have not checked.
 Two kinds of evidence, read differently:
 
 - **The judge's reason** was written by a model that read the whole
-  transcript, to decide whether the video served a brief. One labelled *for
-  this topic* was judged against this brief; one labelled *for another brief*
-  still says what the judge saw the video explain. A NO reason can still
-  describe what the video covers.
+  transcript and kept the video for this brief. It says what the judge saw the
+  video explain.
 - **The claims** are the note-writer's statements of what the video says, in
   order. A claim that states the video explains a listed thing shows it held.
 

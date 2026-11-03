@@ -135,6 +135,7 @@ from ..core.ledger import (
     BaselineRow,
     Ledger,
     judged_for_topic,
+    topic_verdict,
     normalise_topic,
 )
 from ..core.ledger import now as ledger_now
@@ -886,12 +887,18 @@ def _assess_library(
     """
     if run.dry_run:
         return LibraryCoverage()
-    notes = load_notes(library, ledger)
+    # **Coverage rests on this topic's keepers.** Measured: a baseline read
+    # every note in the library, and cited a MAYBE and ten notes no stage 2 had
+    # judged for the topic as held evidence. Only notes whose video's latest
+    # stage-2 verdict for this topic is YES are evidence; the rest are counted.
+    notes, left_out = keeper_notes(load_notes(library, ledger), ledger, run.topic)
     if not notes:
-        # A fresh topic on an empty library. Nothing to assess, and the call
-        # would cost the whole prompt to be told so.
-        log.info("discover: the library holds no notes; nothing to assess")
-        return LibraryCoverage()
+        # A fresh topic — in an empty library, or a shared one whose notes are
+        # all other topics'. Nothing is held, and the call would cost the
+        # whole prompt to be told so: no call.
+        log.info("discover: the library holds no notes this topic kept; nothing to assess "
+                 "(%s left out)", _left_out_label(left_out))
+        return LibraryCoverage(notes_left_out=left_out)
 
     # **Evidence, not whole notes and not one line.** This used to send the
     # library entire, with no budget check, and at 646 notes it asked for
@@ -903,7 +910,7 @@ def _assess_library(
     # evidence, and one run's baseline marked 0 of 14 items held while about 25
     # stored keepers' own stage-2 reasons named five of the parts.
     #
-    # Now each note brings what can show coverage and scales: the latest
+    # Now each kept note brings what can show coverage and scales: the latest
     # stage-2 reason for its video (one line, written by a judge that read the
     # whole transcript) and the note's Claims, cut to a per-note share of a
     # fixed budget. When the budget forces a cut it says so, counted (rule 14).
@@ -964,6 +971,7 @@ def _assess_library(
         if stored is not None:
             baseline = replace(
                 names_only(LibraryCoverage.from_dict(json.loads(stored.coverage_json))),
+                notes_left_out=left_out,
                 reuse=BASELINE_REUSED, reused_from=stored.run_id or "", key_sha256=state.key,
                 calls=0, flips=(), input_tokens=0, output_tokens=0, latency_s=0.0,
             )
@@ -1008,6 +1016,7 @@ def _assess_library(
         input_tokens=sum(call.input_tokens for call in calls),
         output_tokens=sum(call.output_tokens for call in calls),
         latency_s=sum(call.latency_s for call in calls),
+        notes_left_out=left_out,
         reuse=BASELINE_FRESH,
         fresh_reason=fresh_reason,
         key_sha256=state.key if state is not None else "",
@@ -1040,6 +1049,28 @@ def _assess_library(
     return baseline
 
 
+def keeper_notes(
+    notes: Sequence[LoadedNote], ledger: Ledger, topic: str
+) -> tuple[list[LoadedNote], dict[str, int]]:
+    """``(kept, left_out)``: the notes whose video's latest stage-2 verdict for
+    this topic is YES, and the rest counted by kind — `no`, `maybe`, and
+    `unjudged` (no stage-2 verdict for this topic). The one set the baseline,
+    its reuse key and `reusable_baseline` read."""
+    kept: list[LoadedNote] = []
+    left_out = {"no": 0, "maybe": 0, "unjudged": 0}
+    for note in notes:
+        verdict = topic_verdict(ledger.decisions_for(note.video_id), topic)
+        if verdict == VERDICT_YES:
+            kept.append(note)
+        else:
+            left_out[verdict if verdict in (VERDICT_NO, VERDICT_MAYBE) else "unjudged"] += 1
+    return kept, left_out
+
+
+def _left_out_label(left_out: dict) -> str:
+    return ", ".join(f"{left_out.get(kind, 0)} {kind}" for kind in ("no", "maybe", "unjudged"))
+
+
 def _rendered_evidence(
     notes: Sequence[LoadedNote], ledger: Ledger, topic: str
 ) -> tuple[str, "EvidenceSize"]:
@@ -1051,7 +1082,7 @@ def reusable_baseline(
     config: Config, ledger: Ledger, library: Library, brief: Brief, *, model: str = ""
 ) -> LibraryCoverage | None:
     """The stored baseline a run on this state would reuse, or ``None``. No call."""
-    notes = load_notes(library, ledger)
+    notes, _ = keeper_notes(load_notes(library, ledger), ledger, normalise_topic(brief.topic))
     if not notes:
         return None
     rendered, _ = _rendered_evidence(notes, ledger, normalise_topic(brief.topic))
@@ -1230,13 +1261,12 @@ class EvidenceSize:
 def _note_evidence(
     note: LoadedNote, published: str, ledger: Ledger, topic: str
 ) -> NoteEvidence:
-    """One note's evidence: its latest stage-2 reason, and its Claims.
+    """One note's evidence: its latest stage-2 reason for this topic, and its Claims.
 
-    The reason is the latest stage-2 decision on the video that a judge actually
-    made, preferring one for this topic. A reason written for another brief
-    still says what the judge saw the transcript explain, so it is shown,
-    labelled as such. Markers are dropped from the claims: `[note: …]` is the
-    note-writer's inference, and coverage is about what the video says.
+    Every note here is one this topic's stage 2 kept (`keeper_notes`), so the
+    reason is the latest judged decision for this topic. Markers are dropped
+    from the claims: `[note: …]` is the note-writer's inference, and coverage
+    is about what the video says.
     """
     judged = "no stage-2 judgement on record"
     rows = [

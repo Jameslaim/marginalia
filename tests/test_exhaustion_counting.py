@@ -12,6 +12,7 @@ from __future__ import annotations
 from marginalia.contracts import STOP_THROTTLED, AimedQuery, RoundPlan
 from marginalia.providers import TransientError
 from test_discover import (  # noqa: F401 - fixtures are found by name
+    kept_note,
     FakeJudge,
     FakePlanner,
     FakeTranscripts,
@@ -49,7 +50,7 @@ def test_a_query_whose_candidate_failed_to_fetch_is_not_counted(
     config, ledger, library, client, searches
 ) -> None:
     _approve(ledger)
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
     judge, transcripts, planner = _rounds(searches, 2, failing={(1, 0), (2, 0)})
 
     outcome = run(_with(config, gap_exhausted_after=5), ledger, library, client, judge,
@@ -64,7 +65,7 @@ def test_a_round_that_stopped_on_a_block_counts_nothing_and_records_nothing(
     config, ledger, library, client, searches
 ) -> None:
     _approve(ledger)
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
     judge, transcripts, planner = _rounds(searches, 2, failing={(2, 0), (2, 1), (2, 2)})
 
     outcome = run(_with(config, gap_exhausted_after=3), ledger, library, client, judge,

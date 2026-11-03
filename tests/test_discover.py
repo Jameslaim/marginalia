@@ -335,6 +335,11 @@ def mapped(*queries: str, concepts=("caching",), vocabulary=("kv cache",), **kwa
     )
 
 
+def kept_note(library, ledger, topic, video_id, text):
+    """A note on a video this topic's stage 2 kept: what a baseline's coverage
+    rests on (a note with no stage-2 YES for the topic is left out of it)."""
+    library.write_note(video_id, text)
+    ledger.log_decision(video_id, topic, stage=STAGE_FULL, verdict=VERDICT_YES, reason="kept")
 def run(
     config, ledger, library, client, judge,
     provider=None, topic=TOPIC, mapper=None, planner=None, **kwargs,
@@ -2585,7 +2590,7 @@ def test_the_library_is_assessed_before_the_first_round(
     config, ledger, library, client, searches
 ) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# An old note\n\nIt covers the mechanism in code.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# An old note\n\nIt covers the mechanism in code.\n")
     planner = FakePlanner(baseline=[CoverageItem("shows code", True, "the old note")])
 
     outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
@@ -2602,7 +2607,7 @@ def test_the_baseline_reaches_the_planner(
     """The whole point. Without it the planner reads an empty shelf and names
     gaps for things the library can already answer."""
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# An old note\n\nCovers retrieval scoring.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# An old note\n\nCovers retrieval scoring.\n")
     planner = FakePlanner(baseline=[CoverageItem("retrieval scoring", True, "the old note")])
 
     run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
@@ -2627,7 +2632,7 @@ def test_the_baseline_is_sent_evidence_not_whole_notes(
         "# A note\n\n## Claims\n\n- It covers the mechanism in code.\n\n"
         "## Key moments\n\n" + ("filler line\n" * 400)
     )
-    library.write_note("bbbbbbbbbbb", body)
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", body)
     planner = FakePlanner(baseline=[CoverageItem("shows code", True, "the old note")])
 
     run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
@@ -2637,7 +2642,7 @@ def test_the_baseline_is_sent_evidence_not_whole_notes(
     assert "filler line" not in sent, "the rest of the note never reaches the assessment"
     assert "bbbbbbbbbbb" in sent, "but the id does"
     assert "claims: It covers the mechanism in code." in sent, "and its Claims do"
-    assert "judge: no stage-2 judgement on record" in sent
+    assert "judge: stage 2 said YES for this topic: kept" in sent, "only a keeper's note is evidence"
     assert sent.startswith("EVIDENCE: full"), "the evidence says how complete it is"
     assert len(sent) < len(body), "and it is smaller than the note it stands for"
 
@@ -2650,7 +2655,7 @@ def test_an_oversized_baseline_is_refused_rather_than_sent(
     before spending the call, instead of being discovered from a rejection."""
     searches["*"] = [result("aaaaaaaaaaa")]
     for n in range(6):
-        library.write_note(f"ccccccccc{n:02d}"[:11], f"# Note {n}\n\nA claim about things.\n")
+        kept_note(library, ledger, TOPIC, f"ccccccccc{n:02d}"[:11], f"# Note {n}\n\nA claim about things.\n")
     config = replace(config, ask=make_ask_config(max_input_tokens=1))
     planner = FakePlanner(baseline=[CoverageItem("shows code", True, "the old note")])
 
@@ -2684,7 +2689,7 @@ def test_a_dry_run_does_not_assess_the_library(
     """A dry run plans nothing, so the baseline would be computed for a reader
     that never runs."""
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# A note\n\nSomething.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nSomething.\n")
     planner = FakePlanner()
 
     run(config, ledger, library, client, FakeJudge(), max_rounds=1,
@@ -2697,7 +2702,7 @@ def test_the_baseline_is_stored_on_the_run(
     config, ledger, library, client, searches
 ) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# A note\n\nCovers the write path.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nCovers the write path.\n")
     planner = FakePlanner(baseline=[CoverageItem("write path", True, "the old note")])
 
     outcome = run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
@@ -2715,7 +2720,7 @@ def test_the_assessment_call_gets_its_own_ceiling(
     config, ledger, library, client, searches
 ) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# A note\n\nSomething.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nSomething.\n")
     planner = FakePlanner()
 
     run(config, ledger, library, client, FakeJudge(queries=[["q1"], ["q2"]]),
@@ -4112,7 +4117,7 @@ def test_the_expansion_is_given_the_baseline_then_each_round_s_plan(
     from marginalia.contracts import AimedQuery
 
     searches["*"] = [result("aaaaaaaaaaa")]
-    library.write_note("bbbbbbbbbbb", "# A note\n\n## Claims\n\n- something\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\n## Claims\n\n- something\n")
     held = CoverageItem("soil", True, "the clay note")
     partly = CoverageItem("watering", False, partly=True, held=("drip",), missing=("timing",))
     judge = FakeJudge(queries=[[AimedQuery("q1", "pests")], [AimedQuery("q2", "timing")]])

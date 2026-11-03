@@ -1205,6 +1205,11 @@ class LibraryCoverage:
     key_sha256: str = ""
     calls: int = 0
     flips: tuple = ()
+    # The notes the evidence left out, by kind: `no`, `maybe` (this topic's
+    # latest stage-2 verdict), and `unjudged` (no stage-2 verdict for this
+    # topic: another topic's notes, a manual ingest). Coverage rests only on
+    # this topic's stage-2 YES (rule 42).
+    notes_left_out: dict = field(default_factory=dict)
 
     @property
     def flips_resolved(self) -> int:
@@ -1238,6 +1243,7 @@ class LibraryCoverage:
             "calls": self.calls,
             "flips_resolved": self.flips_resolved,
             "flips": [dict(flip) for flip in self.flips],
+            "notes_left_out": dict(self.notes_left_out),
         }
 
     def as_json(self) -> str:
@@ -1264,6 +1270,7 @@ class LibraryCoverage:
             notes_cut=int(body.get("notes_cut") or 0),
             calls=int(body.get("calls") or 0),
             flips=tuple(body.get("flips") or ()),
+            notes_left_out=dict(body.get("notes_left_out") or {}),
         )
 
 

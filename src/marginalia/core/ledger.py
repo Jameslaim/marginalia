@@ -85,6 +85,7 @@ __all__ = [
     "wanted_for_a_note",
     "current_verdicts",
     "judged_for_topic",
+    "topic_verdict",
     "rejection_in",
     "legacy_outcome",
     "quota_day",
@@ -1011,6 +1012,17 @@ def judged_for_topic(
         if outcome == OUTCOME_TOO_LARGE and (not model or decision.model == model):
             return True
     return False
+
+
+def topic_verdict(decisions: Sequence[DecisionRow], topic: str) -> str | None:
+    """The latest stage-2 verdict for this topic, or ``None`` if stage 2 never
+    gave one. Latest by `decided_at`, the order `decisions_for` returns."""
+    normalised = normalise_topic(topic)
+    latest = None
+    for decision in decisions:
+        if decision.stage in _STAGE_TWO and decision.topic == normalised:
+            latest = decision.verdict
+    return latest
 
 
 def rejection_in(decisions: Sequence[DecisionRow], topic: str) -> DecisionRow | None:

@@ -23,6 +23,7 @@ from marginalia.cli import _baseline_lines, _discover_json
 from marginalia.contracts import BASELINE_FRESH, BASELINE_REUSED, CoverageItem, LibraryCoverage
 from marginalia.flow.export import render_report
 from test_discover import (  # noqa: F401 - fixtures are found by name
+    kept_note,
     FakeJudge,
     FakePlanner,
     client,
@@ -139,7 +140,7 @@ def test_an_unchanged_state_reuses_the_baseline_with_no_call(
 ) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
     _approve(ledger)
-    library.write_note("bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
     planner = Scripted(HELD)
 
     first = _go(config, ledger, library, client, planner)
@@ -165,7 +166,7 @@ def test_a_fresh_baseline_says_so_with_its_calls_and_flips(
 ) -> None:
     searches["*"] = [result("aaaaaaaaaaa")]
     _approve(ledger)
-    library.write_note("bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
     other = cov(item(PART1, "partly", held=["turning schedule"], missing=["pile temperature"]),
                 HELD.items[1])
     outcome = _go(config, ledger, library, client, Scripted(HELD, other))
@@ -183,7 +184,7 @@ def test_a_fresh_baseline_says_so_with_its_calls_and_flips(
 def _two_runs(config, ledger, library, client, change, planner=None):
     """A run, `change`, then a second run: the second's baseline."""
     _approve(ledger)
-    library.write_note("bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
     planner = planner or Scripted(HELD)
     _go(config, ledger, library, client, planner)
     changed = change(planner)
@@ -194,7 +195,7 @@ def _two_runs(config, ledger, library, client, change, planner=None):
 def test_a_note_added_makes_it_fresh(config, ledger, library, client, searches) -> None:
     searches["*"] = []
     after = _two_runs(config, ledger, library, client,
-                      lambda _: library.write_note("ccccccccccc", "# Another\n\nWorm bins.\n"))
+                      lambda _: kept_note(library, ledger, TOPIC, "ccccccccccc", "# Another\n\nWorm bins.\n"))
     assert after.reuse == BASELINE_FRESH and after.calls == 2
     assert after.fresh_reason == "notes changed (1 added, 0 regenerated, 0 removed)"
 
@@ -202,7 +203,7 @@ def test_a_note_added_makes_it_fresh(config, ledger, library, client, searches) 
 def test_a_note_regenerated_makes_it_fresh(config, ledger, library, client, searches) -> None:
     searches["*"] = []
     after = _two_runs(config, ledger, library, client,
-                      lambda _: library.write_note("bbbbbbbbbbb", "# A note\n\nRewritten.\n"))
+                      lambda _: kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nRewritten.\n"))
     assert after.fresh_reason == "notes changed (0 added, 1 regenerated, 0 removed)"
 
 
@@ -210,10 +211,10 @@ def test_a_note_removed_makes_it_fresh(config, ledger, library, client, searches
     searches["*"] = []
 
     def remove(_):
-        library.write_note("ccccccccccc", "# Another\n\nWorm bins.\n")
+        kept_note(library, ledger, TOPIC, "ccccccccccc", "# Another\n\nWorm bins.\n")
 
     _approve(ledger)
-    library.write_note("bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
     remove(None)
     planner = Scripted(HELD)
     _go(config, ledger, library, client, planner)
@@ -255,7 +256,7 @@ def test_a_failed_call_is_not_stored_and_is_made_again(
 ) -> None:
     searches["*"] = []
     _approve(ledger)
-    library.write_note("bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
     broken = LibraryCoverage(parsed=False, problem="reply hit the token ceiling before finishing")
     planner = Scripted(HELD, broken)
     first = _go(config, ledger, library, client, planner)
@@ -269,7 +270,7 @@ def test_without_an_approved_brief_a_baseline_is_always_fresh(
     config, ledger, library, client, searches
 ) -> None:
     searches["*"] = []
-    library.write_note("bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
     planner = Scripted(HELD)
     _go(config, ledger, library, client, planner)
     after = _go(config, ledger, library, client, planner).baseline
@@ -284,14 +285,17 @@ def test_a_fresh_topic_makes_no_call_and_says_so(config, ledger, library, client
     outcome = _go(config, ledger, library, client, planner)
     assert planner.assessed == 0 and outcome.baseline.reuse == ""
     assert _baseline_lines(outcome) == [
-        "baseline: none — the library holds no notes, so this is planned as a fresh topic, as before"
+        "baseline: none — the library holds no note this topic's stage 2 kept, so this is planned "
+        "as a fresh topic, with no call",
+        "          notes left out (not this topic's stage-2 YES): 0 NO, 0 MAYBE, 0 not judged for "
+        "this topic",
     ]
 
 
 def test_one_call_is_the_old_behaviour(config, ledger, library, client, searches) -> None:
     searches["*"] = []
     _approve(ledger)
-    library.write_note("bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
+    kept_note(library, ledger, TOPIC, "bbbbbbbbbbb", "# A note\n\nIt shows a hot pile.\n")
     planner = Scripted(HELD)
     one = replace(config, discover=replace(config.discover, baseline_calls=1))
     outcome = _go(one, ledger, library, client, planner)

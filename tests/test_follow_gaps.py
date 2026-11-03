@@ -42,6 +42,7 @@ from marginalia.contracts import (
 from marginalia.core.ledger import GAP_EXHAUSTED, GAP_REOPENED
 from marginalia.flow.discover import STOP_GAPS_EXHAUSTED, STOP_REASONS
 from test_discover import (  # noqa: F401 - fixtures are found by name
+    kept_note,
     FakeJudge,
     FakePlanner,
     client,
@@ -144,7 +145,7 @@ def test_a_source_with_nothing_on_a_gap_runs_fewer_queries_not_held_ones(
     config, ledger, library, client, searches
 ) -> None:
     _approve(ledger)
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
     judge = FakeJudge(queries=[[AimedQuery("coop air flow", "Coop design"),
                                 AimedQuery("coop tour", "Coop design — ventilation"),
                                 AimedQuery("mites on hens", "Hen health — mites")]])
@@ -178,7 +179,7 @@ def test_threads_come_from_keepers_on_a_gap_or_aim_at_one_while_a_gap_is_open(
     config, ledger, library, client, searches
 ) -> None:
     _approve(ledger)
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
     searches["mites on hens"] = [result("gapkeeper01"), result("heldkeep001")]
     judge = _TaggedJudge(
         {"gapkeeper01": (ITEM_MISSING, "Hen health — mites")},
@@ -227,7 +228,7 @@ def test_a_keeper_resets_the_window() -> None:
 
 def _exhausting_run(config, ledger, library, client, searches, rounds=3):
     """A gap queried three times a round, finding only untagged keepers."""
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
     per_round = []
     for number in range(1, rounds + 1):
         texts = [f"mites round {number} take {n}" for n in range(3)]

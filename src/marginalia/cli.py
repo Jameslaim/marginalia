@@ -1028,10 +1028,19 @@ def _baseline_lines(run: DiscoverRun) -> list[str]:
             line += f"; reply had problems ({baseline.problem})"
         lines.append(line)
         lines.append(f"          {baseline_reuse_line(baseline)}")
+        lines.append(f"          {_left_out_line(baseline)}")
     elif not run.dry_run:
-        lines.append("baseline: none — the library holds no notes, so this is planned as a fresh "
-                     "topic, as before")
+        lines.append("baseline: none — the library holds no note this topic's stage 2 kept, so "
+                     "this is planned as a fresh topic, with no call")
+        lines.append(f"          {_left_out_line(baseline)}")
     return lines
+
+
+def _left_out_line(baseline) -> str:
+    """The notes the evidence left out, by kind, zeros included (rule 14)."""
+    left = baseline.notes_left_out
+    return (f"notes left out (not this topic's stage-2 YES): {left.get('no', 0)} NO, "
+            f"{left.get('maybe', 0)} MAYBE, {left.get('unjudged', 0)} not judged for this topic")
 
 
 def recency_source(recency) -> str:

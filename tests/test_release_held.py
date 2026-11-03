@@ -30,7 +30,7 @@ def test_the_release_is_off_by_default() -> None:
 def test_off_the_last_round_stores_fewer_and_counts_what_it_held_back(
     config, ledger, library, client, searches
 ) -> None:
-    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+    judge = _shape(searches, library, ledger, gaps_maybe=GAP[:1])
 
     outcome = run(config, ledger, library, client, judge,
                   max_rounds=1, max_videos=4, planner=FakePlanner(baseline=COVERAGE))
@@ -41,7 +41,7 @@ def test_off_the_last_round_stores_fewer_and_counts_what_it_held_back(
 
 
 def test_on_the_last_round_releases_them_as_before(config, ledger, library, client, searches) -> None:
-    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+    judge = _shape(searches, library, ledger, gaps_maybe=GAP[:1])
     config = replace(config, discover=replace(config.discover, release_held_last_round=True))
 
     outcome = run(config, ledger, library, client, judge,

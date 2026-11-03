@@ -194,10 +194,12 @@ import pytest  # noqa: E402
 from marginalia.contracts import MetadataVerdict  # noqa: E402
 from marginalia.flow.discover import fetch_order, held_cap  # noqa: E402
 from test_discover import (  # noqa: E402,F401 - fixtures are found by name
+    TOPIC,
     FakeJudge,
     FakePlanner,
     FakeTranscripts,
     client,
+    kept_note,
     config,
     ledger,
     library,
@@ -233,10 +235,10 @@ class TaggingJudge(FakeJudge):
         return out
 
 
-def _shape(searches, library, held_yes=HELD, gaps_maybe=GAP):
+def _shape(searches, library, ledger, held_yes=HELD, gaps_maybe=GAP):
     """Held YES ranked first by search, gap MAYBEs after: the measured shape."""
     searches["*"] = [result(video_id) for video_id in [*held_yes, *gaps_maybe]]
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
     tags = {video_id: (ITEM_HELD, False) for video_id in held_yes}
     tags.update({video_id: (ITEM_MISSING, False) for video_id in gaps_maybe})
     metadata = {video_id: (VERDICT_MAYBE, "may cover a gap") for video_id in gaps_maybe}
@@ -244,7 +246,7 @@ def _shape(searches, library, held_yes=HELD, gaps_maybe=GAP):
 
 
 def test_gap_maybes_are_read_before_held_yes(config, ledger, library, client, searches) -> None:
-    judge = _shape(searches, library)
+    judge = _shape(searches, library, ledger)
     transcripts = FakeTranscripts()
 
     outcome = run(config, ledger, library, client, judge, provider=transcripts,
@@ -259,7 +261,7 @@ def test_gap_maybes_are_read_before_held_yes(config, ledger, library, client, se
 
 
 def test_held_candidates_take_a_capped_share_and_wait(config, ledger, library, client, searches) -> None:
-    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+    judge = _shape(searches, library, ledger, gaps_maybe=GAP[:1])
 
     outcome = run(config, ledger, library, client, judge,
                   max_rounds=3, max_videos=9, planner=FakePlanner(baseline=COVERAGE))
@@ -275,7 +277,7 @@ def test_held_candidates_take_a_capped_share_and_wait(config, ledger, library, c
 def test_the_safeguard_releases_held_slots_when_no_later_round_can_use_them(
     config, ledger, library, client, searches
 ) -> None:
-    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+    judge = _shape(searches, library, ledger, gaps_maybe=GAP[:1])
 
     config = replace(config, discover=replace(config.discover, release_held_last_round=True))
     outcome = run(config, ledger, library, client, judge,
@@ -291,7 +293,7 @@ def test_with_nothing_missing_held_candidates_never_pass_the_cap(
 ) -> None:
     """Spending the rest on repeats is the cost this cap exists to cut; whether
     to stop is the planner's call (`coverage_satisfied`)."""
-    judge = _shape(searches, library, gaps_maybe=[])
+    judge = _shape(searches, library, ledger, gaps_maybe=[])
     held_only = [item for item in COVERAGE if item.satisfied]
 
     outcome = run(config, ledger, library, client, judge,
@@ -322,7 +324,7 @@ def test_a_single_part_topic_spends_its_budget(config, ledger, library, client, 
     single = [CoverageItem("Knife sharpening", False, "", missing=("whetstone angle",))]
     ids = ["onegap00001", "onegap00002", "untagged001"]
     searches["*"] = [result(video_id) for video_id in ids]
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nAbout something else.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nAbout something else.\n")
     judge = TaggingJudge({"onegap00001": (ITEM_MISSING, False), "onegap00002": (ITEM_MISSING, False)})
 
     outcome = run(config, ledger, library, client, judge,
@@ -338,7 +340,7 @@ def test_an_unmatched_tag_is_counted_and_read_as_untagged(
 ) -> None:
     ids = ["heldheld001", "unmatched01", "partpart001"]
     searches["*"] = [result(video_id) for video_id in ids]
-    library.write_note("zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
+    kept_note(library, ledger, TOPIC, "zzzzzzzzzzz", "# An old note\n\nIt covers a held part.\n")
     judge = TaggingJudge({
         "heldheld001": (ITEM_HELD, False),
         "unmatched01": (ITEM_UNTAGGED, True),
@@ -407,7 +409,7 @@ def test_a_waiting_candidate_is_retagged_against_the_round_it_waits_in() -> None
 
 
 def _capped_run(config, ledger, library, client, searches):
-    judge = _shape(searches, library, gaps_maybe=GAP[:1])
+    judge = _shape(searches, library, ledger, gaps_maybe=GAP[:1])
     return run(config, ledger, library, client, judge,
                max_rounds=3, max_videos=9, planner=FakePlanner(baseline=COVERAGE))
 
