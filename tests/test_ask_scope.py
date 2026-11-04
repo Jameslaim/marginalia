@@ -97,3 +97,30 @@ def test_with_no_topic_the_whole_library_is_read_and_the_header_says_so(tmp_path
     assert answer.notes_loaded == 3 and answer.scope_topic == "" and answer.notes_left_out == {}
     assert "- scope: the whole library (no --topic)" in render_answer(answer, asked_at="t")
     assert "; scope: the whole library (no --topic)" in _ask_summary(answer).splitlines()[0]
+
+
+# -- part 3: the answer file and --json record the scope ------------------------------
+
+
+def test_the_file_and_json_record_the_topic_and_what_it_left_out(tmp_path, capsys, monkeypatch) -> None:
+    from marginalia import cli
+    from marginalia.ask import render_answer
+
+    config, library = build(tmp_path, {A: "a" * 50, B: "b" * 50, C: "c" * 50})
+    ledger = _judged(library)
+    text = "INTENT\nKeep hens.\n\nPARTS TO COVER\n- Coops\n"
+    ledger.approve_brief(TOPIC, text, brief_sha256(text))
+
+    answer = answer_question(config, library, client(["Answered."]), "q", ledger=ledger, topic=TOPIC)
+    assert (f"- scope: topic {TOPIC!r} — 1 note(s) of videos its stage 2 kept loaded, 2 left out "
+            "(1 NO, 0 MAYBE, 1 not judged for this topic)") in render_answer(answer, asked_at="t")
+
+    monkeypatch.setattr(cli, "load_config", lambda: config)
+    monkeypatch.setattr(cli, "LlmClient", lambda *_a, **_k: client(["Answered."]))
+    assert cli.main(["ask", "q", "--topic", TOPIC, "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["scope"]["topic"] == TOPIC
+    assert payload["scope"]["notes_loaded"] == 1
+    assert payload["scope"]["notes_left_out"] == {"no": 1, "maybe": 0, "unjudged": 1}
+    saved = payload["saved_to"]
+    assert saved and f"- scope: topic {TOPIC!r}" in open(saved, encoding="utf-8").read()

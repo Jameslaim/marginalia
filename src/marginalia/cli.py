@@ -1705,6 +1705,14 @@ def _cmd_ask(args: argparse.Namespace) -> int:
                     "model": answer.model,
                     "notes_loaded": answer.notes_loaded,
                     "notes_considered": answer.notes_considered,
+                    # Which notes the answer could read: the topic that scoped
+                    # it ("" for the whole library), and what that left out.
+                    "scope": {
+                        "topic": answer.scope_topic,
+                        "notes_loaded": answer.notes_loaded,
+                        "notes_left_out": dict(answer.notes_left_out),
+                        "label": scope_label(answer),
+                    },
                     "selection": {
                         "mode": answer.selection.mode,
                         "reason": answer.selection.reason,
