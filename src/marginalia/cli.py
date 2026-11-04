@@ -115,6 +115,7 @@ from .ask import (
     has_grounding,
     mark_unverified,
     render_answer,
+    scope_label,
     render_links,
 )
 from .enrich.timestamps import snap_library
@@ -1851,7 +1852,7 @@ def _ask_summary(answer: Answer) -> str:
         line += f"{folded} mistyped id(s) repaired by case-folded edit distance, "
     line += (
         f"{answer.requests} requests, ${answer.cost_usd:.4f}, "
-        f"{_elapsed(answer.elapsed_s)}, v{answer.version}"
+        f"{_elapsed(answer.elapsed_s)}, v{answer.version}; scope: {scope_label(answer)}"
     )
     if has_grounding(answer):
         # Its own line, never summed with the citation counters: those read

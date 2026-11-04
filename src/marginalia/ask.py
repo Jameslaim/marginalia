@@ -1064,6 +1064,26 @@ def has_grounding(answer: Answer) -> bool:
     )
 
 
+def scope_label(answer: Answer) -> str:
+    """Which notes the answer could read, as the answer's header says it.
+
+    **With no topic, the whole library**, as before, and never a topic guessed
+    from the question: a guess that is wrong drops, silently, the notes the
+    answer needed — the exclusion nobody can see that rule 8 forbids — and a
+    note on a video one brief declined can answer another question (measured:
+    37 of 69 such notes were cited in stored answers). Scoping is the asker's
+    choice, made with `--topic`.
+    """
+    if not answer.scope_topic:
+        return "the whole library (no --topic)"
+    left = answer.notes_left_out
+    return (
+        f"topic {answer.scope_topic!r} — {answer.notes_loaded} note(s) of videos its stage 2 "
+        f"kept loaded, {sum(left.values())} left out ({left.get('no', 0)} NO, "
+        f"{left.get('maybe', 0)} MAYBE, {left.get('unjudged', 0)} not judged for this topic)"
+    )
+
+
 def render_answer(answer: Answer, *, asked_at: str) -> str:
     """One answer as a file. Pure: no clock, no disk, no config.
 
@@ -1092,6 +1112,7 @@ def render_answer(answer: Answer, *, asked_at: str) -> str:
             if answer.notes_considered > answer.notes_loaded
             else ""
         ),
+        f"- scope: {scope_label(answer)}",
         *(
             [
                 f"- selection: {answer.selection.mode} — {answer.selection.reason}",

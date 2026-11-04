@@ -79,3 +79,21 @@ def test_the_cli_refuses_a_topic_with_no_approved_brief(tmp_path, capsys, monkey
     Ledger(library.ledger_path).approve_brief(TOPIC, text, brief_sha256(text))
     assert cli.main(["ask", "q", "--topic", TOPIC, "--no-save", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["notes_loaded"] == 1
+
+
+# -- part 2: with no --topic, the whole library, said on the header -----------------
+
+
+def test_with_no_topic_the_whole_library_is_read_and_the_header_says_so(tmp_path) -> None:
+    from marginalia.ask import render_answer
+    from marginalia.cli import _ask_summary
+
+    config, library = build(tmp_path, {A: "a" * 50, B: "b" * 50, C: "c" * 50})
+    _judged(library)
+    made = client(["Answered."])
+
+    answer = answer_question(config, library, made, "q", ledger=Ledger(library.ledger_path))
+
+    assert answer.notes_loaded == 3 and answer.scope_topic == "" and answer.notes_left_out == {}
+    assert "- scope: the whole library (no --topic)" in render_answer(answer, asked_at="t")
+    assert "; scope: the whole library (no --topic)" in _ask_summary(answer).splitlines()[0]
