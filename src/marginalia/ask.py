@@ -40,6 +40,9 @@ from .brain.selector import Selector
 from .contracts import (
     SELECTION_ALL,
     SELECTION_FALLBACK,
+    VERDICT_MAYBE,
+    VERDICT_NO,
+    VERDICT_YES,
     Answer,
     AnswerCitation,
     CitationScan,
@@ -52,7 +55,7 @@ from .contracts import (
     UnverifiedQuote,
 )
 from .core.ids import is_video_id
-from .core.ledger import Ledger, LedgerError
+from .core.ledger import Ledger, LedgerError, normalise_topic, topic_verdict
 from .core.library import Library
 from .enrich.timestamps import END_TOLERANCE_MS, transcript_end_ms
 from .llm import LlmClient, LlmError, Prompt, load_prompt, safe_reason
@@ -1337,6 +1340,26 @@ def load_notes(library: Library, ledger: Ledger | None = None) -> list[LoadedNot
     return notes
 
 
+def keeper_notes(
+    notes: Sequence[LoadedNote], ledger: Ledger, topic: str
+) -> tuple[list[LoadedNote], dict[str, int]]:
+    """``(kept, left_out)``: the notes whose video's latest stage-2 verdict for
+    this topic is YES, and the rest counted by kind — `no`, `maybe`, and
+    `unjudged` (no stage-2 verdict for this topic).
+
+    The one keeper rule: the library baseline's evidence (rule 42) and
+    `marg ask --topic`'s notes are both this set."""
+    kept: list[LoadedNote] = []
+    left_out = {"no": 0, "maybe": 0, "unjudged": 0}
+    for note in notes:
+        verdict = topic_verdict(ledger.decisions_for(note.video_id), topic)
+        if verdict == VERDICT_YES:
+            kept.append(note)
+        else:
+            left_out[verdict if verdict in (VERDICT_NO, VERDICT_MAYBE) else "unjudged"] += 1
+    return kept, left_out
+
+
 # The first claim is where a note says what the video actually asserts, and it
 # is the closest thing a note has to a description of itself. Truncated, because
 # the selector needs a hint rather than the note — that is the next stage's job.
@@ -1638,15 +1661,33 @@ def answer_question(
     ledger: Ledger | None = None,
     deep: Sequence[str] = (),
     prompts_directory: Any = None,
+    topic: str | None = None,
 ) -> Answer:
-    """Answer once from notes; open transcripts and answer again if asked to."""
+    """Answer once from notes; open transcripts and answer again if asked to.
+
+    With ``topic``, only the notes of videos that topic's stage 2 kept are read
+    (`keeper_notes`), and the rest are counted: a question about one topic does
+    not pay to read the whole library. Measured: one question read all 178
+    notes, about 613,000 tokens, for $0.096.
+    """
     prompt = load_prompt("answer", directory=prompts_directory)
     started = time.monotonic()
-    everything = load_notes(library, ledger)
+    library_notes = load_notes(library, ledger)
     result = Answer(question=question, version=prompt.version, model=client.model)
+    everything = library_notes
+    if topic:
+        if ledger is None:
+            raise ValueError("a topic-scoped answer needs the ledger")
+        result.scope_topic = normalise_topic(topic)
+        everything, result.notes_left_out = keeper_notes(library_notes, ledger, topic)
 
     if not everything:
-        result.text = "The library is empty — there are no notes to answer from."
+        result.text = (
+            f"No note in the library is on a video this topic's stage 2 kept — nothing to "
+            f"answer from for {result.scope_topic!r}."
+            if topic and library_notes
+            else "The library is empty — there are no notes to answer from."
+        )
         result.elapsed_s = time.monotonic() - started
         return result
 
@@ -1671,10 +1712,11 @@ def answer_question(
     )
     result.notes_considered = len(everything)
     result.notes_loaded = len(notes)
-    # Every note's title, not only the loaded ones: a citation the model invents
-    # for a note it was not given must still resolve to a real title if one
-    # exists, or the reader cannot tell a hallucination from a selection miss.
-    result.titles = {note.video_id: note.title for note in everything}
+    # Every note's title, not only the loaded ones — the whole library's, scoped
+    # or not: a citation the model invents for a note it was not given must
+    # still resolve to a real title if one exists, or the reader cannot tell a
+    # hallucination from a selection miss.
+    result.titles = {note.video_id: note.title for note in library_notes}
     # The loaded notes only: this records what the answer was written from, not
     # what the library happened to hold.
     result.note_digests = {note.video_id: note_digest(note.text) for note in notes}

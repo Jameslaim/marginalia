@@ -2912,6 +2912,11 @@ class Answer:
     # answering call actually read. Equal until selection runs; the gap is the
     # number that says an answer was written from part of the library.
     notes_considered: int = 0
+    # The approved topic that scoped the notes (`marg ask --topic`), or "" for
+    # the whole library; and the library's notes the scope left out, by kind:
+    # `no`, `maybe`, `unjudged` (no stage-2 verdict for the topic).
+    scope_topic: str = ""
+    notes_left_out: dict = field(default_factory=dict)
     # How that gap came about, including the selector's own account of it.
     # Rule 23: without it, "did it not know, or did it not look?" — the first
     # question asked of a thin answer — is unanswerable from disk.

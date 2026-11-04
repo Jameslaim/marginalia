@@ -1677,8 +1677,14 @@ def _cmd_ask(args: argparse.Namespace) -> int:
 
     client = LlmClient(config.llm)
     with Ledger(library.ledger_path) as ledger:
+        topic = getattr(args, "topic", None)
+        if topic is not None and ledger.approved_brief(topic) is None:
+            # The keeper rule is a topic's own stage 2, and a topic is the one
+            # an approved brief names; a mistyped topic would scope to nothing.
+            return _error(f"no approved brief for the topic {topic!r}; see marg brief --status",
+                          EXIT_USAGE)
         answer = answer_question(
-            config, library, client, question, ledger=ledger, deep=deep
+            config, library, client, question, ledger=ledger, deep=deep, topic=topic
         )
 
     # Saved before anything is printed, and saved even when the answer is empty
@@ -2556,6 +2562,10 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-save",
         action="store_true",
         help="do not write the answer to the library's answers/ folder",
+    )
+    ask.add_argument(
+        "--topic", metavar="TOPIC",
+        help="read only the notes of videos this approved topic's stage 2 kept",
     )
     ask.add_argument("--json", action="store_true", help="machine-readable output")
     ask.set_defaults(handler=_cmd_ask)

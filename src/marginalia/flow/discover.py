@@ -148,7 +148,7 @@ from ..core.ledger import (
     normalise_topic,
 )
 from ..core.ledger import now as ledger_now
-from ..ask import _CHARS_PER_TOKEN, load_notes, summarise
+from ..ask import _CHARS_PER_TOKEN, keeper_notes, load_notes, summarise
 from ..quotes import note_sections
 from ..core.library import Library, format_timestamp, render_transcript
 from ..llm import LlmClient, LlmConfigError, LlmError, load_prompt
@@ -1057,24 +1057,6 @@ def _assess_library(
         len(flips),
     )
     return baseline
-
-
-def keeper_notes(
-    notes: Sequence[LoadedNote], ledger: Ledger, topic: str
-) -> tuple[list[LoadedNote], dict[str, int]]:
-    """``(kept, left_out)``: the notes whose video's latest stage-2 verdict for
-    this topic is YES, and the rest counted by kind — `no`, `maybe`, and
-    `unjudged` (no stage-2 verdict for this topic). The one set the baseline,
-    its reuse key and `reusable_baseline` read."""
-    kept: list[LoadedNote] = []
-    left_out = {"no": 0, "maybe": 0, "unjudged": 0}
-    for note in notes:
-        verdict = topic_verdict(ledger.decisions_for(note.video_id), topic)
-        if verdict == VERDICT_YES:
-            kept.append(note)
-        else:
-            left_out[verdict if verdict in (VERDICT_NO, VERDICT_MAYBE) else "unjudged"] += 1
-    return kept, left_out
 
 
 def _left_out_label(left_out: dict) -> str:

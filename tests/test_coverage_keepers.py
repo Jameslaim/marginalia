@@ -11,8 +11,7 @@ from __future__ import annotations
 from marginalia.cli import _baseline_lines
 from marginalia.contracts import VERDICT_MAYBE, VERDICT_NO, VERDICT_YES
 from marginalia.core.ledger import STAGE_FULL, topic_verdict
-from marginalia.flow.discover import keeper_notes
-from marginalia.ask import load_notes
+from marginalia.ask import keeper_notes, load_notes
 from marginalia.llm import load_prompt
 from test_discover import (  # noqa: F401 - fixtures are found by name
     TOPIC,
