@@ -32,7 +32,7 @@ __all__ = [
     "example_text",
 ]
 
-DEFAULT_LIBRARY_PATH = "C:/youtube-agent/marginalia-library"
+DEFAULT_LIBRARY_PATH = "~/.marginalia/library"
 DEFAULT_TRANSCRIPT_ORDER = ("ytdlp",)
 DEFAULT_SEARCH_ORDER = ("youtube_api", "ytdlp_search")
 DEFAULT_DAILY_UNITS = 10_000

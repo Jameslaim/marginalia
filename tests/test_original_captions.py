@@ -173,14 +173,12 @@ def test_several_original_tracks_none_in_the_audio_language_take_the_reported_on
 
 
 def test_the_saved_listing_for_the_measured_disagreement_is_now_stored() -> None:
-    """eyxRPNOMabo's listing as saved by the dry run, re-selected offline."""
+    """Synthetic listing reproducing the audio-label vs auto_orig disagreement offline."""
     import json
     from pathlib import Path
 
-    saved = Path(r"C:\youtube-agent\agent-walkthrough\redesign3\evidence\captions\repair_dryrun.json")
-    if not saved.exists():
-        pytest.skip("the dry-run evidence is not on this machine")
-    row = next(r for r in json.loads(saved.read_text(encoding="utf-8")) if r["video_id"] == "eyxRPNOMabo")
+    fixture = Path(__file__).resolve().parent / "fixtures" / "caption_disagreement.json"
+    row = json.loads(fixture.read_text(encoding="utf-8"))
     info = {
         "language": row["reported_language"],
         "formats": [_audio(lang, note) for lang, note in row["audio"]],

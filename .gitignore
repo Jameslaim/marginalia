@@ -1,5 +1,12 @@
-# Local configuration — points at machine-specific paths
+# Local configuration — points at machine-specific paths and may hold keys
 config.toml
+
+# Environment files and local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
 
 # Claude Code local overrides
 .claude/settings.local.json
@@ -7,12 +14,34 @@ config.toml
 # Python
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 .venv/
 venv/
 *.egg-info/
+*.egg
+.eggs/
 build/
 dist/
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# OS and editor artifacts
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
 
 # Library data — NEVER in git.
 # The library is transcripts and a ledger; it lives outside this repo, but these

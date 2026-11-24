@@ -3,7 +3,7 @@
 
 [library]
 # Where transcripts and the ledger live. Never inside the git repository.
-path = "C:/youtube-agent/marginalia-library"
+path = "~/.marginalia/library"
 
 [providers]
 # Transcript sources, tried in order. Only "ytdlp" exists today.

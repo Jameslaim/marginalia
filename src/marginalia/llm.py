@@ -190,7 +190,7 @@ _FRONTMATTER_RE = re.compile(r"\A---\r?\n(.*?)\r?\n---\r?\n?(.*)\Z", re.DOTALL)
 
 
 def prompts_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "prompts"
+    return Path(__file__).resolve().parent / "prompts"
 
 
 def load_prompt(name: str, *, directory: Path | None = None) -> Prompt:

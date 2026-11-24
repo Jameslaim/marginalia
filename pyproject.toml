@@ -1,11 +1,14 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "marginalia"
 version = "0.1.0"
 description = "Find, transcribe and understand YouTube videos from the command line"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = ["yt-dlp>=2024.1.1", "openai>=1.40"]
 
@@ -17,6 +20,9 @@ marg = "marginalia.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+marginalia = ["prompts/*.md", "prompts/*/*.md", "prompts/**/*.md"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

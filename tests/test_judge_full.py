@@ -745,7 +745,7 @@ class Http402(Exception):
 def _judge_with(exc: Exception, tmp_path):
     from marginalia.brain.judge import Judge
     from marginalia.llm import LlmClient
-    from tests.conftest import make_config
+    from conftest import make_config
 
     def transport(**kwargs):
         raise exc
