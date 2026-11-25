@@ -385,16 +385,16 @@ def test_ordinary_parentheses_and_ratios_are_not_citations():
     assert scan.citations == [] and scan.unparsed == []
 
 
-def test_the_real_answer_that_reported_two_citations_now_parses_many():
-    """h2 reported 2 citations against dozens of inline references."""
-    text = (FIXTURES / "answer_real_h2.txt").read_text(encoding="utf-8")
+def test_the_synthetic_h2_answer_parses_many_citations():
+    """Synthetic h2 fixture with multiple inline bracketed references."""
+    text = (FIXTURES / "answer_synthetic_h2.txt").read_text(encoding="utf-8")
     ids = sorted({c.video_id for c in parse_citations(text, known=None)})
     scan = scan_citations(text, known=ids or None)
     assert len(scan.citations) > 2
 
 
 def test_the_leaves_out_answer_parses_its_parenthesised_citations():
-    text = (FIXTURES / "answer_real_q4.txt").read_text(encoding="utf-8")
+    text = (FIXTURES / "answer_synthetic_q4.txt").read_text(encoding="utf-8")
     ids = sorted({c.video_id for c in parse_citations(text)})
     assert len(parse_citations(text, known=ids)) >= 30
 

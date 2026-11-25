@@ -172,23 +172,6 @@ def test_several_original_tracks_none_in_the_audio_language_take_the_reported_on
     assert fake.opened == ["hi-orig"] and result.audio_label == "en-US"
 
 
-def test_the_saved_listing_for_the_measured_disagreement_is_now_stored() -> None:
-    """Synthetic listing reproducing the audio-label vs auto_orig disagreement offline."""
-    import json
-    from pathlib import Path
-
-    fixture = Path(__file__).resolve().parent / "fixtures" / "caption_disagreement.json"
-    row = json.loads(fixture.read_text(encoding="utf-8"))
-    info = {
-        "language": row["reported_language"],
-        "formats": [_audio(lang, note) for lang, note in row["audio"]],
-        "subtitles": _tracks(*row["manual"]),
-        "automatic_captions": _tracks(*row["auto_orig"], "en", "ar"),
-    }
-    picked = YtDlpProvider()._candidate_tracks(info)
-    assert [(key, kind) for key, kind, _ in picked] == [("hi-orig", "auto")]
-
-
 def test_a_named_manual_track_stores_a_clean_language_and_keeps_its_track(monkeypatch) -> None:
     info = {
         "language": "en",

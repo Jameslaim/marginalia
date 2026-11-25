@@ -4,6 +4,9 @@ A command-line agent that finds relevant YouTube videos, stores their transcript
 disk, writes an understanding note for each, and answers questions from those notes
 with a timestamped link per claim.
 
+`marginalia` is a plain Python CLI that works with any OpenAI-compatible model and from
+any agent or terminal; the Claude Code plugin files are optional.
+
 > **Current status.** Discovery, notes, and cited answering all work end to end.
 > `marg discover` builds a topic brief, searches YouTube, judges candidates in two
 > stages, and plans each round from the previous round's gaps; `marg note` turns a
